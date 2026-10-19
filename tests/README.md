@@ -72,3 +72,7 @@ python tests/Fixtures/generate_scene_package.py
 - Python 场景包工具：**14/14通过**。
 
 本次新增UI已在175%实际DPI下完成两轮窗口检查；完整跨DPI矩阵仍未完成，见 [试点验收记录](../design/SCREEN-PILOT-VALIDATION.zh-CN.md)。源码发布不改变正在运行的设备内容。推送后的独立云端结果以该代码提交的 Actions 记录为准。
+
+### 独立云端结果
+
+代码提交 `fff0d5e` 的 [GitHub Windows CI](https://github.com/zhr2038/UnifiedRGB/actions/runs/39251984633) 已完成：Release 构建0警告、0错误；一次完整串行回归 **2250通过、0失败、10项条件跳过，共2260项**（Core1012、Devices377+10跳过、Host411、Safety149、Screens301）；另14项 Python 工具测试通过。云端没有借用作者机器的私有资源，也没有重跑失败工作流或放宽断言。本机首轮抖动失败与之后的独立复核仍按上述范围保留。此结果记录只改文档，程序代码与该通过提交一致。
