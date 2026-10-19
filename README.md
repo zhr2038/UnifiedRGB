@@ -44,6 +44,8 @@
 
 需要 Windows x64、.NET 8 SDK 和 Git。首次还原依赖需要访问 NuGet。命令在仓库根目录执行：
 
+`global.json` 将构建 SDK 限制在8.x，并允许使用已安装的较新8.x功能带，避免多SDK环境自动选用其他主版本。
+
 ```powershell
 git clone https://github.com/zhr2038/UnifiedRGB.git
 cd UnifiedRGB

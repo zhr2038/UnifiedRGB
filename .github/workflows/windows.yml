@@ -23,6 +23,12 @@ jobs:
           python-version: '3.11'
       - name: Restore
         run: dotnet restore src/UnifiedRgb.sln
+      - name: Verify .NET 8 SDK
+        shell: pwsh
+        run: |
+          $version = dotnet --version
+          if ($LASTEXITCODE -ne 0 -or $version -notmatch '^8\.') { throw "Expected .NET 8 SDK, got $version" }
+          Write-Output "Selected SDK: $version"
       - name: Build
         run: dotnet build src/UnifiedRgb.sln -c Release --no-restore -warnaserror
       - name: Test
