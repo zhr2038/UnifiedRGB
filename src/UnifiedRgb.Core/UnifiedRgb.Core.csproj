@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="../UnifiedRgb.Devices.Abstractions/UnifiedRgb.Devices.Abstractions.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="Effects/LianLi/lianli-modes.json" LogicalName="UnifiedRgb.Core.lianli-modes.json" />
+    <!-- Vendor tables (WP-12: required, the build fails when one is missing instead of silently going generic).
+         tl-twinkle.bin: tools/codegen/gen_tl_twinkle.py (TLMode29); h2-twinkle.bin, ui-ripple.bin: gen_lianli_tables.py -->
+    <EmbeddedResource Include="Effects/LianLi/tl-twinkle.bin" LogicalName="UnifiedRgb.Core.tl-twinkle.bin" />
+    <EmbeddedResource Include="Effects/LianLi/h2-twinkle.bin" LogicalName="UnifiedRgb.Core.h2-twinkle.bin" />
+    <EmbeddedResource Include="Effects/LianLi/ui-ripple.bin" LogicalName="UnifiedRgb.Core.ui-ripple.bin" />
+  </ItemGroup>
+</Project>

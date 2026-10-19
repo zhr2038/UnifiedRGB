@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>urgb</AssemblyName>
+    <RootNamespace>UnifiedRgb.Cli</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../UnifiedRgb.Contracts/UnifiedRgb.Contracts.csproj" />
+    <PackageReference Include="StreamJsonRpc" />
+  </ItemGroup>
+</Project>

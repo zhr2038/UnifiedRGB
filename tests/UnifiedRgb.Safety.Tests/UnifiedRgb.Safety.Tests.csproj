@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="../../src/UnifiedRgb.Devices.Abstractions/UnifiedRgb.Devices.Abstractions.csproj" />
+    <ProjectReference Include="../../src/UnifiedRgb.Transports.Win/UnifiedRgb.Transports.Win.csproj" />
+    <ProjectReference Include="../../src/UnifiedRgb.Devices.LianLi/UnifiedRgb.Devices.LianLi.csproj" />
+  </ItemGroup>
+</Project>

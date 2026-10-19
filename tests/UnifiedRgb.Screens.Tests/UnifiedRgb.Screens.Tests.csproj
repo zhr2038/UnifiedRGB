@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <!-- WIC/WPF media and overlays are exercised on STA test threads -->
+    <UseWPF>true</UseWPF>
+    <!-- HeadlessProbe.cs supplies Main: the same assembly is re-run under the Host's own runtimeconfig by HeadlessRenderingTests -->
+    <GenerateProgramFile>false</GenerateProgramFile>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- Same as the Host exe: the in-process overlay tests must render even when no display device is available -->
+    <RuntimeHostConfigurationOption Include="Switch.System.Windows.Media.ShouldRenderEvenWhenNoDisplayDevicesAreAvailable" Value="true" />
+  </ItemGroup>
+  <ItemGroup>
+    <Using Include="System.IO" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/UnifiedRgb.Screens/UnifiedRgb.Screens.csproj" />
+    <ProjectReference Include="../../src/UnifiedRgb.Host/UnifiedRgb.Host.csproj" />
+    <ProjectReference Include="../../src/UnifiedRgb.Contracts/UnifiedRgb.Contracts.csproj" />
+    <ProjectReference Include="../../src/UnifiedRgb.Devices.Virtual/UnifiedRgb.Devices.Virtual.csproj" />
+  </ItemGroup>
+</Project>

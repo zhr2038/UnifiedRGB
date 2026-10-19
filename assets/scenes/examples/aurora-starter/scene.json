@@ -1,0 +1,35 @@
+{
+  "format": "UnifiedRgb.ScenePackage",
+  "schemaVersion": 1,
+  "id": "aurora-starter",
+  "name": "极光 · 入门示例",
+  "revision": 1,
+  "durationMs": 12000,
+  "loop": true,
+  "playbackContract": "rgb24-hold-physical-ms-v1",
+  "lighting": [
+    {
+      "role": "accent-strip",
+      "label": "装饰灯条",
+      "file": "lighting/strip.rgb24",
+      "ledCount": 8,
+      "frames": 200,
+      "frameDurationMs": 60,
+      "pixelFormat": "RGB24",
+      "pixelOrder": "logical-layout",
+      "brightnessBaked": 1
+    }
+  ],
+  "screens": [
+    {
+      "role": "main-panel",
+      "label": "主画面",
+      "file": "screens/panel.png",
+      "durationMs": 12000,
+      "overlay": "dashboard",
+      "fit": "contain",
+      "fps": 5
+    }
+  ],
+  "files": {}
+}

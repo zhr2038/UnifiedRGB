@@ -1,0 +1,31 @@
+{
+  "Detectors": {
+    "detectors": {
+      "ASUS Aura USB Motherboard": true,
+      "ASUS Aura Motherboard": true,
+      "ASUS Aura SMBus Motherboard": true,
+      "ENE SMBus DRAM": true,
+      "ASUS Aura SMBus DRAM": false,
+      "MSI GPU": false,
+      "MSI GPU V2": false,
+      "MSI GPU V2 (NVIDIA RTX 5090)": false,
+      "NVIDIA GPU": false,
+      "Lian Li Uni Hub": false,
+      "Lian Li Uni Hub - AL": false,
+      "Lian Li Uni Hub - SL Infinity": false,
+      "Lian Li Uni Hub - SL V2": false,
+      "Lian Li Uni Hub - SL V2 v0.5": false,
+      "Lian Li Uni Hub - SL Redragon": false,
+      "Lian Li Strimer L Connect": false,
+      "Lian Li GA II Trinity": false,
+      "Lian Li Uni Hub - TL": false,
+      "Lian Li Wireless": false
+    }
+  },
+  "Server": {
+    "legacy_workaround": false
+  },
+  "Plugins": {
+    "plugins": []
+  }
+}

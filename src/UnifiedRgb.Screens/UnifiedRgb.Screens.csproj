@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <!-- WIC decode/encode and text overlays run on dedicated STA threads; no window or GUI is created -->
+    <UseWPF>true</UseWPF>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../UnifiedRgb.Contracts/UnifiedRgb.Contracts.csproj" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- UseWPF drops System.IO from the implicit usings -->
+    <Using Include="System.IO" />
+    <InternalsVisibleTo Include="UnifiedRgb.Screens.Tests" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- MIT attribution for the TURZX framing travels with every output that contains this assembly -->
+    <None Include="THIRD-PARTY-NOTICES.md" Link="THIRD-PARTY-NOTICES.Screens.md" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,68 @@
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using UnifiedRgb.Contracts.Dto;
+
+namespace UnifiedRgb.Contracts;
+
+/// <summary>Source-generated System.Text.Json metadata for every DTO that crosses the pipe or lands in status.json.</summary>
+[JsonSourceGenerationOptions(JsonSerializerDefaults.Web, WriteIndented = true)]
+[JsonSerializable(typeof(ControllerDto))]
+[JsonSerializable(typeof(IReadOnlyList<ControllerDto>))]
+[JsonSerializable(typeof(EffectDto))]
+[JsonSerializable(typeof(IReadOnlyList<EffectDto>))]
+[JsonSerializable(typeof(SceneDto))]
+[JsonSerializable(typeof(StatusDto))]
+[JsonSerializable(typeof(AssignmentDto))]
+[JsonSerializable(typeof(SpatialPathDto))]
+[JsonSerializable(typeof(LoopReturnDto))]
+[JsonSerializable(typeof(ProfileDto))]
+[JsonSerializable(typeof(ProfileInfoDto))]
+[JsonSerializable(typeof(IReadOnlyList<ProfileInfoDto>))]
+[JsonSerializable(typeof(TelemetryDto))]
+[JsonSerializable(typeof(IReadOnlyList<TelemetryDto>))]
+[JsonSerializable(typeof(TakeoverDto))]
+[JsonSerializable(typeof(LoopUploadDto))]
+[JsonSerializable(typeof(MountingDto))]
+[JsonSerializable(typeof(IReadOnlyList<MountingDto>))]
+[JsonSerializable(typeof(MountingFileDto))]
+[JsonSerializable(typeof(RingCalibrationDto))]
+[JsonSerializable(typeof(BringupSessionDto))]
+[JsonSerializable(typeof(BringupEndDto))]
+[JsonSerializable(typeof(MarkerDto))]
+[JsonSerializable(typeof(ProbeResultDto))]
+[JsonSerializable(typeof(WriterCandidateDto))]
+[JsonSerializable(typeof(PlaybackCalibrationDto))]
+[JsonSerializable(typeof(RfClockStatusDto))]
+[JsonSerializable(typeof(ScreenDeviceDto))]
+[JsonSerializable(typeof(IReadOnlyList<ScreenDeviceDto>))]
+[JsonSerializable(typeof(ScreenAssetDto))]
+[JsonSerializable(typeof(IReadOnlyList<ScreenAssetDto>))]
+[JsonSerializable(typeof(ScreenAssetUploadDto))]
+[JsonSerializable(typeof(ScreenAssignmentDto))]
+[JsonSerializable(typeof(ScreenSceneDto))]
+[JsonSerializable(typeof(ScreenPreviewDto))]
+[JsonSerializable(typeof(PcTelemetryDto))]
+[JsonSerializable(typeof(ScreenRestartDto))]
+[JsonSerializable(typeof(ScreenDeviceSettingsDto))]
+[JsonSerializable(typeof(ScreenDeviceSettingsUpdateDto))]
+[JsonSerializable(typeof(ScenePackageUploadDto))]
+[JsonSerializable(typeof(ScenePackageInfoDto))]
+[JsonSerializable(typeof(IReadOnlyList<ScenePackageInfoDto>))]
+[JsonSerializable(typeof(ScenePackageRoleDto))]
+[JsonSerializable(typeof(ScenePackageDetailsDto))]
+[JsonSerializable(typeof(ScenePackageBindingDto))]
+[JsonSerializable(typeof(ScenePackageBindingsDto))]
+[JsonSerializable(typeof(ScenePackageBindingStateDto))]
+[JsonSerializable(typeof(ScenePackageApplyDto))]
+[JsonSerializable(typeof(ScenePackageRefDto))]
+[JsonSerializable(typeof(int))]
+[JsonSerializable(typeof(string))]
+[JsonSerializable(typeof(bool))]
+public sealed partial class ContractsJsonContext : JsonSerializerContext
+{
+}
+
+public static class PipeNames
+{
+    public const string Default = "UnifiedRgb";
+}

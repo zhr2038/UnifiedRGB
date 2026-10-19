@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <UseWPF>true</UseWPF>
+    <!-- NotifyIcon only; WinForms namespaces are not imported globally to avoid clashes with WPF types. -->
+    <UseWindowsForms>true</UseWindowsForms>
+    <AssemblyName>UnifiedRgb.App</AssemblyName>
+    <!-- WPF data binding requires real cultures (XmlLanguage.GetSpecificCulture); the solution-wide
+         InvariantGlobalization crashes the GUI with "Cannot find non-neutral culture related to 'en-us'". -->
+    <InvariantGlobalization>false</InvariantGlobalization>
+  </PropertyGroup>
+  <ItemGroup>
+    <Using Remove="System.Windows.Forms" />
+    <Using Remove="System.Drawing" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../UnifiedRgb.Contracts/UnifiedRgb.Contracts.csproj" />
+    <ProjectReference Include="../UnifiedRgb.Core/UnifiedRgb.Core.csproj" />
+    <PackageReference Include="StreamJsonRpc" />
+    <PackageReference Include="Serilog" />
+    <PackageReference Include="Serilog.Sinks.File" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="UnifiedRgb.Host.Tests" />
+  </ItemGroup>
+  <ItemGroup>
+    <Content Include="../../design/SCENE-PACKAGE-DEVELOPER-GUIDE.zh-CN.md" Link="Docs/ScenePackages/场景包开发规范.md" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="../../tools/scene-packages/pack_scene.py" Link="Docs/ScenePackages/pack_scene.py" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="../../assets/scenes/examples/aurora-starter-v1.zip" Link="Docs/ScenePackages/aurora-starter-v1.zip" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="../../assets/scenes/examples/aurora-starter/**/*" Link="Docs/ScenePackages/aurora-starter/%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

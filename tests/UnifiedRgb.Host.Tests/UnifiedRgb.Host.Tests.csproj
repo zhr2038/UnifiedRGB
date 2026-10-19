@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <!-- the App (WPF + NotifyIcon) view models and helpers are tested headless -->
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <!-- These tests exercise actual WPF bindings, matching App's runtime culture support. -->
+    <InvariantGlobalization>false</InvariantGlobalization>
+  </PropertyGroup>
+  <ItemGroup>
+    <Using Remove="System.Windows.Forms" />
+    <Using Remove="System.Drawing" />
+    <Using Include="System.IO" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/UnifiedRgb.Host/UnifiedRgb.Host.csproj" />
+    <ProjectReference Include="../../src/UnifiedRgb.Contracts/UnifiedRgb.Contracts.csproj" />
+    <ProjectReference Include="../../src/UnifiedRgb.Cli/UnifiedRgb.Cli.csproj" />
+    <ProjectReference Include="../../src/UnifiedRgb.App/UnifiedRgb.App.csproj" />
+    <ProjectReference Include="../../src/UnifiedRgb.Devices.Virtual/UnifiedRgb.Devices.Virtual.csproj" />
+  </ItemGroup>
+</Project>

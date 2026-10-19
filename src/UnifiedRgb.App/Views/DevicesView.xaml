@@ -1,0 +1,112 @@
+<UserControl x:Class="UnifiedRgb.App.Views.DevicesView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <UserControl.Resources><ResourceDictionary><ResourceDictionary.MergedDictionaries><ResourceDictionary Source="/UnifiedRgb.App;component/Themes/StudioTheme.xaml"/></ResourceDictionary.MergedDictionaries>
+        <BooleanToVisibilityConverter x:Key="Visible" />
+    </ResourceDictionary></UserControl.Resources>
+    <DockPanel Margin="8">
+        <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,8">
+            <Button Content="重新发现" Command="{Binding RescanCommand}" Padding="12,2" />
+            <Button Content="重新同步联力" Command="{Binding ResyncLianLiCommand}" IsEnabled="{Binding HasLianLi}" Padding="12,2" Margin="8,0,0,0"
+                    ToolTip="Re-upload the current Lian Li loops with a fresh start, re-aligning fans with the other devices." />
+            <Button Content="保存为开机灯效" Command="{Binding SaveToFansCommand}" IsEnabled="{Binding HasLianLi}" Padding="12,2" Margin="8,0,0,0"
+                    ToolTip="Write the current lighting into the fans' flash (shown at power-on). At most once per minute." />
+            <TextBlock Text="{Binding LianLiMessage}" Margin="8,0,0,0" VerticalAlignment="Center" />
+        </StackPanel>
+        <GroupBox DockPanel.Dock="Bottom" Header="设备接管 · 仅停止对应灯控服务">
+            <ItemsControl ItemsSource="{Binding Takeover}">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <StackPanel Orientation="Horizontal" Margin="4">
+                            <TextBlock Text="{Binding ChineseName}" Width="150" VerticalAlignment="Center"/><TextBlock Text="{Binding StateText}" Width="120" VerticalAlignment="Center" Foreground="{StaticResource MutedBrush}"/><Button Content="开启接管" Command="{Binding DataContext.EnableTakeoverCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}" CommandParameter="{Binding}" Padding="12,6"/><Button Content="关闭接管" Command="{Binding DataContext.DisableTakeoverCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}" CommandParameter="{Binding}" Padding="12,6" Margin="8,0,12,0"/>
+                            <TextBlock Text="{Binding Message}" TextWrapping="Wrap" />
+                        </StackPanel>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+        </GroupBox>
+        <Expander DockPanel.Dock="Bottom" Header="物理安装与校准" Margin="0,6,0,6">
+            <!-- Scroll and clip: expanded rows (Calibrate ring, Per-fan overrides) must never spill under the bottom-docked Takeover box. -->
+            <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" MaxHeight="360">
+            <ItemsControl ItemsSource="{Binding Mountings}">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <StackPanel Margin="4,4,4,8">
+                            <TextBlock Text="{Binding Header}" FontWeight="SemiBold" />
+                            <TextBlock Text="从发光面观察，顺时针旋转；0 号灯以连接端为参考。" Foreground="{StaticResource MutedBrush}" />
+                            <WrapPanel Margin="0,4,0,0">
+                                <TextBlock Text="旋转" Width="70" VerticalAlignment="Center" />
+                                <ComboBox ItemsSource="{Binding Rotations}" SelectedItem="{Binding RotationDegrees}" Width="70" ItemStringFormat="{}{0}°" />
+                                <CheckBox Content="单体镜像" IsChecked="{Binding Reverse}" Margin="12,0,0,0" VerticalAlignment="Center"
+                                          ToolTip="Flips the LED order inside every fan (fan-local mirror)." />
+                                <CheckBox Content="整链风扇倒序" IsChecked="{Binding ReverseChain}" Margin="12,0,0,0" VerticalAlignment="Center"
+                                          ToolTip="Group (Quick/Sync) effects run from the last fan to the first on this chain (L-Connect group direction). Separate from the per-fan mirror; does not change single-device effects." />
+                                <Button Content="应用" Command="{Binding ApplyCommand}" Padding="12,2" Margin="12,0,0,0" />
+                                <Button Content="重置" Command="{Binding ResetCommand}" Padding="12,2" Margin="6,0,0,0" />
+                                <TextBlock Text="{Binding Message}" Margin="8,0,0,0" VerticalAlignment="Center" />
+                            </WrapPanel>
+                            <StackPanel Orientation="Horizontal" Margin="0,4,0,0" Visibility="{Binding IsRing, Converter={StaticResource Visible}}">
+                                <CheckBox Content="冷头按高度填充" IsChecked="{Binding FaceOnFill}" VerticalAlignment="Center"
+                                          ToolTip="Group effects that travel (Runway, Meteor, Stacking, …) fill the block from the bottom up instead of running around the ring. Rotational effects (Rainbow, Taichi) stay a ring. Use Calibrate ring first." />
+                                <TextBlock Text="{Binding RingOffsetLeds, StringFormat=Ring offset {0:+0;-0;0} LED}" Margin="12,0,0,0" VerticalAlignment="Center" Foreground="{StaticResource MutedBrush}" />
+                                <TextBlock Text="（最低点位于两灯之间）" Margin="6,0,0,0" VerticalAlignment="Center" Foreground="{StaticResource MutedBrush}"
+                                           Visibility="{Binding HalfStep, Converter={StaticResource Visible}}" />
+                            </StackPanel>
+                            <Expander Header="冷头灯环校准" Margin="0,4,0,0"
+                                      Visibility="{Binding IsRing, Converter={StaticResource Visible}}">
+                                <StackPanel Margin="4">
+                                    <Button Content="开始校准" Command="{Binding CalibrateCommand}" Padding="12,2" HorizontalAlignment="Left" />
+                                    <TextBlock Text="{Binding CalibrationContext}" Foreground="{StaticResource MutedBrush}" Margin="0,4,0,0" />
+                                    <StackPanel Visibility="{Binding IsCalibrating, Converter={StaticResource Visible}}" Margin="0,4,0,0">
+                                        <TextBlock Text="{Binding CalibrationText}" TextWrapping="Wrap" />
+                                        <WrapPanel Margin="0,4,0,0">
+                                            <Button Content="◀" Command="{Binding OffsetLeftCommand}" Width="32" ToolTip="One LED anticlockwise" />
+                                            <Button Content="▶" Command="{Binding OffsetRightCommand}" Width="32" Margin="4,0,0,0" ToolTip="One LED clockwise" />
+                                            <CheckBox Content="最低点位于两灯之间" IsChecked="{Binding HalfStep}" Margin="12,0,0,0" VerticalAlignment="Center" />
+                                            <Button Content="位置标记" Command="{Binding MarkerCommand}" Padding="12,2" Margin="12,0,0,0" />
+                                            <Button Content="检查填充块" Command="{Binding WedgeCommand}" Padding="12,2" Margin="6,0,0,0" />
+                                            <Button Content="应用" Command="{Binding ApplyCalibrationCommand}" Padding="12,2" Margin="12,0,0,0" />
+                                            <Button Content="取消" Command="{Binding CancelCalibrationCommand}" Padding="12,2" Margin="6,0,0,0" />
+                                        </WrapPanel>
+                                    </StackPanel>
+                                </StackPanel>
+                            </Expander>
+                            <Expander Header="逐风扇覆盖" Margin="0,4,0,0">
+                                <ItemsControl ItemsSource="{Binding Fans}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
+                                                <CheckBox Content="{Binding Label}" IsChecked="{Binding Override}" Width="70" VerticalAlignment="Center" />
+                                                <ComboBox ItemsSource="{Binding DataContext.Rotations, RelativeSource={RelativeSource AncestorType=Expander}}"
+                                                          SelectedItem="{Binding RotationDegrees}" Width="70" ItemStringFormat="{}{0}°" IsEnabled="{Binding Override}" />
+                                                <CheckBox Content="镜像" IsChecked="{Binding Reverse}" Margin="8,0,0,0" IsEnabled="{Binding Override}" VerticalAlignment="Center" />
+                                            </StackPanel>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </Expander>
+                            <TextBlock Text="{Binding Current}" Foreground="{StaticResource MutedBrush}" Margin="0,2,0,0" />
+                            <TextBlock Text="{Binding Note}" Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" />
+                        </StackPanel>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+            </ScrollViewer>
+        </Expander>
+        <ListView ItemsSource="{Binding VisibleControllers}">
+            <ListView.View>
+                <GridView>
+                    <GridViewColumn Header="设备" DisplayMemberBinding="{Binding ChineseName}" Width="235" />
+                    <GridViewColumn Header="厂商" DisplayMemberBinding="{Binding Vendor}" Width="90" />
+                    <GridViewColumn Header="状态" DisplayMemberBinding="{Binding ChineseState}" Width="80" />
+                    <GridViewColumn Header="分区" DisplayMemberBinding="{Binding ChineseZones}" Width="210" />
+                    <GridViewColumn Header="说明" DisplayMemberBinding="{Binding ChineseHint}" Width="360" />
+                </GridView>
+            </ListView.View>
+        </ListView>
+    </DockPanel>
+</UserControl>
+
+
+
+

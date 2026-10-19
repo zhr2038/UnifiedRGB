@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="../UnifiedRgb.Devices.Abstractions/UnifiedRgb.Devices.Abstractions.csproj" />
+    <ProjectReference Include="../UnifiedRgb.Transports.Win/UnifiedRgb.Transports.Win.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <Content Include="openrgb-headless.json" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="../../tools/openrgb/SHA256SUMS" Link="tools/openrgb/SHA256SUMS" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

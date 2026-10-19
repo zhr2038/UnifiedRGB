@@ -1,0 +1,1916 @@
+{
+ "version": 1,
+ "note": "Mode order is provisional until verified against L-Connect (M5).",
+ "families": [
+  {
+   "family": "P28",
+   "hardware": "Strimer Plus V2 (霓彩线)",
+   "layoutHint": "Matrix",
+   "modes": [
+    {
+     "index": 1,
+     "effect": "StaticColor",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 2,
+     "effect": "Rainbow",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 3,
+     "effect": "RainbowMorph",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 4,
+     "effect": "Breathing",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 5,
+     "effect": "Runway",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 6,
+     "effect": "Meteor",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 7,
+     "effect": "ColorCycle",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 8,
+     "effect": "CoverCycle",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 9,
+     "effect": "Wave",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 10,
+     "effect": "MeteorShower",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 11,
+     "effect": "Twinkle",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 12,
+     "effect": "Taichi",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 13,
+     "effect": "MopUp",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 14,
+     "effect": "Lottery",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 15,
+     "effect": "Warning",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 16,
+     "effect": "Mixing",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 17,
+     "effect": "Tide",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 18,
+     "effect": "Scan",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 19,
+     "effect": "DoubleMeteor",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 20,
+     "effect": "MeteorContest",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 21,
+     "effect": "MeteorMix",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 22,
+     "effect": "ReturnArc",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 23,
+     "effect": "DoubleArc",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 24,
+     "effect": "HeartBeat",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 25,
+     "effect": "HeartBeatRunway",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 26,
+     "effect": "Disco",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 27,
+     "effect": "ElectricCurrent",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 28,
+     "effect": "GradientRibbon",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 29,
+     "effect": "Drumming",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 30,
+     "effect": "CandyBox",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 31,
+     "effect": "Burst",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 32,
+     "effect": "Ripple",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 33,
+     "effect": "Stacking",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 34,
+     "effect": "Echo",
+     "speed": 0.5,
+     "direction": "Forward"
+    }
+   ]
+  },
+  {
+   "family": "HS2",
+   "hardware": "HydroShift II AIO",
+   "layoutHint": "Ring",
+   "modes": [
+    {
+     "index": 1,
+     "effect": "Rainbow",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 2,
+     "effect": "RainbowMorph",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 3,
+     "effect": "StaticColor",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 4,
+     "effect": "Breathing",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 5,
+     "effect": "Meteor",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 6,
+     "effect": "Wave",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 7,
+     "effect": "MeteorShower",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 8,
+     "effect": "Disco",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 9,
+     "effect": "Warning",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 10,
+     "effect": "Tide",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 11,
+     "effect": "Burst",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 12,
+     "effect": "Ripple",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 13,
+     "effect": "Runway",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 14,
+     "effect": "Stacking",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 15,
+     "effect": "Twinkle",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 16,
+     "effect": "ColorCycle",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 17,
+     "effect": "CoverCycle",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 18,
+     "effect": "Echo",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 19,
+     "effect": "HeartBeat",
+     "speed": 0.5,
+     "direction": "Forward"
+    }
+   ]
+  },
+  {
+   "family": "INFV3",
+   "hardware": "UNI FAN SL-INF V3",
+   "layoutHint": "Ring",
+   "modes": [
+    {
+     "index": 1,
+     "effect": "StaticColor",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 2,
+     "effect": "Rainbow",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 3,
+     "effect": "RainbowMorph",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 4,
+     "effect": "Breathing",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 5,
+     "effect": "Runway",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 6,
+     "effect": "Meteor",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 7,
+     "effect": "ColorCycle",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 8,
+     "effect": "CoverCycle",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 9,
+     "effect": "Wave",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 10,
+     "effect": "MeteorShower",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 11,
+     "effect": "Twinkle",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 12,
+     "effect": "Taichi",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 13,
+     "effect": "MopUp",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 14,
+     "effect": "Lottery",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 15,
+     "effect": "Warning",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 16,
+     "effect": "Mixing",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 17,
+     "effect": "Tide",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 18,
+     "effect": "Scan",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 19,
+     "effect": "DoubleMeteor",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 20,
+     "effect": "MeteorContest",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 21,
+     "effect": "MeteorMix",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 22,
+     "effect": "ReturnArc",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 23,
+     "effect": "DoubleArc",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 24,
+     "effect": "HeartBeat",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 25,
+     "effect": "HeartBeatRunway",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 26,
+     "effect": "Disco",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 27,
+     "effect": "ElectricCurrent",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 28,
+     "effect": "GradientRibbon",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 29,
+     "effect": "Drumming",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 30,
+     "effect": "CandyBox",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 31,
+     "effect": "Burst",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 32,
+     "effect": "Ripple",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 33,
+     "effect": "Stacking",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 34,
+     "effect": "Echo",
+     "speed": 0.5,
+     "direction": "Forward"
+    }
+   ]
+  },
+  {
+   "family": "SLv4",
+   "hardware": "UNI FAN SL v4",
+   "layoutHint": "Ring",
+   "modes": [
+    {
+     "index": 1,
+     "effect": "StaticColor",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 2,
+     "effect": "Rainbow",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 3,
+     "effect": "RainbowMorph",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 4,
+     "effect": "Breathing",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 5,
+     "effect": "Runway",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 6,
+     "effect": "Meteor",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 7,
+     "effect": "ColorCycle",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 8,
+     "effect": "CoverCycle",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 9,
+     "effect": "Wave",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 10,
+     "effect": "MeteorShower",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 11,
+     "effect": "Twinkle",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 12,
+     "effect": "Taichi",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 13,
+     "effect": "MopUp",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 14,
+     "effect": "Lottery",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 15,
+     "effect": "Warning",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 16,
+     "effect": "Mixing",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 17,
+     "effect": "Tide",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 18,
+     "effect": "Scan",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 19,
+     "effect": "DoubleMeteor",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 20,
+     "effect": "MeteorContest",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 21,
+     "effect": "MeteorMix",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 22,
+     "effect": "ReturnArc",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 23,
+     "effect": "DoubleArc",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 24,
+     "effect": "HeartBeat",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 25,
+     "effect": "HeartBeatRunway",
+     "speed": 0.5,
+     "direction": "Forward"
+    }
+   ]
+  },
+  {
+   "family": "CL",
+   "hardware": "UNI FAN CL",
+   "layoutHint": "Ring",
+   "modes": [
+    {
+     "index": 1,
+     "effect": "StaticColor",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 2,
+     "effect": "Rainbow",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 3,
+     "effect": "RainbowMorph",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 4,
+     "effect": "Breathing",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 5,
+     "effect": "Runway",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 6,
+     "effect": "Meteor",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 7,
+     "effect": "ColorCycle",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 8,
+     "effect": "CoverCycle",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 9,
+     "effect": "Wave",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 10,
+     "effect": "MeteorShower",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 11,
+     "effect": "Twinkle",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 12,
+     "effect": "Taichi",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 13,
+     "effect": "MopUp",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 14,
+     "effect": "Lottery",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 15,
+     "effect": "Warning",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 16,
+     "effect": "Mixing",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 17,
+     "effect": "Tide",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 18,
+     "effect": "Scan",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 19,
+     "effect": "DoubleMeteor",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 20,
+     "effect": "MeteorContest",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 21,
+     "effect": "MeteorMix",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 22,
+     "effect": "ReturnArc",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 23,
+     "effect": "DoubleArc",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 24,
+     "effect": "HeartBeat",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 25,
+     "effect": "HeartBeatRunway",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 26,
+     "effect": "Disco",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 27,
+     "effect": "ElectricCurrent",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 28,
+     "effect": "GradientRibbon",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 29,
+     "effect": "Drumming",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 30,
+     "effect": "CandyBox",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 31,
+     "effect": "Burst",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 32,
+     "effect": "Ripple",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 33,
+     "effect": "Stacking",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 34,
+     "effect": "Echo",
+     "speed": 0.5,
+     "direction": "Forward"
+    }
+   ]
+  },
+  {
+   "family": "H2",
+   "hardware": "H2 waterblock (dev type 10/11)",
+   "layoutHint": "Ring",
+   "modes": [
+    {
+     "index": 1,
+     "effect": "Rainbow",
+     "speed": 0.5,
+     "direction": "Forward",
+     "vendorName": "Rainbow",
+     "vendorSelected": true,
+     "vendorMode": 1,
+     "vendorIntervalBaseMs": 20,
+     "vendorFrames": [
+      24
+     ]
+    },
+    {
+     "index": 2,
+     "effect": "RainbowMorph",
+     "speed": 0.5,
+     "direction": "Forward",
+     "vendorName": "RainbowMorph",
+     "vendorSelected": true,
+     "vendorMode": 2,
+     "vendorIntervalBaseMs": 11,
+     "vendorFrames": [
+      127
+     ]
+    },
+    {
+     "index": 3,
+     "effect": "StaticColor",
+     "speed": 0.5,
+     "direction": "Forward",
+     "vendorName": "StaticColor",
+     "vendorSelected": true,
+     "vendorMode": 3,
+     "vendorIntervalBaseMs": 20,
+     "vendorFrames": [
+      30
+     ]
+    },
+    {
+     "index": 4,
+     "effect": "Breathing",
+     "speed": 0.5,
+     "direction": "Forward",
+     "vendorName": "Breathing",
+     "vendorSelected": true,
+     "vendorMode": 4,
+     "vendorIntervalBaseMs": 11,
+     "vendorFrames": [
+      170
+     ]
+    },
+    {
+     "index": 5,
+     "effect": "Runway",
+     "speed": 0.5,
+     "direction": "Forward",
+     "vendorName": "Runway",
+     "vendorSelected": true,
+     "vendorMode": 5,
+     "vendorIntervalBaseMs": 20,
+     "vendorFrames": [
+      54
+     ]
+    },
+    {
+     "index": 6,
+     "effect": "Meteor",
+     "speed": 0.5,
+     "direction": "Forward",
+     "vendorName": "Meteor",
+     "vendorSelected": true,
+     "vendorMode": 6,
+     "vendorIntervalBaseMs": 20,
+     "vendorFrames": [
+      60
+     ]
+    },
+    {
+     "index": 7,
+     "effect": "Taichi",
+     "speed": 0.5,
+     "direction": "Forward",
+     "vendorName": "Taichi",
+     "vendorSelected": true,
+     "vendorMode": 7,
+     "vendorIntervalBaseMs": 20,
+     "vendorFrames": [
+      24
+     ]
+    },
+    {
+     "index": 8,
+     "effect": "Twinkle",
+     "speed": 0.5,
+     "direction": "Forward",
+     "vendorName": "Twinkle",
+     "vendorSelected": true,
+     "vendorMode": 8,
+     "vendorIntervalBaseMs": 20,
+     "vendorFrames": [
+      200
+     ]
+    },
+    {
+     "index": 9,
+     "effect": "Breathing",
+     "speed": 0.5,
+     "direction": "Forward",
+     "vendorName": "Voice",
+     "vendorSelected": false,
+     "vendorMode": 10,
+     "vendorIntervalBaseMs": 20
+    },
+    {
+     "index": 10,
+     "effect": "Tide",
+     "speed": 0.5,
+     "direction": "Forward",
+     "vendorName": "Pump",
+     "vendorSelected": false,
+     "vendorMode": 11,
+     "vendorIntervalBaseMs": 20,
+     "vendorFrames": [
+      20
+     ]
+    },
+    {
+     "index": 11,
+     "effect": "Burst",
+     "speed": 0.5,
+     "direction": "Forward",
+     "vendorName": "Bounce",
+     "vendorSelected": false,
+     "vendorMode": 12,
+     "vendorIntervalBaseMs": 20,
+     "vendorFrames": [
+      80
+     ]
+    }
+   ]
+  },
+  {
+   "family": "INF",
+   "hardware": "UNI FAN SL-INF (V1)",
+   "layoutHint": "Ring",
+   "modes": [
+    {
+     "index": 1,
+     "effect": "StaticColor",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 2,
+     "effect": "Rainbow",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 3,
+     "effect": "RainbowMorph",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 4,
+     "effect": "Breathing",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 5,
+     "effect": "Runway",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 6,
+     "effect": "Meteor",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 7,
+     "effect": "ColorCycle",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 8,
+     "effect": "CoverCycle",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 9,
+     "effect": "Wave",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 10,
+     "effect": "MeteorShower",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 11,
+     "effect": "Twinkle",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 12,
+     "effect": "Taichi",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 13,
+     "effect": "MopUp",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 14,
+     "effect": "Lottery",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 15,
+     "effect": "Warning",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 16,
+     "effect": "Mixing",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 17,
+     "effect": "Tide",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 18,
+     "effect": "Scan",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 19,
+     "effect": "DoubleMeteor",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 20,
+     "effect": "MeteorContest",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 21,
+     "effect": "MeteorMix",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 22,
+     "effect": "ReturnArc",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 23,
+     "effect": "DoubleArc",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 24,
+     "effect": "HeartBeat",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 25,
+     "effect": "HeartBeatRunway",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 26,
+     "effect": "Disco",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 27,
+     "effect": "ElectricCurrent",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 28,
+     "effect": "GradientRibbon",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 29,
+     "effect": "Drumming",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 30,
+     "effect": "CandyBox",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 31,
+     "effect": "Burst",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 32,
+     "effect": "Ripple",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 33,
+     "effect": "Stacking",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 34,
+     "effect": "Echo",
+     "speed": 0.5,
+     "direction": "Forward"
+    }
+   ]
+  },
+  {
+   "family": "L88",
+   "hardware": "8.8-inch LCD side screen lighting",
+   "layoutHint": "Linear",
+   "modes": [
+    {
+     "index": 1,
+     "effect": "Rainbow",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 2,
+     "effect": "RainbowMorph",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 3,
+     "effect": "StaticColor",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 4,
+     "effect": "Breathing",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 5,
+     "effect": "Meteor",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 6,
+     "effect": "Wave",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 7,
+     "effect": "MeteorShower",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 8,
+     "effect": "Disco",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 9,
+     "effect": "Warning",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 10,
+     "effect": "Tide",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 11,
+     "effect": "Burst",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 12,
+     "effect": "Ripple",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 13,
+     "effect": "Runway",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 14,
+     "effect": "Stacking",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 15,
+     "effect": "Twinkle",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 16,
+     "effect": "ColorCycle",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 17,
+     "effect": "CoverCycle",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 18,
+     "effect": "Echo",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 19,
+     "effect": "HeartBeat",
+     "speed": 0.5,
+     "direction": "Forward"
+    }
+   ]
+  },
+  {
+   "family": "SLv3",
+   "hardware": "UNI FAN SL v3",
+   "layoutHint": "Ring",
+   "modes": [
+    {
+     "index": 1,
+     "effect": "StaticColor",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 2,
+     "effect": "Rainbow",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 3,
+     "effect": "RainbowMorph",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 4,
+     "effect": "Breathing",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 5,
+     "effect": "Runway",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 6,
+     "effect": "Meteor",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 7,
+     "effect": "ColorCycle",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 8,
+     "effect": "CoverCycle",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 9,
+     "effect": "Wave",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 10,
+     "effect": "MeteorShower",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 11,
+     "effect": "Twinkle",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 12,
+     "effect": "Taichi",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 13,
+     "effect": "MopUp",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 14,
+     "effect": "Lottery",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 15,
+     "effect": "Warning",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 16,
+     "effect": "Mixing",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 17,
+     "effect": "Tide",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 18,
+     "effect": "Scan",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 19,
+     "effect": "DoubleMeteor",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 20,
+     "effect": "MeteorContest",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 21,
+     "effect": "MeteorMix",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 22,
+     "effect": "ReturnArc",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 23,
+     "effect": "DoubleArc",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 24,
+     "effect": "HeartBeat",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 25,
+     "effect": "HeartBeatRunway",
+     "speed": 0.5,
+     "direction": "Forward"
+    }
+   ]
+  },
+  {
+   "family": "Strimer",
+   "hardware": "Strimer",
+   "layoutHint": "Matrix",
+   "modes": [
+    {
+     "index": 1,
+     "effect": "Rainbow",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 2,
+     "effect": "RainbowMorph",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 3,
+     "effect": "StaticColor",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 4,
+     "effect": "Breathing",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 5,
+     "effect": "Runway",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 6,
+     "effect": "Meteor",
+     "speed": 0.5,
+     "direction": "Forward"
+    }
+   ]
+  },
+  {
+   "family": "V150",
+   "hardware": "Vector V150 case",
+   "layoutHint": "Linear",
+   "modes": [
+    {
+     "index": 1,
+     "effect": "StaticColor",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 2,
+     "effect": "Rainbow",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 3,
+     "effect": "RainbowMorph",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 4,
+     "effect": "Breathing",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 5,
+     "effect": "Runway",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 6,
+     "effect": "Meteor",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 7,
+     "effect": "ColorCycle",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 8,
+     "effect": "CoverCycle",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 9,
+     "effect": "Wave",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 10,
+     "effect": "MeteorShower",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 11,
+     "effect": "Twinkle",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 12,
+     "effect": "Taichi",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 13,
+     "effect": "MopUp",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 14,
+     "effect": "Lottery",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 15,
+     "effect": "Warning",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 16,
+     "effect": "Mixing",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 17,
+     "effect": "Tide",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 18,
+     "effect": "Scan",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 19,
+     "effect": "DoubleMeteor",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 20,
+     "effect": "MeteorContest",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 21,
+     "effect": "MeteorMix",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 22,
+     "effect": "ReturnArc",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 23,
+     "effect": "DoubleArc",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 24,
+     "effect": "HeartBeat",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 25,
+     "effect": "HeartBeatRunway",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 26,
+     "effect": "Disco",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 27,
+     "effect": "ElectricCurrent",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 28,
+     "effect": "GradientRibbon",
+     "speed": 0.5,
+     "direction": "Forward"
+    },
+    {
+     "index": 29,
+     "effect": "Drumming",
+     "speed": 0.5,
+     "direction": "Forward"
+    }
+   ]
+  },
+  {
+   "family": "TL",
+   "hardware": "UNI FAN TL (RecType 28/51)",
+   "layoutHint": "Matrix",
+   "modes": [
+    {
+     "index": 1,
+     "effect": "Rainbow",
+     "speed": 0.5,
+     "direction": "Forward",
+     "vendorName": "Rainbow",
+     "vendorSelected": true,
+     "vendorMode": 1,
+     "vendorFrames": [
+      13,
+      26,
+      39,
+      52
+     ],
+     "vendorIntervalBaseMs": 11
+    },
+    {
+     "index": 2,
+     "effect": "RainbowMorph",
+     "speed": 0.5,
+     "direction": "Forward",
+     "vendorName": "RainbowMorph",
+     "vendorSelected": true,
+     "vendorMode": 2,
+     "vendorFrames": [
+      127
+     ],
+     "vendorIntervalBaseMs": 11
+    },
+    {
+     "index": 3,
+     "effect": "StaticColor",
+     "speed": 0.5,
+     "direction": "Forward",
+     "vendorName": "StaticColor",
+     "vendorSelected": true,
+     "vendorMode": 3,
+     "vendorFrames": [
+      30
+     ],
+     "vendorIntervalBaseMs": 11
+    },
+    {
+     "index": 4,
+     "effect": "Breathing",
+     "speed": 0.5,
+     "direction": "Forward",
+     "vendorName": "Breathing",
+     "vendorSelected": true,
+     "vendorMode": 4,
+     "vendorFrames": [
+      170
+     ],
+     "vendorIntervalBaseMs": 11
+    },
+    {
+     "index": 5,
+     "effect": "Runway",
+     "speed": 0.5,
+     "direction": "Forward",
+     "vendorName": "Runway",
+     "vendorSelected": true,
+     "vendorMode": 5,
+     "vendorFrames": [
+      28,
+      58,
+      88,
+      118
+     ],
+     "vendorIntervalBaseMs": 11
+    },
+    {
+     "index": 6,
+     "effect": "Meteor",
+     "speed": 0.5,
+     "direction": "Forward",
+     "vendorName": "Meteor",
+     "vendorSelected": true,
+     "vendorMode": 6,
+     "vendorFrames": [
+      56,
+      116,
+      176,
+      236
+     ],
+     "vendorIntervalBaseMs": 11
+    },
+    {
+     "index": 7,
+     "effect": "ColorCycle",
+     "speed": 0.5,
+     "direction": "Forward",
+     "vendorName": "ColorCycle",
+     "vendorSelected": true,
+     "vendorMode": 7,
+     "vendorFrames": [
+      13,
+      26,
+      39,
+      52
+     ],
+     "vendorIntervalBaseMs": 11
+    },
+    {
+     "index": 8,
+     "effect": "Stacking",
+     "speed": 0.5,
+     "direction": "Forward",
+     "vendorName": "Stacking",
+     "vendorSelected": true,
+     "vendorMode": 19,
+     "vendorFrames": [
+      104,
+      208,
+      312,
+      416
+     ],
+     "vendorIntervalBaseMs": 11
+    },
+    {
+     "index": 9,
+     "effect": "Twinkle",
+     "speed": 0.5,
+     "direction": "Forward",
+     "vendorName": "Twinkle",
+     "vendorSelected": true,
+     "vendorMode": 29,
+     "vendorFrames": [
+      200
+     ],
+     "vendorIntervalBaseMs": 11
+    }
+   ]
+  }
+ ]
+}

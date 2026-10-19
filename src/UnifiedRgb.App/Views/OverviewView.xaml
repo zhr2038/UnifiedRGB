@@ -1,0 +1,19 @@
+<UserControl x:Class="UnifiedRgb.App.Views.OverviewView" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:w="clr-namespace:UnifiedRgb.App.Workbench"><UserControl.Resources><ResourceDictionary><ResourceDictionary.MergedDictionaries><ResourceDictionary Source="/UnifiedRgb.App;component/Themes/StudioTheme.xaml"/></ResourceDictionary.MergedDictionaries></ResourceDictionary></UserControl.Resources>
+    <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="300"/></Grid.ColumnDefinitions>
+        <Border Background="#121820" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="10" Margin="0,0,24,0"><Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+            <Grid Margin="22,20"><TextBlock Text="机箱分区" FontWeight="SemiBold"/><TextBlock Text="安装布局示意" Style="{StaticResource Caption}" HorizontalAlignment="Right"/></Grid>
+            <w:CaseTopology Grid.Row="1" Zones="{Binding Zones}" SelectedZone="{Binding SelectedZone}" ColorHex="{Binding Draft.PrimaryColor}" Playing="{Binding PreviewPlaying}" Draft="{Binding Draft}" MinHeight="350"/>
+            <Grid Grid.Row="2" Margin="22,10,22,20"><Button Content="{Binding PreviewButton}" Command="{Binding PreviewCommand}" Style="{StaticResource QuietButton}" HorizontalAlignment="Left"/><TextBlock Text="方向示意 · 非实机回读" Style="{StaticResource Caption}" VerticalAlignment="Center" HorizontalAlignment="Right"/></Grid>
+        </Grid></Border>
+        <ScrollViewer Grid.Column="1"><StackPanel>
+            <TextBlock Text="正在编排" Style="{StaticResource Caption}"/><TextBlock Text="{Binding Draft.NameLabel}" FontSize="22" FontWeight="SemiBold" Margin="0,10,0,8" TextWrapping="Wrap"/><TextBlock Text="{Binding SceneDescription}" Style="{StaticResource Caption}"/>
+            <Border Height="1" Background="{StaticResource LineBrush}" Margin="0,24"/><TextBlock Text="{Binding PeriodTitle}" Style="{StaticResource Caption}"/><TextBlock Text="{Binding Period}" FontFamily="Consolas, Microsoft YaHei UI" FontSize="32" Margin="0,7,0,0"/><TextBlock Text="设备时钟模型 · 实际观感以机箱为准" FontSize="12" Foreground="{StaticResource MutedBrush}" Margin="0,6,0,0"/>
+            <Border Height="1" Background="{StaticResource LineBrush}" Margin="0,24"/><TextBlock Text="{Binding SelectedName}" Style="{StaticResource SectionTitle}"/><TextBlock Text="{Binding SelectedDetail}" Style="{StaticResource Caption}"/>
+            <ListBox ItemsSource="{Binding Zones}" SelectedItem="{Binding SelectedZone}" Margin="0,18,0,0" MaxHeight="300"><ListBox.ItemTemplate><DataTemplate><StackPanel><TextBlock Text="{Binding Name}" FontSize="12"/><TextBlock Text="{Binding Detail}" FontSize="12" Foreground="{StaticResource MutedBrush}" Margin="0,6,0,0"/></StackPanel></DataTemplate></ListBox.ItemTemplate></ListBox>
+            <TextBlock Text="{Binding Message}" Style="{StaticResource Caption}" Margin="0,20,0,0"/>
+        </StackPanel></ScrollViewer>
+    </Grid>
+</UserControl>
+
+
+

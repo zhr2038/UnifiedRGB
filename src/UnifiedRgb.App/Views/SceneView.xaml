@@ -1,0 +1,76 @@
+<UserControl x:Class="UnifiedRgb.App.Views.SceneView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:p="clr-namespace:UnifiedRgb.App.Preview"><UserControl.Resources><ResourceDictionary><ResourceDictionary.MergedDictionaries><ResourceDictionary Source="/UnifiedRgb.App;component/Themes/StudioTheme.xaml"/></ResourceDictionary.MergedDictionaries></ResourceDictionary></UserControl.Resources>
+    <Grid Margin="8">
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="*" />
+            <ColumnDefinition Width="340" />
+        </Grid.ColumnDefinitions>
+        <GroupBox Header="Running scene">
+            <DockPanel>
+                <Button DockPanel.Dock="Top" Content="Refresh" Command="{Binding RefreshCommand}" HorizontalAlignment="Left" Padding="12,2" Margin="0,0,0,6" />
+                <ItemsControl ItemsSource="{Binding Assignments}">
+                    <ItemsControl.Template>
+                        <ControlTemplate>
+                            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                <ItemsPresenter />
+                            </ScrollViewer>
+                        </ControlTemplate>
+                    </ItemsControl.Template>
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <Border BorderBrush="#444" BorderThickness="0,0,0,1" Padding="4">
+                                <StackPanel>
+                                    <DockPanel>
+                                        <Button DockPanel.Dock="Right" Content="Remove"
+                                                Command="{Binding DataContext.RemoveAssignmentCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                                CommandParameter="{Binding}" />
+                                        <TextBlock Text="{Binding Title}" FontWeight="Bold" />
+                                    </DockPanel>
+                                    <TextBlock Text="{Binding Targets}" TextWrapping="Wrap" />
+                                    <p:ZonePreviewControl Renderer="{Binding Preview}" Height="48" Margin="0,4,0,0" />
+                                </StackPanel>
+                            </Border>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+            </DockPanel>
+        </GroupBox>
+        <GroupBox Grid.Column="1" Header="Group (one continuous strip, in order)" Margin="8,0,0,0">
+            <StackPanel>
+                <ComboBox ItemsSource="{Binding AvailableZones}" SelectedItem="{Binding Candidate}" DisplayMemberPath="Label" />
+                <Button Content="Add zone" Command="{Binding AddToGroupCommand}" HorizontalAlignment="Left" Margin="0,4" Padding="12,2" />
+                <ListBox ItemsSource="{Binding GroupZones}" Height="160">
+                    <ListBox.ItemTemplate>
+                        <DataTemplate>
+                            <DockPanel>
+                                <Button DockPanel.Dock="Right" Content="×" Width="20"
+                                        Command="{Binding DataContext.RemoveFromGroupCommand, RelativeSource={RelativeSource AncestorType=ListBox}}" CommandParameter="{Binding}" />
+                                <Button DockPanel.Dock="Right" Content="↑" Width="20"
+                                        Command="{Binding DataContext.MoveUpCommand, RelativeSource={RelativeSource AncestorType=ListBox}}" CommandParameter="{Binding}" />
+                                <TextBlock Text="{Binding Label}" />
+                            </DockPanel>
+                        </DataTemplate>
+                    </ListBox.ItemTemplate>
+                </ListBox>
+                <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                    <TextBlock Text="Name" Width="60" VerticalAlignment="Center" />
+                    <TextBox Text="{Binding GroupName}" Width="200" />
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                    <TextBlock Text="Effect" Width="60" VerticalAlignment="Center" />
+                    <ComboBox ItemsSource="{Binding EffectIds}" SelectedItem="{Binding GroupEffect}" Width="200" />
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                    <TextBlock Text="Content" Width="60" VerticalAlignment="Center" />
+                    <ComboBox ItemsSource="{Binding Strategies}" SelectedItem="{Binding GroupStrategy}" Width="200"
+                              ToolTip="Vendor: L-Connect's own bodies where known. Program: the generator itself." />
+                </StackPanel>
+                <Button Content="Apply group" Command="{Binding ApplyGroupCommand}" HorizontalAlignment="Left" Margin="0,8,0,0" Padding="12,2" />
+            </StackPanel>
+        </GroupBox>
+    </Grid>
+</UserControl>
+
+

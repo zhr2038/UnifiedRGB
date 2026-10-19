@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>UnifiedRgb.Host</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../UnifiedRgb.Core/UnifiedRgb.Core.csproj" />
+    <ProjectReference Include="../UnifiedRgb.Contracts/UnifiedRgb.Contracts.csproj" />
+    <ProjectReference Include="../UnifiedRgb.Transports.Win/UnifiedRgb.Transports.Win.csproj" />
+    <ProjectReference Include="../UnifiedRgb.Devices.Virtual/UnifiedRgb.Devices.Virtual.csproj" />
+    <ProjectReference Include="../UnifiedRgb.Devices.LianLi/UnifiedRgb.Devices.LianLi.csproj" />
+    <ProjectReference Include="../UnifiedRgb.Devices.MsiGpu/UnifiedRgb.Devices.MsiGpu.csproj" />
+    <ProjectReference Include="../UnifiedRgb.Devices.AsusAura/UnifiedRgb.Devices.AsusAura.csproj" />
+    <ProjectReference Include="../UnifiedRgb.Devices.EneDram/UnifiedRgb.Devices.EneDram.csproj" />
+    <ProjectReference Include="../UnifiedRgb.Devices.OpenRgbSdk/UnifiedRgb.Devices.OpenRgbSdk.csproj" />
+    <ProjectReference Include="../UnifiedRgb.Screens/UnifiedRgb.Screens.csproj" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" />
+    <PackageReference Include="StreamJsonRpc" />
+    <PackageReference Include="Serilog.Extensions.Hosting" />
+    <PackageReference Include="Serilog.Settings.Configuration" />
+    <PackageReference Include="Serilog.Sinks.File" />
+    <PackageReference Include="Serilog.Sinks.Async" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="UnifiedRgb.Host.Tests" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- Screen overlays are rendered offscreen by WPF. Without this switch an interactive process with no display device (monitor
+         asleep or disconnected) renders RenderTargetBitmap fully transparent. It must be in the EXE's runtimeconfig so WPF reads
+         it before its MediaContext starts. -->
+    <RuntimeHostConfigurationOption Include="Switch.System.Windows.Media.ShouldRenderEvenWhenNoDisplayDevicesAreAvailable" Value="true" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Update="appsettings.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

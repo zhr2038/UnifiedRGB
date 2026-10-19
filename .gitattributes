@@ -1,0 +1,15 @@
+* text=auto eol=lf
+*.cs text eol=lf
+*.xaml text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.ps1 text eol=crlf
+*.sh text eol=lf
+*.bin binary
+*.rec binary
+*.zip binary
+*.png binary
+*.gif binary
+*.ico binary
+# Example scene manifests and payloads are content-addressed authoring data.
+assets/scenes/examples/** -text

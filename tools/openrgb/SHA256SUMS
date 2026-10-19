@@ -1,0 +1,4 @@
+# Pinned OpenRGB binaries for the headless MB/DRAM instance (IMPLEMENTATION_PLAN M4).
+# Format: <sha256 hex>  <file name>   — one line per file. The supervisor launches OpenRGB.exe only if listed here.
+# Intentionally empty until the owner downloads the release at [HW] bring-up and records its hash, e.g.:
+#   certutil -hashfile tools\openrgb\OpenRGB.exe SHA256

@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="../../src/UnifiedRgb.Devices.Abstractions/UnifiedRgb.Devices.Abstractions.csproj" />
+    <ProjectReference Include="../../src/UnifiedRgb.Transports.Win/UnifiedRgb.Transports.Win.csproj" />
+    <ProjectReference Include="../../src/UnifiedRgb.Devices.Virtual/UnifiedRgb.Devices.Virtual.csproj" />
+    <ProjectReference Include="../../src/UnifiedRgb.Devices.LianLi/UnifiedRgb.Devices.LianLi.csproj" />
+    <ProjectReference Include="../../src/UnifiedRgb.Devices.MsiGpu/UnifiedRgb.Devices.MsiGpu.csproj" />
+    <ProjectReference Include="../../src/UnifiedRgb.Devices.AsusAura/UnifiedRgb.Devices.AsusAura.csproj" />
+    <ProjectReference Include="../../src/UnifiedRgb.Devices.EneDram/UnifiedRgb.Devices.EneDram.csproj" />
+    <ProjectReference Include="../../src/UnifiedRgb.Devices.OpenRgbSdk/UnifiedRgb.Devices.OpenRgbSdk.csproj" />
+    <ProjectReference Include="../../src/UnifiedRgb.Core/UnifiedRgb.Core.csproj" />
+  </ItemGroup>
+</Project>

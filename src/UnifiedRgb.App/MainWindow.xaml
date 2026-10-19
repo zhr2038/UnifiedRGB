@@ -1,0 +1,57 @@
+<Window x:Class="UnifiedRgb.App.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:v="clr-namespace:UnifiedRgb.App.Views"
+        Title="光域 · 机箱控制台" Width="1460" Height="940" MinWidth="1120" MinHeight="740"
+        WindowStartupLocation="CenterScreen" WindowStyle="None" ResizeMode="CanResize" Language="zh-CN"
+        Style="{StaticResource {x:Type Window}}">
+    <WindowChrome.WindowChrome><WindowChrome CaptionHeight="42" ResizeBorderThickness="6" CornerRadius="0" GlassFrameThickness="0" UseAeroCaptionButtons="False"/></WindowChrome.WindowChrome>
+    <Border BorderBrush="{StaticResource LineBrush}" BorderThickness="1" Background="{StaticResource CanvasBrush}"><Grid>
+        <Grid.RowDefinitions><RowDefinition Height="42"/><RowDefinition Height="*"/><RowDefinition Height="34"/></Grid.RowDefinitions>
+        <Border Background="#12171F" BorderBrush="{StaticResource LineBrush}" BorderThickness="0,0,0,1">
+            <Grid><StackPanel Orientation="Horizontal" Margin="22,0,0,0" VerticalAlignment="Center">
+                <TextBlock Text="光域" FontSize="14" FontWeight="SemiBold"/><TextBlock Text="机箱控制台" Foreground="{StaticResource MutedBrush}" Margin="14,0,0,0" FontSize="12"/>
+            </StackPanel><StackPanel Orientation="Horizontal" HorizontalAlignment="Right" WindowChrome.IsHitTestVisibleInChrome="True">
+                <Button Content="—" Width="46" Style="{StaticResource QuietButton}" Click="MinimizeClick" AutomationProperties.Name="最小化"/>
+                <Button Content="□" Width="46" Style="{StaticResource QuietButton}" Click="MaximizeClick" AutomationProperties.Name="最大化或还原"/>
+                <Button Content="×" Width="46" Style="{StaticResource QuietButton}" Click="CloseClick" AutomationProperties.Name="隐藏到托盘"/>
+            </StackPanel></Grid>
+        </Border>
+        <Grid Grid.Row="1"><Grid.ColumnDefinitions><ColumnDefinition Width="190"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+            <Border BorderBrush="{StaticResource LineBrush}" BorderThickness="0,0,1,0" Background="#131820">
+                <DockPanel Margin="14,25,14,18">
+                    <StackPanel DockPanel.Dock="Top" Margin="10,0,0,32"><TextBlock Text="光域" FontSize="30" FontWeight="SemiBold"/><TextBlock Text="LIGHT STUDIO" Foreground="{StaticResource MutedBrush}" FontSize="12" Margin="1,7,0,0"/></StackPanel>
+                    <StackPanel DockPanel.Dock="Bottom" Margin="9,0,7,0"><Border Height="1" Background="{StaticResource LineBrush}" Margin="0,0,0,18"/><TextBlock Text="{Binding ConnectionText}" Foreground="{StaticResource AccentBrush}" FontSize="12" TextWrapping="Wrap"/><TextBlock Text="{Binding Studio.Health}" Style="{StaticResource Caption}" FontSize="12" Margin="0,8,0,0"/></StackPanel>
+                    <ListBox SelectedIndex="{Binding Studio.Page, Mode=TwoWay}" KeyboardNavigation.TabNavigation="Once" AutomationProperties.Name="主导航">
+                        <ListBoxItem><StackPanel Orientation="Horizontal"><TextBlock Text="◈" Width="28" FontSize="16"/><TextBlock Text="机箱总览" VerticalAlignment="Center"/></StackPanel></ListBoxItem>
+                        <ListBoxItem><StackPanel Orientation="Horizontal"><TextBlock Text="≋" Width="28" FontSize="17"/><TextBlock Text="灯效编排" VerticalAlignment="Center"/></StackPanel></ListBoxItem>
+                        <ListBoxItem><StackPanel Orientation="Horizontal"><TextBlock Text="▣" Width="28" FontSize="16"/><TextBlock Text="屏幕内容" VerticalAlignment="Center"/></StackPanel></ListBoxItem>
+                        <ListBoxItem><StackPanel Orientation="Horizontal"><TextBlock Text="⌘" Width="28" FontSize="16"/><TextBlock Text="设备与校准" VerticalAlignment="Center"/></StackPanel></ListBoxItem>
+                        <ListBoxItem><StackPanel Orientation="Horizontal"><TextBlock Text="▤" Width="28" FontSize="16"/><TextBlock Text="场景库" VerticalAlignment="Center"/></StackPanel></ListBoxItem>
+                        <ListBoxItem><StackPanel Orientation="Horizontal"><TextBlock Text="⌁" Width="28" FontSize="18"/><TextBlock Text="运行诊断" VerticalAlignment="Center"/></StackPanel></ListBoxItem>
+                        <ListBoxItem Margin="0,24,0,0"><StackPanel Orientation="Horizontal"><TextBlock Text="⚙" Width="28" FontSize="16"/><TextBlock Text="偏好设置" VerticalAlignment="Center"/></StackPanel></ListBoxItem>
+                    </ListBox>
+                </DockPanel>
+            </Border>
+            <Grid Grid.Column="1"><Grid.RowDefinitions><RowDefinition Height="104"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                <Grid Margin="30,26,28,20"><StackPanel><TextBlock Text="{Binding Studio.PageTitle}" FontSize="25" FontWeight="SemiBold"/><TextBlock Text="{Binding Studio.PageSubtitle}" Style="{StaticResource Caption}" Margin="0,8,0,0"/></StackPanel><StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+                    <Button Content="刷新" Style="{StaticResource QuietButton}" Command="{Binding RefreshCommand}"/><Button Content="全机熄灯" Command="{Binding Studio.BlackoutCommand}" Margin="8,0,0,0"/><Button Content="恢复" Style="{StaticResource QuietButton}" Command="{Binding Studio.RestoreCommand}" Margin="4,0,0,0"/>
+                </StackPanel></Grid>
+                <Grid Grid.Row="1" Margin="28,0,28,16" x:Name="PageHost">
+                    <v:OverviewView DataContext="{Binding Studio}" Visibility="{Binding DataContext.Studio.Page, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource PageVisible}, ConverterParameter=0}"/>
+                    <v:LightingStudioView DataContext="{Binding Studio}" Visibility="{Binding DataContext.Studio.Page, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource PageVisible}, ConverterParameter=1}"/>
+                    <v:ScreenWorkspaceView DataContext="{Binding Screens}" Visibility="{Binding DataContext.Studio.Page, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource PageVisible}, ConverterParameter=2}"/>
+                    <v:DevicesView DataContext="{Binding Devices}" Visibility="{Binding DataContext.Studio.Page, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource PageVisible}, ConverterParameter=3}"/>
+                    <v:ProfilesView DataContext="{Binding Profiles}" Visibility="{Binding DataContext.Studio.Page, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource PageVisible}, ConverterParameter=4}"/>
+                    <v:DiagnosticsView DataContext="{Binding Diagnostics}" Visibility="{Binding DataContext.Studio.Page, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource PageVisible}, ConverterParameter=5}"/>
+                    <v:SettingsView DataContext="{Binding Settings}" Visibility="{Binding DataContext.Studio.Page, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource PageVisible}, ConverterParameter=6}"/>
+                </Grid>
+                <Border Grid.Row="2" Background="#24212A" Padding="18,10" Margin="28,0,28,14"><Border.Style><Style TargetType="Border"><Setter Property="Visibility" Value="Visible"/><Style.Triggers><DataTrigger Binding="{Binding Error}" Value=""><Setter Property="Visibility" Value="Collapsed"/></DataTrigger></Style.Triggers></Style></Border.Style><DockPanel><Button Content="关闭提示" Command="{Binding DismissErrorCommand}" Style="{StaticResource QuietButton}" DockPanel.Dock="Right" Margin="16,0,0,0"/><StackPanel><TextBlock Text="上次操作未完成" Foreground="#F5BD96" FontWeight="SemiBold"/><TextBlock Text="{Binding Error}" Foreground="#F5BD96" TextWrapping="Wrap" Margin="0,5,0,0"/></StackPanel></DockPanel></Border>
+            </Grid>
+        </Grid>
+        <Border Grid.Row="2" Background="#12171F" BorderBrush="{StaticResource LineBrush}" BorderThickness="0,1,0,0" Padding="22,0"><DockPanel LastChildFill="False" VerticalAlignment="Center">
+            <TextBlock Text="{Binding Studio.Updated}" FontSize="12" Foreground="{StaticResource MutedBrush}"/><TextBlock DockPanel.Dock="Right" Text="{Binding Studio.Written}" FontSize="12" Foreground="{StaticResource MutedBrush}"/><TextBlock DockPanel.Dock="Right" Text="{Binding Studio.Clock}" FontSize="12" FontFamily="Consolas" Margin="0,0,24,0" Foreground="{StaticResource MutedBrush}"/>
+        </DockPanel></Border>
+    </Grid></Border>
+</Window>
+

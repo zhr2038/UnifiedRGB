@@ -1,0 +1,58 @@
+<UserControl x:Class="UnifiedRgb.App.Views.LightingStudioView" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:w="clr-namespace:UnifiedRgb.App.Workbench"><UserControl.Resources><ResourceDictionary><ResourceDictionary.MergedDictionaries><ResourceDictionary Source="/UnifiedRgb.App;component/Themes/StudioTheme.xaml"/></ResourceDictionary.MergedDictionaries></ResourceDictionary></UserControl.Resources>
+    <Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+        <DockPanel Margin="0,0,0,18" LastChildFill="False">
+            <ComboBox Width="240" ItemsSource="{Binding Assignments}" SelectedItem="{Binding SelectedAssignment}" DisplayMemberPath="Name" AutomationProperties.Name="当前编排"/>
+            <Button Content="＋ 新编排" Command="{Binding NewCommand}" Style="{StaticResource QuietButton}" Margin="8,0"/>
+            <Button Content="应用到机箱" Command="{Binding ApplyCommand}" Style="{StaticResource PrimaryButton}" DockPanel.Dock="Right"/>
+            <Button Content="重新读取" Command="{Binding ReadCommand}" Style="{StaticResource QuietButton}" DockPanel.Dock="Right" Margin="0,0,8,0"/>
+            <TextBlock Text="{Binding Draft.DraftState}" Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center" DockPanel.Dock="Right" Margin="0,0,18,0" FontSize="12"/>
+        </DockPanel>
+        <Grid Grid.Row="1" IsEnabled="{Binding CanEditDraft}"><Grid.ColumnDefinitions><ColumnDefinition Width="210"/><ColumnDefinition Width="*"/><ColumnDefinition Width="270"/></Grid.ColumnDefinitions>
+            <DockPanel Margin="0,0,18,0">
+                <StackPanel DockPanel.Dock="Top"><TextBlock Text="参与分区" Style="{StaticResource SectionTitle}"/><TextBlock Text="勾选分区，再添加到路径。并行组内同时变化。" Style="{StaticResource Caption}" Margin="0,0,0,10"/></StackPanel>
+                <StackPanel DockPanel.Dock="Bottom" Margin="0,12,0,0"><Button Content="添加为并行组 ＋" Command="{Binding AddParallelCommand}"/><Button Content="依次添加到路径" Command="{Binding AddSerialCommand}" Style="{StaticResource QuietButton}" Margin="0,5,0,0"/></StackPanel>
+                <ListBox ItemsSource="{Binding Zones}" SelectedItem="{Binding SelectedZone}"><ListBox.ItemTemplate><DataTemplate>
+                    <CheckBox IsChecked="{Binding IsChosen}"><StackPanel><TextBlock Text="{Binding Name}" FontSize="12" TextWrapping="Wrap"/><TextBlock Text="{Binding Detail}" Foreground="{StaticResource MutedBrush}" FontSize="12" Margin="0,5,0,0"/></StackPanel></CheckBox>
+                </DataTemplate></ListBox.ItemTemplate></ListBox>
+            </DockPanel>
+            <Grid Grid.Column="1" Margin="0,0,18,0"><Grid.RowDefinitions><RowDefinition Height="3*" MinHeight="170"/><RowDefinition Height="2*" MinHeight="170"/></Grid.RowDefinitions>
+                <Border Background="#121820" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="8"><Grid><w:CaseTopology Zones="{Binding Zones}" SelectedZone="{Binding SelectedZone}" ColorHex="{Binding Draft.PrimaryColor}" Playing="{Binding PreviewPlaying}" Draft="{Binding Draft}"/><Button Content="{Binding PreviewButton}" Command="{Binding PreviewCommand}" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="8" Style="{StaticResource QuietButton}" FontSize="12"/></Grid></Border>
+                <DockPanel Grid.Row="1" Margin="0,18,0,0">
+                    <StackPanel DockPanel.Dock="Top"><Grid><TextBlock Text="光条路径" FontSize="14" FontWeight="SemiBold"/><TextBlock Text="{Binding Draft.PathSummary}" Style="{StaticResource Caption}" HorizontalAlignment="Right" FontSize="12"/></Grid><TextBlock Text="{Binding Draft.FlowNote}" Style="{StaticResource Caption}" FontSize="12" Margin="0,7,0,10"/></StackPanel>
+                    <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="0,6,0,0"><Button Content="↑ 前移" Command="{Binding MoveUpCommand}" MinHeight="26" Padding="10,4" FontSize="12"/><Button Content="↓ 后移" Command="{Binding MoveDownCommand}" Margin="6,0" MinHeight="26" Padding="10,4" FontSize="12"/><Button Content="− 移除段" Command="{Binding RemoveStageCommand}" MinHeight="26" Padding="10,4" FontSize="12"/></StackPanel>
+                    <ListBox ItemsSource="{Binding Draft.Stages}" SelectedItem="{Binding Draft.SelectedStage}"><ListBox.ItemTemplate><DataTemplate>
+                        <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="58"/></Grid.ColumnDefinitions>
+                            <StackPanel><TextBlock Text="{Binding Names}" TextWrapping="Wrap" FontSize="12"/><ItemsControl ItemsSource="{Binding Bindings}"><ItemsControl.ItemTemplate><DataTemplate><CheckBox IsChecked="{Binding Reverse}" FontSize="12" Foreground="{StaticResource MutedBrush}"><TextBlock><Run Text="{Binding Name, Mode=OneWay}"/><Run Text=" · 反向"/></TextBlock></CheckBox></DataTemplate></ItemsControl.ItemTemplate></ItemsControl></StackPanel>
+                            <TextBox Grid.Column="1" Text="{Binding Length, UpdateSourceTrigger=LostFocus}" ToolTip="该段的源灯位长度" VerticalAlignment="Top" Margin="8,0,0,0" Padding="5,6"/>
+                        </Grid>
+                    </DataTemplate></ListBox.ItemTemplate></ListBox>
+                </DockPanel>
+            </Grid>
+            <ScrollViewer Grid.Column="2"><StackPanel DataContext="{Binding Draft}">
+                <TextBlock Text="灯效属性" Style="{StaticResource SectionTitle}"/><TextBlock Text="编排名称" Style="{StaticResource FieldLabel}" Margin="0,0,0,7"/><TextBox Text="{Binding NameLabel, UpdateSourceTrigger=PropertyChanged}"/>
+                <TextBlock Text="效果" Style="{StaticResource FieldLabel}"/><ComboBox x:Name="EffectPicker" ItemsSource="{Binding Effects}" SelectedItem="{Binding Effect}" DisplayMemberPath="Name"/>
+                <TextBlock Text="生成方式" Style="{StaticResource FieldLabel}"/><ComboBox x:Name="StrategyPicker" ItemsSource="{Binding AvailableStrategies}" SelectedItem="{Binding Strategy}" DisplayMemberPath="Name"><ComboBox.ItemContainerStyle><Style TargetType="ComboBoxItem" BasedOn="{StaticResource {x:Type ComboBoxItem}}"><Style.Triggers><MultiDataTrigger><MultiDataTrigger.Conditions><Condition Binding="{Binding Id}" Value="Vendor"/><Condition Binding="{Binding DataContext.CanUseVendor, RelativeSource={RelativeSource AncestorType=ComboBox}}" Value="False"/></MultiDataTrigger.Conditions><Setter Property="IsEnabled" Value="False"/><Setter Property="ToolTip" Value="此效果使用程序生成，以保持共享路径。"/></MultiDataTrigger></Style.Triggers></Style></ComboBox.ItemContainerStyle></ComboBox><TextBlock Text="{Binding StrategyHint}" Style="{StaticResource Caption}" Margin="0,7,0,0"/>
+                <TextBlock Text="配色" Style="{StaticResource FieldLabel}"/><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="32"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><Button Background="{Binding PrimaryColor, Converter={StaticResource HexBrush}}" Height="32" MinHeight="0" Margin="0,0,8,0" Padding="0" Click="ColorClick" IsEnabled="{Binding HasColors}" AutomationProperties.Name="选择主颜色"/><TextBox Grid.Column="1" IsEnabled="{Binding HasColors}" Text="{Binding Colors, UpdateSourceTrigger=PropertyChanged}" FontFamily="Consolas" ToolTip="#RRGGBB，多色用空格分隔；留空使用默认配色"/></Grid>
+                <TextBlock Style="{StaticResource FieldLabel}"><Run Text="速度"/><Run Text="{Binding Speed, StringFormat='  {0:0}%'}"/></TextBlock><Slider Minimum="0" Maximum="100" Value="{Binding Speed}" IsEnabled="{Binding UsesSpeed}" IsSnapToTickEnabled="{Binding SnapSpeed}" TickFrequency="25"/>
+                <TextBlock Style="{StaticResource FieldLabel}"><Run Text="亮度"/><Run Text="{Binding Brightness, StringFormat='  {0:0}%'}"/></TextBlock><Slider Minimum="0" Maximum="100" Value="{Binding Brightness}"/>
+                <CheckBox Content="反向播放效果" IsEnabled="{Binding UsesDirection}" IsChecked="{Binding Reverse}" Margin="0,15,0,0"/><CheckBox Content="使用分段空间路径" IsEnabled="{Binding CanUseSpatial}" IsChecked="{Binding UseSpatialPath}"/>
+                <Border Height="1" Background="{StaticResource LineBrush}" Margin="0,20,0,14"/><CheckBox Content="堆满后波浪回退" IsEnabled="{Binding CanReturn}" IsChecked="{Binding ReturnEnabled}"/>
+                <TextBlock Text="原厂堆积专用，沿光条原路径倒流。" Style="{StaticResource Caption}" FontSize="12" Margin="0,3,0,10"/>
+                <StackPanel IsEnabled="{Binding ReturnEnabled}"><Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions>
+                    <StackPanel Margin="0,0,8,0"><TextBlock Text="回退 / 秒" Style="{StaticResource Caption}" Margin="0,0,0,6"/><TextBox Text="{Binding ReturnSeconds}"/></StackPanel>
+                    <StackPanel Grid.Column="1"><TextBlock Text="堆满停留 / 秒" Style="{StaticResource Caption}" Margin="0,0,0,6"/><TextBox Text="{Binding HoldSeconds}"/></StackPanel>
+                </Grid><TextBlock Text="羽化宽度 / 源灯位" Style="{StaticResource FieldLabel}"/><Slider Minimum="2" Maximum="96" Value="{Binding WaveWidth}" IsSnapToTickEnabled="True" TickFrequency="1"/><TextBlock Text="波纹强度 / %" Style="{StaticResource FieldLabel}"/><Slider Minimum="0" Maximum="50" Value="{Binding WaveStrength}"/></StackPanel>
+                <TextBlock Text="修改先留在草稿中。路径预览仅示意先后关系，不代表实机亮度或帧同步。" Style="{StaticResource Caption}" FontSize="12" Margin="0,20,0,0"/>
+            </StackPanel></ScrollViewer>
+        </Grid>
+        <DockPanel Grid.Row="2" Margin="0,14,0,0"><Button Content="移除此编排" Command="{Binding RemoveAssignmentCommand}" Style="{StaticResource QuietButton}" DockPanel.Dock="Right" FontSize="12"/><TextBlock Text="{Binding Message}" Style="{StaticResource Caption}" FontSize="12"/></DockPanel>
+    </Grid>
+</UserControl>
+
+
+
+
+
+
+
+

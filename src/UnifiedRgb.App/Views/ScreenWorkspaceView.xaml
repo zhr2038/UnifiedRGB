@@ -1,0 +1,50 @@
+<UserControl x:Class="UnifiedRgb.App.Views.ScreenWorkspaceView" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"><UserControl.Resources><ResourceDictionary><ResourceDictionary.MergedDictionaries><ResourceDictionary Source="/UnifiedRgb.App;component/Themes/StudioTheme.xaml"/></ResourceDictionary.MergedDictionaries></ResourceDictionary></UserControl.Resources>
+    <Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+        <DockPanel Margin="0,0,0,18" LastChildFill="False"><Button Content="刷新屏幕" Command="{Binding RefreshCommand}" Style="{StaticResource QuietButton}"/><Button Content="导入图片 / GIF" Command="{Binding ImportCommand}" Margin="8,0" IsEnabled="{Binding Available}"/>
+            <Button Content="{Binding RestartLcdText}" Command="{Binding RestartLcdCommand}" Style="{StaticResource RecoveryButton}" IsEnabled="{Binding CanRestartLcd}" ToolTip="{Binding RestartLcdHint}" Margin="0,0,8,0" AutomationProperties.Name="重启底排风扇 LCD"/>
+            <Button Content="应用到此屏幕" Command="{Binding ApplyCommand}" Style="{StaticResource PrimaryButton}" DockPanel.Dock="Right" IsEnabled="{Binding CanChangeOutput}"/><Button Content="暂停全部屏幕" Command="{Binding StopCommand}" DockPanel.Dock="Right" Style="{StaticResource QuietButton}" Margin="0,0,12,0" IsEnabled="{Binding CanChangeOutput}"/>
+        </DockPanel>
+        <Grid Grid.Row="1"><Grid.ColumnDefinitions><ColumnDefinition Width="210"/><ColumnDefinition Width="*"/><ColumnDefinition Width="270"/></Grid.ColumnDefinitions>
+            <DockPanel Margin="0,0,20,0"><StackPanel DockPanel.Dock="Top"><TextBlock Text="已发现屏幕" Style="{StaticResource SectionTitle}"/><TextBlock Text="风扇屏的位置需实机确认，暂以独立编号显示。" Style="{StaticResource Caption}" FontSize="12" Margin="0,0,0,14"/></StackPanel>
+                <ListBox ItemsSource="{Binding Screens}" SelectedItem="{Binding Selected}"><ListBox.ItemTemplate><DataTemplate><StackPanel><TextBlock Text="{Binding Name}" FontSize="12"/><TextBlock Text="{Binding Detail}" Style="{StaticResource Caption}" FontSize="12" Margin="0,7,0,0"/></StackPanel></DataTemplate></ListBox.ItemTemplate></ListBox>
+            </DockPanel>
+            <Grid Grid.Column="1" Margin="0,0,20,0"><Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                <Border Background="#121820" CornerRadius="9" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" Padding="22"><DockPanel>
+                    <Grid DockPanel.Dock="Top" Margin="0,0,0,18"><TextBlock Text="实际编码预览" FontWeight="SemiBold"/><Button Content="生成预览" Command="{Binding PreviewCommand}" HorizontalAlignment="Right" Style="{StaticResource QuietButton}" FontSize="12" IsEnabled="{Binding Available}"/></Grid>
+                    <TextBlock DockPanel.Dock="Bottom" Text="{Binding PreviewNote}" Style="{StaticResource Caption}" FontSize="12" Margin="0,18,0,0"/>
+                    <Grid><TextBlock Text="▣" Foreground="#2C3B4C" FontSize="80" VerticalAlignment="Center" HorizontalAlignment="Center"/><Viewbox Stretch="Uniform"><Image Source="{Binding Preview}" Width="{Binding Preview.PixelWidth}" Height="{Binding Preview.PixelHeight}" Clip="{Binding PreviewClip}" RenderOptions.BitmapScalingMode="HighQuality" AutomationProperties.Name="屏幕合成预览"/></Viewbox></Grid>
+                </DockPanel></Border>
+                <StackPanel Grid.Row="1" Margin="0,22,0,0"><TextBlock Text="电脑数据" Style="{StaticResource Caption}"/><TextBlock Text="{Binding Telemetry}" FontFamily="Consolas" FontSize="12" LineHeight="23" TextWrapping="Wrap" Margin="0,10,0,0"/></StackPanel>
+            </Grid>
+            <ScrollViewer Grid.Column="2"><StackPanel>
+                <TextBlock Text="屏幕属性" Style="{StaticResource SectionTitle}"/><TextBlock Text="{Binding ScreenDetail}" Style="{StaticResource Caption}" FontSize="12"/>
+                <Border Background="#19242D" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="6" Padding="12" Margin="0,16,0,0"><StackPanel>
+                    <TextBlock Text="本机屏幕设置" FontWeight="SemiBold"/>
+                    <TextBlock Text="安装方向" Style="{StaticResource FieldLabel}"/>
+                    <ComboBox ItemsSource="{Binding Rotations}" SelectedItem="{Binding Rotation}" ItemStringFormat="{}{0}°" IsEnabled="{Binding DeviceSettingsAvailable}"/>
+                    <TextBlock Text="PNG 编码质量" Style="{StaticResource FieldLabel}"/>
+                    <ComboBox ItemsSource="{Binding EncodingQualities}" SelectedItem="{Binding EncodingQuality}" DisplayMemberPath="Name" IsEnabled="{Binding DeviceSettingsAvailable}"/>
+                    <Button Content="保存设备设置" Command="{Binding SaveDeviceSettingsCommand}" IsEnabled="{Binding CanSaveDeviceSettings}" Style="{StaticResource RecoveryButton}" HorizontalAlignment="Left"/>
+                    <TextBlock Text="{Binding DeviceSettingsNote}" Style="{StaticResource Caption}" FontSize="12" Margin="0,10,0,12"/>
+                </StackPanel></Border>
+                <Border Background="#19242D" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="6" Padding="12" Margin="0,16,0,0"><StackPanel>
+                    <TextBlock Text="屏幕恢复" FontWeight="SemiBold" FontSize="12"/>
+                    <TextBlock Text="{Binding RestartLcdHint}" Style="{StaticResource Caption}" FontSize="12" Margin="0,9,0,0"/>
+                </StackPanel></Border>
+                <TextBlock Text="背景素材" Style="{StaticResource FieldLabel}"/><ComboBox ItemsSource="{Binding Assets}" SelectedItem="{Binding Asset}" DisplayMemberPath="Name"/><TextBlock Text="{Binding Asset.Detail}" Style="{StaticResource Caption}" FontSize="12" Margin="0,6,0,0"/>
+                <Grid Margin="0,16,0,0"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions><StackPanel Margin="0,0,8,0"><TextBlock Text="底色" Style="{StaticResource Caption}" Margin="0,0,0,7"/><TextBox Text="{Binding Background, UpdateSourceTrigger=PropertyChanged}" FontFamily="Consolas"/></StackPanel><StackPanel Grid.Column="1"><TextBlock Text="信息强调色" Style="{StaticResource Caption}" Margin="0,0,0,7"/><TextBox Text="{Binding Accent, UpdateSourceTrigger=PropertyChanged}" FontFamily="Consolas"/></StackPanel></Grid>
+                <TextBlock Text="电脑信息叠加" Style="{StaticResource FieldLabel}"/><ComboBox ItemsSource="{Binding Overlays}" SelectedItem="{Binding Overlay}" DisplayMemberPath="Name"/>
+                <TextBlock Text="图片布局" Style="{StaticResource FieldLabel}"/><ComboBox ItemsSource="{Binding Fits}" SelectedItem="{Binding Fit}" DisplayMemberPath="Name"/>
+
+                <TextBlock Text="亮度 / %" Style="{StaticResource FieldLabel}"/><Slider Minimum="0" Maximum="100" Value="{Binding Brightness}"/>
+                <TextBlock Text="刷新帧率 / fps" Style="{StaticResource FieldLabel}"/><TextBox Text="{Binding Fps}"/>
+                <CheckBox Content="启用此屏幕内容" IsChecked="{Binding Enabled}" Margin="0,18,0,0"/>
+                <TextBlock Text="内容可以先保存和预览。输出未开启、被占用或未完成实机校验时，状态会如实显示。" Style="{StaticResource Caption}" FontSize="12" Margin="0,14,0,0"/>
+                <Button Content="删除所选素材" Command="{Binding RemoveAssetCommand}" Style="{StaticResource QuietButton}" FontSize="12" HorizontalAlignment="Left" Margin="0,20,0,0"/>
+            </StackPanel></ScrollViewer>
+        </Grid>
+        <TextBlock Grid.Row="2" Text="{Binding Message}" Style="{StaticResource Caption}" Margin="0,18,0,0" FontSize="12"/>
+    </Grid>
+</UserControl>
+
+
