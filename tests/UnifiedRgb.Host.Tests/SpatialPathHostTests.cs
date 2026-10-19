@@ -182,8 +182,8 @@ public sealed class SpatialPathHostTests
     [Fact]
     public async Task R3_an_offline_valid_profile_whose_controllers_are_all_absent_saves_and_applies()
     {
-        // Root's offline candidate (read only): eight real-hardware targets, none present on the virtual test host
-        var json = File.ReadAllBytes(Path.Combine(RepoRoot(), "bringup", "demo-profiles", "07-spatial-red-stacking.json"));
+        // Public offline topology fixture: all targets are absent on the virtual test host.
+        var json = File.ReadAllBytes(Path.Combine(RepoRoot(), "tests", "Fixtures", "profiles", "07-spatial-red-stacking.json"));
         var demo = JsonSerializer.Deserialize<ProfileDto>(json, ContractsJson.Configure(new JsonSerializerOptions()))!;
         var a = DtoMapper.FromDto(demo.Scene).Assignments.Single();
         a.Path!.TotalLength.Should().Be(144);
@@ -206,7 +206,7 @@ public sealed class SpatialPathHostTests
     {
         for (var d = new DirectoryInfo(AppContext.BaseDirectory); d is not null; d = d.Parent)
         {
-            if (File.Exists(Path.Combine(d.FullName, "AGENTS.md")) && Directory.Exists(Path.Combine(d.FullName, "bringup")))
+            if (File.Exists(Path.Combine(d.FullName, "src", "UnifiedRgb.sln")))
             {
                 return d.FullName;
             }

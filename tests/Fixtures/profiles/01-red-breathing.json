@@ -1,0 +1,55 @@
+{
+  "name": "Fixture 01-red-breathing",
+  "scene": {
+    "assignments": [
+      {
+        "targets": [
+          {
+            "controllerId": "lianli:rf:02-00-00-00-00-01",
+            "zoneId": 0
+          },
+          {
+            "controllerId": "lianli:rf:02-00-00-00-00-02",
+            "zoneId": 0
+          },
+          {
+            "controllerId": "lianli:rf:02-00-00-00-00-03",
+            "zoneId": 0
+          },
+          {
+            "controllerId": "lianli:rf:02-00-00-00-00-04",
+            "zoneId": 0
+          },
+          {
+            "controllerId": "test:offline-controller-5",
+            "zoneId": 0
+          },
+          {
+            "controllerId": "test:offline-controller-6",
+            "zoneId": 0
+          },
+          {
+            "controllerId": "test:offline-controller-7",
+            "zoneId": 0
+          },
+          {
+            "controllerId": "test:offline-controller-8",
+            "zoneId": 0
+          }
+        ],
+        "effectId": "Breathing",
+        "colors": [
+          "#FF0000"
+        ],
+        "speed": 0.5,
+        "brightness": 0.35,
+        "reverse": false,
+        "seed": 1,
+        "groupName": "Whole case - pending owner optical acceptance",
+        "loopPolicy": "Generic",
+        "strategy": "Program"
+      }
+    ]
+  },
+  "schemaVersion": 1
+}

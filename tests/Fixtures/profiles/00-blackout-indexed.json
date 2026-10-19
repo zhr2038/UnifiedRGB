@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 1,
+  "name": "Fixture 00-blackout-indexed",
+  "scene": {
+    "assignments": [
+      {
+        "targets": [
+          {
+            "controllerId": "lianli:rf:02-00-00-00-00-01",
+            "zoneId": 0
+          },
+          {
+            "controllerId": "lianli:rf:02-00-00-00-00-02",
+            "zoneId": 0
+          },
+          {
+            "controllerId": "lianli:rf:02-00-00-00-00-03",
+            "zoneId": 0
+          },
+          {
+            "controllerId": "lianli:rf:02-00-00-00-00-04",
+            "zoneId": 0
+          },
+          {
+            "controllerId": "test:offline-controller-5",
+            "zoneId": 0
+          },
+          {
+            "controllerId": "test:offline-controller-6",
+            "zoneId": 0
+          },
+          {
+            "controllerId": "test:offline-controller-7",
+            "zoneId": 0
+          },
+          {
+            "controllerId": "test:offline-controller-8",
+            "zoneId": 0
+          },
+          {
+            "controllerId": "test:offline-controller-5",
+            "zoneId": 1
+          }
+        ],
+        "effectId": "StaticColor",
+        "colors": [
+          "#000000"
+        ],
+        "speed": 0.5,
+        "brightness": 0.0,
+        "reverse": false,
+        "seed": 1,
+        "groupName": "All9 zones black including both GPU zones",
+        "loopPolicy": "LConnect",
+        "strategy": "Vendor"
+      }
+    ]
+  }
+}

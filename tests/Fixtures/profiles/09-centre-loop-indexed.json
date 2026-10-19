@@ -1,0 +1,161 @@
+{
+  "name": "Fixture 09-centre-loop-indexed",
+  "scene": {
+    "assignments": [
+      {
+        "targets": [
+          {
+            "controllerId": "lianli:rf:02-00-00-00-00-01",
+            "zoneId": 0
+          },
+          {
+            "controllerId": "lianli:rf:02-00-00-00-00-02",
+            "zoneId": 0
+          },
+          {
+            "controllerId": "lianli:rf:02-00-00-00-00-03",
+            "zoneId": 0
+          },
+          {
+            "controllerId": "lianli:rf:02-00-00-00-00-04",
+            "zoneId": 0
+          },
+          {
+            "controllerId": "test:offline-controller-5",
+            "zoneId": 0
+          },
+          {
+            "controllerId": "test:offline-controller-6",
+            "zoneId": 0
+          },
+          {
+            "controllerId": "test:offline-controller-7",
+            "zoneId": 0
+          },
+          {
+            "controllerId": "test:offline-controller-8",
+            "zoneId": 0
+          },
+          {
+            "controllerId": "test:offline-controller-5",
+            "zoneId": 1
+          }
+        ],
+        "effectId": "Meteor",
+        "colors": [
+          "#FF0000"
+        ],
+        "speed": 0.0,
+        "brightness": 0.5,
+        "reverse": false,
+        "seed": 1,
+        "groupName": "Centre down GPU vertical, outer frame, RAM ROG, GPU horizontal return; diamond coupled",
+        "loopPolicy": "LConnect",
+        "strategy": "Vendor",
+        "spatialPath": {
+          "stages": [
+            {
+              "length": 24,
+              "bindings": [
+                {
+                  "target": {
+                    "controllerId": "lianli:rf:02-00-00-00-00-03",
+                    "zoneId": 0
+                  },
+                  "reverse": true
+                }
+              ]
+            },
+            {
+              "length": 12,
+              "bindings": [
+                {
+                  "target": {
+                    "controllerId": "test:offline-controller-5",
+                    "zoneId": 0
+                  },
+                  "reverse": true
+                }
+              ]
+            },
+            {
+              "length": 39,
+              "bindings": [
+                {
+                  "target": {
+                    "controllerId": "lianli:rf:02-00-00-00-00-04",
+                    "zoneId": 0
+                  },
+                  "reverse": false
+                }
+              ]
+            },
+            {
+              "length": 39,
+              "bindings": [
+                {
+                  "target": {
+                    "controllerId": "lianli:rf:02-00-00-00-00-01",
+                    "zoneId": 0
+                  },
+                  "reverse": false
+                }
+              ]
+            },
+            {
+              "length": 39,
+              "bindings": [
+                {
+                  "target": {
+                    "controllerId": "lianli:rf:02-00-00-00-00-02",
+                    "zoneId": 0
+                  },
+                  "reverse": false
+                }
+              ]
+            },
+            {
+              "length": 24,
+              "bindings": [
+                {
+                  "target": {
+                    "controllerId": "test:offline-controller-7",
+                    "zoneId": 0
+                  },
+                  "reverse": true
+                },
+                {
+                  "target": {
+                    "controllerId": "test:offline-controller-8",
+                    "zoneId": 0
+                  },
+                  "reverse": true
+                },
+                {
+                  "target": {
+                    "controllerId": "test:offline-controller-6",
+                    "zoneId": 0
+                  },
+                  "reverse": true
+                }
+              ]
+            },
+            {
+              "length": 12,
+              "bindings": [
+                {
+                  "target": {
+                    "controllerId": "test:offline-controller-5",
+                    "zoneId": 1
+                  },
+                  "reverse": true
+                }
+              ]
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "schemaVersion": 1
+}

@@ -1,0 +1,55 @@
+{
+  "name": "Fixture 03-red-stacking",
+  "scene": {
+    "assignments": [
+      {
+        "targets": [
+          {
+            "controllerId": "lianli:rf:02-00-00-00-00-01",
+            "zoneId": 0
+          },
+          {
+            "controllerId": "lianli:rf:02-00-00-00-00-02",
+            "zoneId": 0
+          },
+          {
+            "controllerId": "lianli:rf:02-00-00-00-00-03",
+            "zoneId": 0
+          },
+          {
+            "controllerId": "lianli:rf:02-00-00-00-00-04",
+            "zoneId": 0
+          },
+          {
+            "controllerId": "test:offline-controller-5",
+            "zoneId": 0
+          },
+          {
+            "controllerId": "test:offline-controller-6",
+            "zoneId": 0
+          },
+          {
+            "controllerId": "test:offline-controller-7",
+            "zoneId": 0
+          },
+          {
+            "controllerId": "test:offline-controller-8",
+            "zoneId": 0
+          }
+        ],
+        "effectId": "Stacking",
+        "colors": [
+          "#FF0000"
+        ],
+        "speed": 0.25,
+        "brightness": 0.5,
+        "reverse": false,
+        "seed": 1,
+        "groupName": "Whole case - pending owner optical acceptance",
+        "loopPolicy": "LConnect",
+        "strategy": "Vendor"
+      }
+    ]
+  },
+  "schemaVersion": 1
+}

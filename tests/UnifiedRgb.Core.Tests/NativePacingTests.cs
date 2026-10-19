@@ -240,7 +240,17 @@ public sealed class NativePacingTests(ITestOutputHelper output)
         using var bus = new FrameBus();
         var c = Native("native:aura");
         var box = bus.Register(c);
-        var adapter = new PacedAdapter(new FrameBudget(20), Stopwatch.GetTimestamp, _ => { });
+        long admissionStamp = 0;
+        long BudgetClock()
+        {
+            var stamp = Stopwatch.GetTimestamp();
+            Volatile.Write(ref admissionStamp, stamp);
+            return stamp;
+        }
+
+        // Observe the clock sampled INSIDE TryBeginFrame. A second Stopwatch read after admission can be
+        // arbitrarily delayed by OS pre-emption and is not the frame budget's actual admission time.
+        var adapter = new PacedAdapter(new FrameBudget(20, BudgetClock, Stopwatch.Frequency), () => Volatile.Read(ref admissionStamp), _ => { });
         using var writer = new DeviceWriter(box, adapter);
         writer.Start();
         var until = Stopwatch.GetTimestamp() + (Stopwatch.Frequency * 3 / 2);
@@ -258,8 +268,7 @@ public sealed class NativePacingTests(ITestOutputHelper output)
         adapter.Budget.Stats().Skips.Should().Be(0, "a frame is offered only once the same budget reports it due");
         starts.Should().HaveCountGreaterThan(10);
         adapter.Refused.Should().Be(0);
-        // starts are stamped just after admission, so two stamps may sit a few ticks closer than the admitted starts
-        Gaps(starts).Should().OnlyContain(g => g >= (Stopwatch.Frequency / 20) - (Stopwatch.Frequency / 1000), "never above the ceiling");
+        Gaps(starts).Should().OnlyContain(g => g >= Stopwatch.Frequency / 20, "admissions never exceed the strict ceiling");
         adapter.Starts.Select(s => s.Seq).Should().BeInAscendingOrder().And.OnlyHaveUniqueItems("no frame is replayed");
         output.WriteLine(string.Create(CultureInfo.InvariantCulture,
             $"real time: {starts.Length} frames, {(starts.Length - 1) * (double)Stopwatch.Frequency / (starts[^1] - starts[0]):0.00} fps at a 20 fps ceiling, 0 skips"));

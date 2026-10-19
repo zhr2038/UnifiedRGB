@@ -1,0 +1,157 @@
+{
+  "name": "Fixture 12-stacking-wave-return",
+  "scene": {
+    "assignments": [
+      {
+        "targets": [
+          {
+            "controllerId": "lianli:rf:02-00-00-00-00-01",
+            "zoneId": 0
+          },
+          {
+            "controllerId": "lianli:rf:02-00-00-00-00-02",
+            "zoneId": 0
+          },
+          {
+            "controllerId": "lianli:rf:02-00-00-00-00-03",
+            "zoneId": 0
+          },
+          {
+            "controllerId": "lianli:rf:02-00-00-00-00-04",
+            "zoneId": 0
+          },
+          {
+            "controllerId": "test:offline-controller-5",
+            "zoneId": 0
+          },
+          {
+            "controllerId": "test:offline-controller-6",
+            "zoneId": 0
+          },
+          {
+            "controllerId": "test:offline-controller-7",
+            "zoneId": 0
+          },
+          {
+            "controllerId": "test:offline-controller-8",
+            "zoneId": 0
+          },
+          {
+            "controllerId": "test:offline-controller-5",
+            "zoneId": 1
+          }
+        ],
+        "effectId": "Stacking",
+        "colors": [
+          "#FF0000"
+        ],
+        "speed": 0.75,
+        "brightness": 1.0,
+        "reverse": false,
+        "seed": 1,
+        "groupName": "Accepted full stacking with H2-to-top reverse-flow wave return",
+        "loopPolicy": "LConnect",
+        "strategy": "Vendor",
+        "spatialPath": {
+          "stages": [
+            {
+              "length": 36,
+              "bindings": [
+                {
+                  "target": {
+                    "controllerId": "lianli:rf:02-00-00-00-00-02",
+                    "zoneId": 0
+                  },
+                  "reverse": true
+                }
+              ]
+            },
+            {
+              "length": 36,
+              "bindings": [
+                {
+                  "target": {
+                    "controllerId": "lianli:rf:02-00-00-00-00-01",
+                    "zoneId": 0
+                  },
+                  "reverse": true
+                }
+              ]
+            },
+            {
+              "length": 36,
+              "bindings": [
+                {
+                  "target": {
+                    "controllerId": "lianli:rf:02-00-00-00-00-04",
+                    "zoneId": 0
+                  },
+                  "reverse": true
+                }
+              ]
+            },
+            {
+              "length": 12,
+              "bindings": [
+                {
+                  "target": {
+                    "controllerId": "test:offline-controller-5",
+                    "zoneId": 0
+                  },
+                  "reverse": false
+                },
+                {
+                  "target": {
+                    "controllerId": "test:offline-controller-5",
+                    "zoneId": 1
+                  },
+                  "reverse": false
+                }
+              ]
+            },
+            {
+              "length": 24,
+              "bindings": [
+                {
+                  "target": {
+                    "controllerId": "lianli:rf:02-00-00-00-00-03",
+                    "zoneId": 0
+                  },
+                  "reverse": true
+                },
+                {
+                  "target": {
+                    "controllerId": "test:offline-controller-7",
+                    "zoneId": 0
+                  },
+                  "reverse": false
+                },
+                {
+                  "target": {
+                    "controllerId": "test:offline-controller-8",
+                    "zoneId": 0
+                  },
+                  "reverse": false
+                },
+                {
+                  "target": {
+                    "controllerId": "test:offline-controller-6",
+                    "zoneId": 0
+                  },
+                  "reverse": false
+                }
+              ]
+            }
+          ]
+        },
+        "loopReturn": {
+          "durationMs": 4000,
+          "holdMs": 600,
+          "waveWidthDots": 24,
+          "waveStrength": 0.25
+        }
+      }
+    ]
+  },
+  "schemaVersion": 1
+}

@@ -147,7 +147,7 @@ public sealed class HostIntegrationTests
     [Fact]
     public void Rgb_only_profiles_serialize_exactly_as_before()
     {
-        var dir = Path.Combine(RepoRoot(), "bringup", "demo-profiles");
+        var dir = Path.Combine(RepoRoot(), "tests", "Fixtures", "profiles");
         var files = Directory.GetFiles(dir, "*.json");
         files.Should().NotBeEmpty();
         var json = ContractsJson.Configure(new JsonSerializerOptions { WriteIndented = true });
@@ -325,13 +325,13 @@ public sealed class HostIntegrationTests
     {
         for (var d = new DirectoryInfo(AppContext.BaseDirectory); d is not null; d = d.Parent)
         {
-            if (File.Exists(Path.Combine(d.FullName, "AGENTS.md")) && Directory.Exists(Path.Combine(d.FullName, "bringup")))
+            if (File.Exists(Path.Combine(d.FullName, "src", "UnifiedRgb.sln")))
             {
                 return d.FullName;
             }
         }
 
-        throw new DirectoryNotFoundException("repository root (AGENTS.md) not found above " + AppContext.BaseDirectory);
+        throw new DirectoryNotFoundException("repository root (src/UnifiedRgb.sln) not found above " + AppContext.BaseDirectory);
     }
 
     [Fact]

@@ -57,7 +57,9 @@ public sealed class WriterPauseRecoveryTests
         Monitor.Enter(io);
         try
         {
-            drain = Task.Run(writer.DrainLoopOnce);
+            // This deliberately blocks on a Monitor held by the test. Give it a dedicated thread so a
+            // small CI thread pool cannot starve the barrier while the test is itself waiting synchronously.
+            drain = Task.Factory.StartNew(writer.DrainLoopOnce, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
             SpinWait.SpinUntil(() => box.LoopsConsumed == 1, TimeSpan.FromSeconds(5)).Should().BeTrue("B reached the I/O boundary");
             writer.Paused = true;
             if (supersede) bus.PublishLoop(Chain.Id, new(0), Frame(3, 17));

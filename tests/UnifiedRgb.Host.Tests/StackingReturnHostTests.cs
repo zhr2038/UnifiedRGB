@@ -38,7 +38,7 @@ public sealed class StackingReturnHostTests
 
     private static ProfileDto Demo(string file)
     {
-        var json = File.ReadAllBytes(Path.Combine(RepoRoot(), "bringup", "demo-profiles", file));
+        var json = File.ReadAllBytes(Path.Combine(RepoRoot(), "tests", "Fixtures", "profiles", file));
         return JsonSerializer.Deserialize<ProfileDto>(json, ContractsJson.Configure(new JsonSerializerOptions()))!;
     }
 
@@ -217,7 +217,7 @@ public sealed class StackingReturnHostTests
     {
         for (var d = new DirectoryInfo(AppContext.BaseDirectory); d is not null; d = d.Parent)
         {
-            if (File.Exists(Path.Combine(d.FullName, "AGENTS.md")) && Directory.Exists(Path.Combine(d.FullName, "bringup")))
+            if (File.Exists(Path.Combine(d.FullName, "src", "UnifiedRgb.sln")))
             {
                 return d.FullName;
             }

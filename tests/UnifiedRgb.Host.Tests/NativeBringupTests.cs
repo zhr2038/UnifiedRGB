@@ -1013,11 +1013,7 @@ public sealed class NativeMappingTests
     [Fact]
     public void Overnight_black_profile_maps_unchanged()
     {
-        var fixture = Path.Combine(PreviewTests.RepoRoot(), "bringup", "sleep-blackout-20261018", "active-black-profile.json");
-        if (!File.Exists(fixture))
-        {
-            return; // evidence folder not present in this checkout
-        }
+        var fixture = Path.Combine(PreviewTests.RepoRoot(), "tests", "Fixtures", "profiles", "blackout.json");
 
         var dir = Path.Combine(Path.GetTempPath(), "urgb-black", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(dir);

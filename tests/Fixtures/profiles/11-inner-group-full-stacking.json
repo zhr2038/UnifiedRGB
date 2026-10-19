@@ -1,0 +1,151 @@
+{
+  "name": "Fixture 11-inner-group-full-stacking",
+  "scene": {
+    "assignments": [
+      {
+        "targets": [
+          {
+            "controllerId": "lianli:rf:02-00-00-00-00-01",
+            "zoneId": 0
+          },
+          {
+            "controllerId": "lianli:rf:02-00-00-00-00-02",
+            "zoneId": 0
+          },
+          {
+            "controllerId": "lianli:rf:02-00-00-00-00-03",
+            "zoneId": 0
+          },
+          {
+            "controllerId": "lianli:rf:02-00-00-00-00-04",
+            "zoneId": 0
+          },
+          {
+            "controllerId": "test:offline-controller-5",
+            "zoneId": 0
+          },
+          {
+            "controllerId": "test:offline-controller-6",
+            "zoneId": 0
+          },
+          {
+            "controllerId": "test:offline-controller-7",
+            "zoneId": 0
+          },
+          {
+            "controllerId": "test:offline-controller-8",
+            "zoneId": 0
+          },
+          {
+            "controllerId": "test:offline-controller-5",
+            "zoneId": 1
+          }
+        ],
+        "effectId": "Stacking",
+        "colors": [
+          "#FF0000"
+        ],
+        "speed": 0.75,
+        "brightness": 1.0,
+        "reverse": false,
+        "seed": 1,
+        "groupName": "Accumulating inner H2 RAM ROG, GPU, bottom, side, top - full brightness",
+        "loopPolicy": "LConnect",
+        "strategy": "Vendor",
+        "spatialPath": {
+          "stages": [
+            {
+              "length": 36,
+              "bindings": [
+                {
+                  "target": {
+                    "controllerId": "lianli:rf:02-00-00-00-00-02",
+                    "zoneId": 0
+                  },
+                  "reverse": true
+                }
+              ]
+            },
+            {
+              "length": 36,
+              "bindings": [
+                {
+                  "target": {
+                    "controllerId": "lianli:rf:02-00-00-00-00-01",
+                    "zoneId": 0
+                  },
+                  "reverse": true
+                }
+              ]
+            },
+            {
+              "length": 36,
+              "bindings": [
+                {
+                  "target": {
+                    "controllerId": "lianli:rf:02-00-00-00-00-04",
+                    "zoneId": 0
+                  },
+                  "reverse": true
+                }
+              ]
+            },
+            {
+              "length": 12,
+              "bindings": [
+                {
+                  "target": {
+                    "controllerId": "test:offline-controller-5",
+                    "zoneId": 0
+                  },
+                  "reverse": false
+                },
+                {
+                  "target": {
+                    "controllerId": "test:offline-controller-5",
+                    "zoneId": 1
+                  },
+                  "reverse": false
+                }
+              ]
+            },
+            {
+              "length": 24,
+              "bindings": [
+                {
+                  "target": {
+                    "controllerId": "lianli:rf:02-00-00-00-00-03",
+                    "zoneId": 0
+                  },
+                  "reverse": true
+                },
+                {
+                  "target": {
+                    "controllerId": "test:offline-controller-7",
+                    "zoneId": 0
+                  },
+                  "reverse": false
+                },
+                {
+                  "target": {
+                    "controllerId": "test:offline-controller-8",
+                    "zoneId": 0
+                  },
+                  "reverse": false
+                },
+                {
+                  "target": {
+                    "controllerId": "test:offline-controller-6",
+                    "zoneId": 0
+                  },
+                  "reverse": false
+                }
+              ]
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "schemaVersion": 1
+}

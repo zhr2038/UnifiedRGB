@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "name": "Fixture Blackout",
+  "scene": {
+    "assignments": [
+      {
+        "targets": [
+          {
+            "controllerId": "lianli:rf:02-00-00-00-00-01",
+            "zoneId": 0
+          },
+          {
+            "controllerId": "lianli:rf:02-00-00-00-00-02",
+            "zoneId": 0
+          },
+          {
+            "controllerId": "lianli:rf:02-00-00-00-00-03",
+            "zoneId": 0
+          },
+          {
+            "controllerId": "lianli:rf:02-00-00-00-00-04",
+            "zoneId": 0
+          }
+        ],
+        "effectId": "StaticColor",
+        "colors": [
+          "#000000"
+        ],
+        "speed": 0.5,
+        "brightness": 0,
+        "reverse": false,
+        "seed": 1,
+        "loopPolicy": "LConnect",
+        "strategy": "Vendor",
+        "groupName": "Black"
+      }
+    ]
+  }
+}
