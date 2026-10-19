@@ -1,19 +1,27 @@
+using System.Buffers;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using UnifiedRgb.Contracts.Dto;
+using UnifiedRgb.Screens.Composition;
 
 namespace UnifiedRgb.Host.ScenePackages;
 
 /// <summary>
-/// The v1 external scene package (OPUS-GENERIC-SCENE-PACKAGES): exact identifiers and bounds. Anything else — another format,
-/// schema version or playback contract, including the "...Draft" / "...-draft" authoring drafts — is rejected explicitly; a
-/// package is never upgraded, migrated, regenerated or reinterpreted.
+/// The external scene package (OPUS-GENERIC-SCENE-PACKAGES): exact identifiers and bounds. schemaVersion 1 and 2 share one
+/// playback contract; 2 ONLY adds the optional screen fields "accentColor" and "overlayLayout" (a telemetry region), which a
+/// schemaVersion 1 manifest still rejects in any form, including null. Anything else — another format, schema version or
+/// playback contract, including the "...Draft" / "...-draft" authoring drafts — is rejected explicitly; a package is never
+/// upgraded, migrated, regenerated or reinterpreted.
 /// </summary>
 public static partial class ScenePackageFormat
 {
     public const string Format = "UnifiedRgb.ScenePackage";
     public const int SchemaVersion = 1;
+
+    /// <summary>The newest schema read: <see cref="SchemaVersion"/> plus the optional screen accentColor/overlayLayout.</summary>
+    public const int SchemaVersionRegions = 2;
 
     /// <summary>RGB24 frames held (no interpolation) for exactly frameDurationMs PHYSICAL milliseconds each; screens on the same timeline.</summary>
     public const string PlaybackContract = "rgb24-hold-physical-ms-v1";
@@ -142,14 +150,14 @@ public static partial class ScenePackageFormat
             if (!string.Equals(format, Format, StringComparison.Ordinal))
             {
                 throw Bad(format.EndsWith("Draft", StringComparison.OrdinalIgnoreCase)
-                    ? $"format '{Printable(format)}' is an authoring DRAFT; drafts are never imported or upgraded (author an explicit '{Format}' v{SchemaVersion} package)"
+                    ? $"format '{Printable(format)}' is an authoring DRAFT; drafts are never imported or upgraded (author an explicit '{Format}' v{SchemaVersion} or v{SchemaVersionRegions} package)"
                     : $"unsupported format '{Printable(format)}' (this program reads '{Format}' only)");
             }
 
             var schema = Int(root, "schemaVersion", ManifestName);
-            if (schema != SchemaVersion)
+            if (schema is not (SchemaVersion or SchemaVersionRegions))
             {
-                throw Bad($"unsupported schemaVersion {schema} (this program reads {SchemaVersion} only)");
+                throw Bad($"unsupported schemaVersion {schema} (this program reads {SchemaVersion} and {SchemaVersionRegions} only)");
             }
 
             var contract = Str(root, "playbackContract", ManifestName);
@@ -158,7 +166,7 @@ public static partial class ScenePackageFormat
                 throw Bad($"unsupported playbackContract '{Printable(contract)}' (this program plays '{PlaybackContract}' only; never reinterpreted)");
             }
 
-            Only(root, ManifestName, "format", "schemaVersion", "id", "name", "revision", "durationMs", "loop", "playbackContract", "lighting", "screens", "files");
+            Only(root, ManifestName, schema, "format", "schemaVersion", "id", "name", "revision", "durationMs", "loop", "playbackContract", "lighting", "screens", "files");
             var id = Str(root, "id", ManifestName);
             if (!IsPackageId(id))
             {
@@ -183,10 +191,10 @@ public static partial class ScenePackageFormat
                 throw Bad("loop must be true (v1 packages are loops)");
             }
 
-            var lighting = Arr(root, "lighting").Select((e, i) => Lighting(e, $"lighting[{i}]")).ToArray();
-            var screens = Arr(root, "screens").Select((e, i) => Screen(e, $"screens[{i}]")).ToArray();
+            var lighting = Arr(root, "lighting").Select((e, i) => Lighting(e, $"lighting[{i}]", schema)).ToArray();
+            var screens = Arr(root, "screens").Select((e, i) => Screen(e, $"screens[{i}]", schema)).ToArray();
             var files = Files(root);
-            var manifest = new ScenePackageManifest(id, name, revision, duration, lighting, screens, files);
+            var manifest = new ScenePackageManifest(id, name, revision, duration, lighting, screens, files) { SchemaVersion = schema };
             Check(manifest);
             return manifest;
         }
@@ -273,10 +281,10 @@ public static partial class ScenePackageFormat
         }
     }
 
-    private static LightingTrack Lighting(JsonElement e, string where)
+    private static LightingTrack Lighting(JsonElement e, string where, int schema)
     {
         var o = Obj(e, where);
-        Only(o, where, "role", "label", "file", "ledCount", "frames", "frameDurationMs", "pixelFormat", "pixelOrder", "brightnessBaked");
+        Only(o, where, schema, "role", "label", "file", "ledCount", "frames", "frameDurationMs", "pixelFormat", "pixelOrder", "brightnessBaked");
         var role = Role(o, where);
         var label = Label(o, where);
         var file = FilePath(o, where);
@@ -327,10 +335,18 @@ public static partial class ScenePackageFormat
         return new LightingTrack(role, label, file, leds, frames, fd, baked);
     }
 
-    private static ScreenTrack Screen(JsonElement e, string where)
+    private static ScreenTrack Screen(JsonElement e, string where, int schema)
     {
         var o = Obj(e, where);
-        Only(o, where, "role", "label", "file", "durationMs", "overlay", "fit", "fps");
+        if (schema == SchemaVersion)
+        {
+            Only(o, where, schema, "role", "label", "file", "durationMs", "overlay", "fit", "fps");
+        }
+        else
+        {
+            Only(o, where, schema, "role", "label", "file", "durationMs", "overlay", "fit", "fps", "accentColor", "overlayLayout");
+        }
+
         var role = Role(o, where);
         var label = Label(o, where);
         var file = FilePath(o, where);
@@ -359,8 +375,51 @@ public static partial class ScenePackageFormat
             throw Bad($"{where}: fps must be 1..{MaxScreenFps}");
         }
 
-        return new ScreenTrack(role, label, file, duration, overlay, fit, fps);
+        string? accent = null;
+        if (o.ContainsKey("accentColor"))
+        {
+            accent = Str(o, "accentColor", where);
+            if (!IsColor(accent))
+            {
+                throw Bad($"{where}: accentColor must be #RRGGBB");
+            }
+
+            if (overlay == "none")
+            {
+                throw Bad($"{where}: accentColor needs a compact or dashboard overlay (overlay is none)");
+            }
+        }
+
+        ScreenOverlayLayoutDto? layout = null;
+        if (o.TryGetValue("overlayLayout", out var layoutElement))
+        {
+            if (overlay != "dashboard")
+            {
+                throw Bad($"{where}: overlayLayout needs overlay dashboard (overlay is {overlay}; a compact region is not supported)");
+            }
+
+            layout = Layout(layoutElement, $"{where}.overlayLayout", schema);
+        }
+
+        return new ScreenTrack(role, label, file, duration, overlay, fit, fps, accent, layout);
     }
+
+    /// <summary>A v2 telemetry region: fractions of the content canvas before local rotation, exact property names.</summary>
+    private static ScreenOverlayLayoutDto Layout(JsonElement e, string where, int schema)
+    {
+        var o = Obj(e, where);
+        Only(o, where, schema, "x", "y", "width", "height", "columns", "backgroundOpacity");
+        var layout = new ScreenOverlayLayoutDto(Num(o, "x", where), Num(o, "y", where), Num(o, "width", where), Num(o, "height", where),
+            Int(o, "columns", where), Num(o, "backgroundOpacity", where));
+        return OverlayLayouts.Problem(layout) is { } why
+            ? throw Bad($"{where}: {why}")
+            : layout;
+    }
+
+    private static readonly SearchValues<char> HexDigits = SearchValues.Create("0123456789ABCDEFabcdef");
+
+    /// <summary>Strict #RRGGBB (exactly six hex digits).</summary>
+    private static bool IsColor(string s) => s.Length == 7 && s[0] == '#' && s.AsSpan(1).IndexOfAnyExcept(HexDigits) < 0;
 
     private static Dictionary<string, string> Files(Dictionary<string, JsonElement> root)
     {
@@ -439,13 +498,13 @@ public static partial class ScenePackageFormat
         return map;
     }
 
-    private static void Only(Dictionary<string, JsonElement> o, string where, params string[] allowed)
+    private static void Only(Dictionary<string, JsonElement> o, string where, int schema, params string[] allowed)
     {
         foreach (var key in o.Keys)
         {
             if (Array.IndexOf(allowed, key) < 0)
             {
-                throw Bad($"{where}: unknown property '{Printable(key)}' (v{SchemaVersion} defines no such field)");
+                throw Bad($"{where}: unknown property '{Printable(key)}' (v{schema} defines no such field)");
             }
         }
     }
@@ -501,7 +560,7 @@ public static partial class ScenePackageFormat
     private static partial Regex RoleRegex();
 }
 
-/// <summary>A validated v1 manifest. Lighting files are frame-major RGB24, <see cref="LightingTrack.ByteLength"/> bytes each.</summary>
+/// <summary>A validated v1/v2 manifest (see <see cref="SchemaVersion"/>). Lighting files are frame-major RGB24, <see cref="LightingTrack.ByteLength"/> bytes each.</summary>
 public sealed record ScenePackageManifest(
     string Id,
     string Name,
@@ -511,6 +570,9 @@ public sealed record ScenePackageManifest(
     IReadOnlyList<ScreenTrack> Screens,
     IReadOnlyDictionary<string, string> Files)
 {
+    /// <summary>The manifest's declared schemaVersion (1 or 2); never upgraded.</summary>
+    public int SchemaVersion { get; init; } = ScenePackageFormat.SchemaVersion;
+
     /// <summary>Roles in manifest order: lighting first, then screens.</summary>
     public IEnumerable<string> Roles => Lighting.Select(l => l.Role).Concat(Screens.Select(s => s.Role));
 }
@@ -521,8 +583,13 @@ public sealed record LightingTrack(string Role, string? Label, string File, int 
     public long ByteLength => (long)Frames * LedCount * 3;
 }
 
-/// <summary>One screen medium on the package timeline.</summary>
-public sealed record ScreenTrack(string Role, string? Label, string File, double DurationMs, string Overlay, string Fit, int Fps);
+/// <summary>
+/// One screen medium on the package timeline. <see cref="AccentColor"/> and <see cref="OverlayLayout"/> exist only in schemaVersion 2
+/// (null = the historical behaviour).
+/// </summary>
+public sealed record ScreenTrack(
+    string Role, string? Label, string File, double DurationMs, string Overlay, string Fit, int Fps, string? AccentColor = null,
+    ScreenOverlayLayoutDto? OverlayLayout = null);
 
 /// <summary>Package timeline ids ("package:&lt;contentId&gt;:&lt;bindingId&gt;"): the frame-set id and the screens' TimelineId.</summary>
 public static class ScenePackageIds

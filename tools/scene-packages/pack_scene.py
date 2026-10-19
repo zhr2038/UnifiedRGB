@@ -1,4 +1,7 @@
-"""Data-only ScenePackage v1 authoring helper. Runtime import remains authoritative."""
+"""Data-only ScenePackage v1/v2 authoring helper. Runtime import remains authoritative.
+
+schemaVersion 2 only adds two optional screen fields: accentColor (#RRGGBB) and overlayLayout (a telemetry
+region on rectangular screens). schemaVersion 1 packages are read and written exactly as before."""
 from __future__ import annotations
 import argparse
 import hashlib
@@ -14,6 +17,9 @@ import zlib
 FORMAT = "UnifiedRgb.ScenePackage"
 CONTRACT = "rgb24-hold-physical-ms-v1"
 INERT = {"README.md", "README.txt", "bindings.template.json"}
+SCHEMAS = (1, 2)
+REGION_KEYS = ("x", "y", "width", "height", "columns", "backgroundOpacity")
+V2_SCREEN_FIELDS = ("accentColor", "overlayLayout")
 RESERVED = {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"} | {f"{p}{i}" for p in ("COM", "LPT") for i in range(1, 10)}
 
 def unique_object(pairs):
@@ -41,14 +47,45 @@ def integer(value, low, high, what):
         raise ValueError(f"{what} must be an integer in {low}..{high}")
     return value
 
+def number(value, what):
+    if isinstance(value, bool) or not isinstance(value, (float, int)) or not math.isfinite(value):
+        raise ValueError(f"{what} must be a finite number")
+    return value
+
+def screen_v2(track, role):
+    """Checks the optional v2 accentColor/overlayLayout of one screen track (same rules as the application)."""
+    if "accentColor" in track:
+        accent = track["accentColor"]
+        if not isinstance(accent, str) or not re.fullmatch(r"#[0-9A-Fa-f]{6}", accent):
+            raise ValueError(f"{role}: accentColor must be #RRGGBB")
+        if track.get("overlay") == "none":
+            raise ValueError(f"{role}: accentColor needs a compact or dashboard overlay")
+    if "overlayLayout" in track:
+        layout = track["overlayLayout"]
+        if not isinstance(layout, dict) or sorted(layout) != sorted(REGION_KEYS):
+            raise ValueError(f"{role}: overlayLayout must be an object with exactly {', '.join(REGION_KEYS)}")
+        if track.get("overlay") != "dashboard":
+            raise ValueError(f"{role}: overlayLayout needs overlay dashboard")
+        x, y, w, h, o = (number(layout[k], f"{role}: overlayLayout.{k}") for k in ("x", "y", "width", "height", "backgroundOpacity"))
+        if not (0 <= x <= 1 and 0 <= y <= 1):
+            raise ValueError(f"{role}: overlayLayout x and y must be within 0..1")
+        if not (0 < w <= 1 and 0 < h <= 1):
+            raise ValueError(f"{role}: overlayLayout width and height must be > 0 and <= 1")
+        if x + w > 1 or y + h > 1:
+            raise ValueError(f"{role}: overlayLayout must lie inside the canvas")
+        integer(layout["columns"], 1, 4, f"{role}: overlayLayout.columns")
+        if not 0 <= o <= 1:
+            raise ValueError(f"{role}: overlayLayout backgroundOpacity must be within 0..1")
+
 def prepare(folder):
     folder = Path(folder).resolve(strict=True)
     raw = (folder / "scene.json").read_bytes()
     if len(raw) > 256 * 1024:
         raise ValueError("scene.json exceeds 256 KiB")
     manifest = json.loads(raw, object_pairs_hook=unique_object)
-    if manifest.get("format") != FORMAT or type(manifest.get("schemaVersion")) is not int or manifest.get("schemaVersion") != 1 or manifest.get("playbackContract") != CONTRACT:
-        raise ValueError("Explicit ScenePackage v1 / rgb24-hold-physical-ms-v1 required; drafts are never upgraded")
+    schema = manifest.get("schemaVersion")
+    if manifest.get("format") != FORMAT or type(schema) is not int or schema not in SCHEMAS or manifest.get("playbackContract") != CONTRACT:
+        raise ValueError("Explicit ScenePackage v1 or v2 / rgb24-hold-physical-ms-v1 required; drafts are never upgraded")
     if manifest.get("loop") is not True:
         raise ValueError("v1 requires loop:true")
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", manifest.get("id", "")):
@@ -100,6 +137,12 @@ def prepare(folder):
                 if track.get("durationMs") != duration or track.get("overlay") not in ("none", "compact", "dashboard") or track.get("fit") not in ("contain", "cover"):
                     raise ValueError(f"Invalid screen track: {role}")
                 integer(track.get("fps"), 1, 15, "fps")
+                if schema == 1:
+                    for field in V2_SCREEN_FIELDS:
+                        if field in track:  # even an explicit null: v1 never had these fields
+                            raise ValueError(f"{role}: {field} needs schemaVersion 2")
+                else:
+                    screen_v2(track, role)
             folded.add(name.casefold())
             if name not in files and sum(map(len, files.values())) + path.stat().st_size > 256*1024*1024:
                 raise ValueError("Expanded package exceeds 256 MiB")
@@ -142,7 +185,9 @@ def build(folder, output):
         temporary.rename(output)
     return {"path": str(output), "contentId": hashlib.sha256(manifest).hexdigest(), "zipSha256": hashlib.sha256(output.read_bytes()).hexdigest(), "bytes": output.stat().st_size, "validation": "authoring checks only; import into the application for authoritative media/device/wire validation"}
 
-def sample(folder):
+def sample(folder, schema=1):
+    if schema not in SCHEMAS:
+        raise ValueError("schema must be 1 or 2")
     folder = Path(folder).resolve()
     if folder.exists():
         raise ValueError("Sample directory already exists")
@@ -160,17 +205,21 @@ def sample(folder):
     png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR",struct.pack(">IIBBBBB",64,32,8,2,0,0,0)) + chunk(b"IDAT",zlib.compress(pixels)) + chunk(b"IEND",b"")
     (folder / "screens/panel.png").write_bytes(png)
     manifest = {"format":FORMAT,"schemaVersion":1,"id":"aurora-starter","name":"极光 · 入门示例","revision":1,"durationMs":12000,"loop":True,"playbackContract":CONTRACT,"lighting":[{"role":"accent-strip","label":"装饰灯条","file":"lighting/strip.rgb24","ledCount":8,"frames":200,"frameDurationMs":60,"pixelFormat":"RGB24","pixelOrder":"logical-layout","brightnessBaked":1}],"screens":[{"role":"main-panel","label":"主画面","file":"screens/panel.png","durationMs":12000,"overlay":"dashboard","fit":"contain","fps":5}],"files":{}}
+    if schema == 2:
+        # a generic telemetry-region starter for a wide rectangular screen: real PC status on the right half
+        manifest.update({"schemaVersion":2,"id":"region-starter","name":"区域状态 · 入门示例"})
+        manifest["screens"][0].update({"label":"宽屏画面","fit":"cover","accentColor":"#FAD61D","overlayLayout":{"x":0.5,"y":0.16,"width":0.48,"height":0.74,"columns":2,"backgroundOpacity":0}})
     (folder / "scene.json").write_text(json.dumps(manifest,ensure_ascii=False,indent=2)+"\n",encoding="utf-8")
     return {"path":str(folder),"next":"edit assets/scene.json, then build; device bindings are chosen separately inside the application"}
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
-    make = sub.add_parser("sample"); make.add_argument("folder")
+    make = sub.add_parser("sample"); make.add_argument("folder"); make.add_argument("--schema", type=int, choices=SCHEMAS, default=1)
     pack = sub.add_parser("build"); pack.add_argument("folder"); pack.add_argument("output")
     args = parser.parse_args()
     try:
-        result = sample(args.folder) if args.command == "sample" else build(args.folder,args.output)
+        result = sample(args.folder, args.schema) if args.command == "sample" else build(args.folder,args.output)
     except (ValueError,OSError,KeyError,TypeError) as error:
         parser.exit(1,f"ERROR: {error}\n")
     print(json.dumps(result,ensure_ascii=False,indent=2))

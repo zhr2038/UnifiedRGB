@@ -50,7 +50,7 @@ public static class ScreenSceneValidator
             throw new ArgumentException("A screen assignment is null.", nameof(a));
         }
 
-        if (!ScreenIds.TryParse(a.ScreenId, out _, out _))
+        if (!ScreenIds.TryParse(a.ScreenId, out var family, out _))
         {
             throw new ArgumentException($"'{a.ScreenId}' is not a screen id (screen:tl-lcd|h2|turzx:<instance>).", nameof(a));
         }
@@ -88,6 +88,30 @@ public static class ScreenSceneValidator
         if (a.TimelineId is { } timeline && (timeline.Length is 0 or > MaxTimelineIdLength || !timeline.All(c => c is > ' ' and <= '~')))
         {
             throw new ArgumentException($"{a.ScreenId}: a timeline id must be 1..{MaxTimelineIdLength} printable ASCII characters.", nameof(a));
+        }
+
+        if (a.OverlayLayout is { } layout)
+        {
+            if (a.Overlay != OverlayLayouts.RegionOverlay)
+            {
+                throw new ArgumentException($"{a.ScreenId}: an overlay region needs the {OverlayLayouts.RegionOverlay} overlay (overlay is {a.Overlay}).", nameof(a));
+            }
+
+            if (OverlayRenderer.ShapeOf(family.Family) != OverlayShape.Rectangle)
+            {
+                throw new ArgumentException(
+                    $"{a.ScreenId}: an overlay region is supported on rectangular screens only, not this round {family.Family} panel (never dropped or widened).",
+                    nameof(a));
+            }
+
+            if (OverlayLayouts.Problem(layout) is { } why)
+            {
+                throw new ArgumentException($"{a.ScreenId}: overlay region invalid: {why}.", nameof(a));
+            }
+            if (OverlayLayouts.TargetProblem(a.ScreenId, layout, a.Rotation) is { } targetProblem)
+            {
+                throw new ArgumentException($"{a.ScreenId}: {targetProblem}.", nameof(a));
+            }
         }
 
         if (a.BackgroundAssetId is { } id)

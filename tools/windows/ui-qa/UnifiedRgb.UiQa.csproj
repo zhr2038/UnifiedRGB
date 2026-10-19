@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <Import Project="../../../src/Directory.Build.props"/>
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType><UseWPF>true</UseWPF><InvariantGlobalization>false</InvariantGlobalization>
+    <DirectoryPackagesPropsPath>$(MSBuildThisFileDirectory)../../../src/Directory.Packages.props</DirectoryPackagesPropsPath>
+    <ApplicationManifest>qa.manifest</ApplicationManifest>
+    <!-- Developer-only fake-service harness, not part of the shipping app or solution. -->
+    <EnableNETAnalyzers>false</EnableNETAnalyzers><EnableDefaultApplicationDefinition>false</EnableDefaultApplicationDefinition>
+  </PropertyGroup>
+  <ItemGroup><ProjectReference Include="../../../src/UnifiedRgb.App/UnifiedRgb.App.csproj"/></ItemGroup>
+  <ItemGroup><RuntimeHostConfigurationOption Include="Switch.System.Windows.Media.ShouldRenderEvenWhenNoDisplayDevicesAreAvailable" Value="true"/></ItemGroup>
+</Project>

@@ -67,7 +67,7 @@ public sealed class UsbTests
     [InlineData("screen:a065:x", false)]
     [InlineData("screen:turzx:", false)]
     [InlineData("screen:turzx:a#b", false)]
-    [InlineData("lianli:rf:06-A8-F0-72-AB-3C", false)]
+    [InlineData("lianli:rf:02-00-00-00-00-01", false)]
     [InlineData(null, false)]
     public void Screen_id_grammar(string? id, bool ok) => ScreenIds.TryParse(id, out _, out _).Should().Be(ok);
 

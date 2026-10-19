@@ -25,19 +25,19 @@ public sealed class RingFillHostTests : IDisposable
         {
           "schemaVersion": 2,
           "devices": [
-            { "controllerId": "lianli:rf:1B-7B-F1-72-AB-3C", "rotationDegrees": 0, "reverse": false, "fans": [], "family": null, "units": 0,
+            { "controllerId": "lianli:rf:02-00-00-00-00-02", "rotationDegrees": 0, "reverse": false, "fans": [], "family": null, "units": 0,
               "revision": 0, "description": null, "overridden": false, "note": null, "reverseChain": true },
-            { "controllerId": "lianli:rf:35-F7-EF-72-AB-3C", "rotationDegrees": 0, "reverse": false, "fans": [], "family": null, "units": 0,
+            { "controllerId": "lianli:rf:02-00-00-00-00-04", "rotationDegrees": 0, "reverse": false, "fans": [], "family": null, "units": 0,
               "revision": 0, "description": null, "overridden": false, "note": null, "reverseChain": false },
-            { "controllerId": "lianli:rf:EF-7E-63-62-32-E1", "rotationDegrees": 0, "reverse": true, "fans": [], "family": null, "units": 0,
+            { "controllerId": "lianli:rf:02-00-00-00-00-03", "rotationDegrees": 0, "reverse": true, "fans": [], "family": null, "units": 0,
               "revision": 0, "description": null, "overridden": false, "note": null, "reverseChain": false }
           ]
         }
         """;
 
-    private const string Tl120 = "lianli:rf:1B-7B-F1-72-AB-3C";
-    private const string Lcd = "lianli:rf:35-F7-EF-72-AB-3C";
-    private const string Block = "lianli:rf:EF-7E-63-62-32-E1";
+    private const string Tl120 = "lianli:rf:02-00-00-00-00-02";
+    private const string Lcd = "lianli:rf:02-00-00-00-00-04";
+    private const string Block = "lianli:rf:02-00-00-00-00-03";
 
     private readonly string _dir = Path.Combine(Path.GetTempPath(), "urgb-wp14", Guid.NewGuid().ToString("N"));
 

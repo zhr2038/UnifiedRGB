@@ -39,6 +39,7 @@ namespace UnifiedRgb.Contracts;
 [JsonSerializable(typeof(IReadOnlyList<ScreenAssetDto>))]
 [JsonSerializable(typeof(ScreenAssetUploadDto))]
 [JsonSerializable(typeof(ScreenAssignmentDto))]
+[JsonSerializable(typeof(ScreenOverlayLayoutDto))]
 [JsonSerializable(typeof(ScreenSceneDto))]
 [JsonSerializable(typeof(ScreenPreviewDto))]
 [JsonSerializable(typeof(PcTelemetryDto))]

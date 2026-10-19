@@ -75,5 +75,76 @@ class AuthoringTests(unittest.TestCase):
         self.edit(lambda m:(m["lighting"][0].update(frameDurationMs=60),m["screens"][0].update(role="accent-strip")))
         with self.assertRaisesRegex(ValueError,"duplicate role"): pack.build(self.source,self.root/"bad.zip")
 
+    def test_schema1_output_is_unchanged(self):
+        # the shipped aurora-starter-v1.zip manifest: v2 support must not change one v1 byte
+        result = pack.build(self.source,self.root/"v1.zip")
+        self.assertEqual(result["contentId"],"17313811f9c4bdbca3857ac84653f06ce66658877783500a7f07506b0fe09710")
+        with zipfile.ZipFile(self.root/"v1.zip") as z:
+            screen = json.loads(z.read("scene.json"))["screens"][0]
+        self.assertNotIn("accentColor",screen); self.assertNotIn("overlayLayout",screen)
+
+    def test_schema1_rejects_each_v2_field_even_as_null(self):
+        for field, value in (("accentColor","#FAD61D"),("accentColor",None),("overlayLayout",{"x":0,"y":0,"width":1,"height":1,"columns":1,"backgroundOpacity":0}),("overlayLayout",None)):
+            self.edit(lambda m:(m["screens"][0].pop("accentColor",None),m["screens"][0].pop("overlayLayout",None),m["screens"][0].update({field:value})))
+            with self.assertRaisesRegex(ValueError,"needs schemaVersion 2"): pack.build(self.source,self.root/"bad.zip")
+
+    def test_unknown_schema_versions_fail_closed(self):
+        for version in (0,3,"2",2.0,True):
+            self.edit(lambda m:m.update(schemaVersion=version))
+            with self.assertRaisesRegex(ValueError,"v1 or v2"): pack.build(self.source,self.root/"bad.zip")
+
+class RegionAuthoringTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.source = self.root / "source"
+        pack.sample(self.source, schema=2)
+
+    def edit(self, change):
+        path = self.source / "scene.json"
+        data = json.loads(path.read_text(encoding="utf-8"))
+        change(data["screens"][0])
+        path.write_text(json.dumps(data),encoding="utf-8")
+
+    def bad(self, change, message):
+        self.edit(change)
+        with self.assertRaisesRegex(ValueError,message): pack.build(self.source,self.root/"bad.zip")
+        self.assertFalse((self.root/"bad.zip").exists())
+        pack.sample(self.root/"fresh", schema=2)
+        (self.source/"scene.json").write_bytes((self.root/"fresh"/"scene.json").read_bytes())
+        import shutil; shutil.rmtree(self.root/"fresh")
+
+    def test_region_package_is_deterministic_and_keeps_the_fields(self):
+        a,b = self.root/"a.zip", self.root/"b.zip"
+        pack.build(self.source,a); pack.build(self.source,b)
+        self.assertEqual(a.read_bytes(),b.read_bytes())
+        with zipfile.ZipFile(a) as z:
+            m = json.loads(z.read("scene.json"))
+        self.assertEqual(m["schemaVersion"],2)
+        self.assertEqual(m["screens"][0]["overlay"],"dashboard")
+        self.assertEqual(m["screens"][0]["accentColor"],"#FAD61D")
+        self.assertEqual(m["screens"][0]["overlayLayout"],{"x":0.5,"y":0.16,"width":0.48,"height":0.74,"columns":2,"backgroundOpacity":0})
+
+    def test_v2_without_a_region_is_valid(self):
+        self.edit(lambda t:(t.pop("overlayLayout"),t.pop("accentColor")))
+        pack.build(self.source,self.root/"plain.zip")
+
+    def test_bad_regions_are_rejected(self):
+        layout = lambda **kw: (lambda t:t["overlayLayout"].update(kw))
+        for change, message in (
+            (layout(x=-0.1),"x and y"),(layout(y=1.5),"x and y"),(layout(width=0),"width and height"),(layout(height=1.2),"width and height"),
+            (layout(width=0.6),"inside the canvas"),(layout(height=0.9),"inside the canvas"),(layout(x=float("inf")),"finite"),(layout(x=float("nan")),"finite"),
+            (layout(x=True),"finite"),(layout(x="0.5"),"finite"),(layout(columns=0),"columns"),(layout(columns=5),"columns"),(layout(columns=2.0),"columns"),
+            (layout(columns="2"),"columns"),(layout(backgroundOpacity=1.01),"backgroundOpacity"),(layout(backgroundOpacity=None),"finite"),
+            (layout(padding=0.1),"exactly"),(lambda t:t["overlayLayout"].pop("columns"),"exactly"),(lambda t:t.update(overlayLayout=None),"exactly"),
+            (lambda t:t.update(overlayLayout=[0.5]),"exactly"),(lambda t:t.update(overlay="compact"),"needs overlay dashboard"),
+            (lambda t:t.update(overlay="none"),"accentColor needs"),(lambda t:(t.pop("accentColor"),t.update(overlay="none")),"needs overlay dashboard"),
+            (lambda t:t.update(accentColor="#FAD61"),"#RRGGBB"),(lambda t:t.update(accentColor="FAD61D"),"#RRGGBB"),(lambda t:t.update(accentColor="#GGGGGG"),"#RRGGBB"),
+            (lambda t:t.update(accentColor="#FAD61D\n"),"#RRGGBB"),(lambda t:t.update(accentColor=None),"#RRGGBB"),
+        ):
+            with self.subTest(message=message):
+                self.bad(change, message)
+
 if __name__ == "__main__":
     unittest.main()

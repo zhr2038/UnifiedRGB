@@ -1,0 +1,17 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <SolidColorBrush x:Key="ScreenPilot.Canvas" Color="#F5F6F8"/>
+    <SolidColorBrush x:Key="ScreenPilot.Surface" Color="#FFFFFF"/>
+    <SolidColorBrush x:Key="ScreenPilot.Input" Color="#FFFFFF"/>
+    <SolidColorBrush x:Key="ScreenPilot.Raised" Color="#EBEEF2"/>
+    <SolidColorBrush x:Key="ScreenPilot.Text" Color="#17212D"/>
+    <SolidColorBrush x:Key="ScreenPilot.Secondary" Color="#465568"/>
+    <SolidColorBrush x:Key="ScreenPilot.DisabledText" Color="#657386"/>
+    <SolidColorBrush x:Key="ScreenPilot.Line" Color="#CCD3DC"/>
+    <SolidColorBrush x:Key="ScreenPilot.Border" Color="#718095"/>
+    <SolidColorBrush x:Key="ScreenPilot.Accent" Color="#006D62"/>
+    <SolidColorBrush x:Key="ScreenPilot.OnAccent" Color="#FFFFFF"/>
+    <SolidColorBrush x:Key="ScreenPilot.Selection" Color="#DCEFEB"/>
+    <SolidColorBrush x:Key="ScreenPilot.Hover" Color="#DDE5ED"/>
+    <SolidColorBrush x:Key="ScreenPilot.Error" Color="#B42318"/>
+    <SolidColorBrush x:Key="ScreenPilot.ErrorSurface" Color="#FFF0EE"/>
+</ResourceDictionary>

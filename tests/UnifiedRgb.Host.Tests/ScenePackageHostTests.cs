@@ -74,6 +74,11 @@ public sealed partial class ScenePackageHostTests
                 o.Screens.H2.Output = true;
                 o.Screens.TlLcd.ControlVerified = true;
                 o.Screens.H2.ControlVerified = true;
+                if (screens.CasePresent)
+                {
+                    o.Screens.Turzx.Output = true;
+                    o.Screens.Turzx.ControlVerified = true;
+                }
             }
         });
         await UntilAsync(() => host.Engine.Adapters.Controllers.Any(c => c.Descriptor.Id.Value == Loop && c.IsActive), "loop controller active");
@@ -397,7 +402,7 @@ public sealed partial class ScenePackageHostTests
         {
             Pkg.Lighting(edit: m => m["format"] = "UnifiedRgb.ScenePackage.Draft"),
             Pkg.Lighting(edit: m => m["playbackContract"] = "rgb24-hold-physical-ms-v1-draft"),
-            Pkg.Lighting(edit: m => m["schemaVersion"] = 2),
+            Pkg.Lighting(edit: m => m["schemaVersion"] = 3), // 1 and 2 are read; every other version fails closed
             Pkg.Zip(Pkg.Entries(Pkg.Lighting()).Select(e => e.Name == "data/strip.rgb24" ? (e.Name, new byte[e.Data.Length]) : (e.Name, e.Data))),
         })
         {

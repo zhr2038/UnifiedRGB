@@ -377,7 +377,7 @@ public class DeviceClockRenderTests
         sets.Add(FrameSetFor("shared", [78, 78, 78, 24, 1]));
         using var legacy = new Rig(SharedFrames, sets);
         legacy.Anchor(T0);
-        foreach (var (mode, reason) in new[] { (Clocks.TwoDomains, "different clock domains"), (Clocks.MissingH2, "no device clock for lianli:rf:EF-7E-63-62-32-E1") })
+        foreach (var (mode, reason) in new[] { (Clocks.TwoDomains, "different clock domains"), (Clocks.MissingH2, "no device clock for lianli:rf:02-00-00-00-00-03") })
         {
             using var rig = new Rig(SharedFrames, sets, clocks: mode);
             rig.Anchor(T0);
@@ -467,7 +467,7 @@ public class DeviceClockRenderTests
         rig.Anchor(T0);
         legacy.Anchor(T0);
         rig.Render(t: T0 + 0.3).Should().Be(legacy.At(T0 + 0.3));
-        rig.Report().FallbackReason.Should().Be("transmitted timing of lianli:rf:35-F7-EF-72-AB-3C not reported for its current effect index");
+        rig.Report().FallbackReason.Should().Be("transmitted timing of lianli:rf:02-00-00-00-00-04 not reported for its current effect index");
         rig.Report().UploadedFrames.Should().BeNull();
         for (var i = 0; i < 3; i++)
         {
@@ -475,7 +475,7 @@ public class DeviceClockRenderTests
         }
 
         rig.Render(t: T0 + 0.3).Should().Be(legacy.At(T0 + 0.3), "three of four companions reported");
-        rig.Report().FallbackReason.Should().Contain("lianli:rf:EF-7E-63-62-32-E1").And.Contain("not reported");
+        rig.Report().FallbackReason.Should().Contain("lianli:rf:02-00-00-00-00-03").And.Contain("not reported");
         rig.Loop.ReportLoopTiming(rig.Chains[3].Id, new ZoneId(0), rig.Loops[3].EffectIndex, 20, 40, false);
         FrameOf(rig.AtCounter(Big - (Big % 800) + 100.0)).Should().Be(2);
         var report = rig.Report();
@@ -586,7 +586,7 @@ public class DeviceClockRenderTests
         rig.Report().Mode.Should().Be(StreamedClockMode.DeviceClock);
         rig.Loop.PublishCalibration(rig.Chains[3].Id, new byte[24 * 3]);
         rig.AtCounter(Big + 20.0);
-        rig.Report().FallbackReason.Should().Contain("lianli:rf:EF-7E-63-62-32-E1", "the H2 now plays a one-frame marker");
+        rig.Report().FallbackReason.Should().Contain("lianli:rf:02-00-00-00-00-03", "the H2 now plays a one-frame marker");
     }
 
     [Fact]
@@ -740,8 +740,8 @@ public class DeviceClockRenderTests
             _custom = custom;
             Loop = new RenderLoop(registry ?? EffectRegistry.Default, _bus)
             {
-                ChainReversed = id => id.Value == "lianli:rf:1B-7B-F1-72-AB-3C",
-                Ring = id => id.Value == "lianli:rf:EF-7E-63-62-32-E1" ? new RingGeometry(true, false, 0) : default,
+                ChainReversed = id => id.Value == "lianli:rf:02-00-00-00-00-02",
+                Ring = id => id.Value == "lianli:rf:02-00-00-00-00-03" ? new RingGeometry(true, false, 0) : default,
                 FrameSets = sets,
                 Player = Player,
                 Timestamp = () => Now,
@@ -791,10 +791,10 @@ public class DeviceClockRenderTests
 
         public ControllerDescriptor[] Chains { get; } =
         [
-            Chain("lianli:rf:35-F7-EF-72-AB-3C", "TL", 3, ZoneLayout.Matrix(39, 2)),
-            Chain("lianli:rf:06-A8-F0-72-AB-3C", "TL", 3, ZoneLayout.Matrix(39, 2)),
-            Chain("lianli:rf:1B-7B-F1-72-AB-3C", "TL", 3, ZoneLayout.Matrix(39, 2)),
-            Chain("lianli:rf:EF-7E-63-62-32-E1", "H2", 1, ZoneLayout.Ring(24)),
+            Chain("lianli:rf:02-00-00-00-00-04", "TL", 3, ZoneLayout.Matrix(39, 2)),
+            Chain("lianli:rf:02-00-00-00-00-01", "TL", 3, ZoneLayout.Matrix(39, 2)),
+            Chain("lianli:rf:02-00-00-00-00-02", "TL", 3, ZoneLayout.Matrix(39, 2)),
+            Chain("lianli:rf:02-00-00-00-00-03", "H2", 1, ZoneLayout.Ring(24)),
         ];
 
         public FakeClock Clock { get; } = new();
@@ -824,7 +824,7 @@ public class DeviceClockRenderTests
             var map = new Dictionary<ControllerId, IDeviceClock>();
             foreach (var c in Chains)
             {
-                var h2 = c.Id.Value == "lianli:rf:EF-7E-63-62-32-E1";
+                var h2 = c.Id.Value == "lianli:rf:02-00-00-00-00-03";
                 if (clocks == Clocks.MissingH2 && h2)
                 {
                     continue;

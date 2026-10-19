@@ -41,6 +41,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         Effects.LiveApply = false;
         Studio = new StudioViewModel(client, ui, ReportError, confirm);
         Screens = new ScreensViewModel(client.RequireScreens, ui, ReportError, chooseMediaFile ?? (() => null), confirm, deviceSettings: client.RequireScreenSettings);
+        Screens.ErrorDismissed += (_, _) => Error = string.Empty;
         Scene = new SceneViewModel(client, ui, ReportError);
         Packages = new ScenePackagesViewModel(client.RequirePackages,
             () => client.Require().ListControllersAsync(), () => client.RequireScreens().ListScreensAsync(),
@@ -53,7 +54,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         Settings = new SettingsViewModel(autostart, appExePath);
         if (client.State == ConnectionState.Connected) ConnectionText = "后台已连接";
         RefreshCommand = new AsyncCommand(RefreshAllAsync, ReportError);
-        DismissErrorCommand = new RelayCommand(() => Error = "");
+        DismissErrorCommand = new RelayCommand(() => { Error = ""; Screens.DismissErrorCommand.Execute(null); });
 
         Devices.Changed += (_, _) =>
         {

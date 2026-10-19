@@ -14,6 +14,7 @@ public sealed record ScreenChoice(ScreenDeviceDto Dto)
     public string Id => Dto.Id;
     public string Name => Dto.Family switch { "H2" => "冷头屏 · H2", "Turzx" => "机箱长条屏", _ => "风扇屏 · " + Dto.Id.Split(':')[^1][^Math.Min(4, Dto.Id.Split(':')[^1].Length)..].ToUpperInvariant() };
     public string Detail => $"{Dto.Width} × {Dto.Height} · {StateName(Dto.State)}";
+    public override string ToString() => $"{Name}，{Detail}";
     public static string StateName(string state) => state switch
     {
         "Disabled" => "输出未开启", "Idle" => "待播放", "Running" => "正在发送", "Blocked" => "被其他程序占用",
@@ -68,6 +69,9 @@ public sealed class ScreensViewModel : ObservableObject
     private DateTimeOffset _restartCooldownUntil;
     private bool _updatingScreenChoices;
     private long _refreshId;
+    private int _editorOperations;
+    private string _busyText = string.Empty;
+    private string _errorText = string.Empty;
 
     public ScreensViewModel(Func<IScreenService> service, IUiDispatcher ui, Action<Exception> onError, Func<string?> chooseFile, Func<string, bool>? confirm = null, Func<DateTimeOffset>? now = null, Func<IScreenDeviceSettingsService>? deviceSettings = null)
     {
@@ -75,20 +79,21 @@ public sealed class ScreensViewModel : ObservableObject
         _now = now ?? (() => DateTimeOffset.UtcNow);
         EncodingQualities = [new("legacy", "兼容策略 · 原有编码"), new("lossless-first-v1", "保色优先 · 无损优化")];
         _quality = EncodingQualities[0];
-        SaveDeviceSettingsCommand = new AsyncCommand(_ => SaveDeviceSettingsAsync(), Report, _ => CanSaveDeviceSettings);
+        SaveDeviceSettingsCommand = new AsyncCommand(_ => RunEditorAsync("正在保存本机设置…", SaveDeviceSettingsAsync), Report, _ => CanSaveDeviceSettings);
         Overlays = [new("none", "只显示背景"), new("compact", "精简电脑信息"), new("dashboard", "完整监控面板")];
         Fits = [new("cover", "填满并裁切"), new("contain", "完整显示")];
         _overlay = Overlays[1]; _fit = Fits[0];
         Assets.Add(new(null)); _asset = Assets[0];
-        RefreshCommand = new AsyncCommand(RefreshAsync, Report);
-        ImportCommand = new AsyncCommand(ImportAsync, Report);
-        PreviewCommand = new AsyncCommand(PreviewAsync, Report);
-        ApplyCommand = new AsyncCommand(ApplyAsync, Report);
-        StopCommand = new AsyncCommand(async () => { await _service().StopScreensAsync().ConfigureAwait(true); Message = "屏幕发送已暂停，灯光不变。"; await PollAsync().ConfigureAwait(true); }, Report);
-        RemoveAssetCommand = new AsyncCommand(DeleteAssetAsync, Report);
+        RefreshCommand = new AsyncCommand(() => RunEditorAsync("正在读取屏幕…", RefreshAsync), Report);
+        ImportCommand = new AsyncCommand(() => RunEditorAsync("正在导入素材…", ImportAsync), Report);
+        PreviewCommand = new AsyncCommand(() => RunEditorAsync("正在生成实际编码预览…", PreviewAsync), Report);
+        ApplyCommand = new AsyncCommand(() => RunEditorAsync("正在应用此屏幕内容…", ApplyAsync), Report);
+        StopCommand = new AsyncCommand(() => RunEditorAsync("正在暂停屏幕发送…", async () => { await _service().StopScreensAsync().ConfigureAwait(true); Message = "屏幕发送已暂停，灯光不变。"; await PollAsync().ConfigureAwait(true); }), Report);
+        RemoveAssetCommand = new AsyncCommand(() => RunEditorAsync("正在删除所选素材…", DeleteAssetAsync), Report);
         PollCommand = new AsyncCommand(PollAsync, Report);
-        RestartLcdCommand = new AsyncCommand(_ => RestartLcdAsync(), Report, _ => CanRestartLcd);
-        Screens.CollectionChanged += (_, _) => UpdateRestartState();
+        RestartLcdCommand = new AsyncCommand(_ => RunEditorAsync("正在恢复风扇 LCD…", RestartLcdAsync), Report, _ => CanRestartLcd);
+        DismissErrorCommand = new RelayCommand(() => { ErrorText = string.Empty; ErrorDismissed?.Invoke(this, EventArgs.Empty); });
+        Screens.CollectionChanged += (_, _) => { UpdateRestartState(); NotifyEditorState(); };
     }
     public ObservableCollection<ScreenChoice> Screens { get; } = [];
     public ObservableCollection<AssetChoice> Assets { get; } = [];
@@ -110,7 +115,31 @@ public sealed class ScreensViewModel : ObservableObject
     public AsyncCommand RemoveAssetCommand { get; }
     public AsyncCommand PollCommand { get; }
     public AsyncCommand RestartLcdCommand { get; }
-    public bool Available { get => _available; private set { if (SetProperty(ref _available, value)) UpdateRestartState(); } }
+    public RelayCommand DismissErrorCommand { get; }
+    public event EventHandler? ErrorDismissed;
+    public bool EditorBusy => _editorOperations != 0;
+    public bool EditorIdle => !EditorBusy;
+    public string BusyText { get => _busyText; private set => SetProperty(ref _busyText, value); }
+    public string ErrorText { get => _errorText; private set { if (SetProperty(ref _errorText, value)) OnPropertyChanged(nameof(HasError)); } }
+    public bool HasError => ErrorText.Length != 0;
+    public bool HasSelection => Selected is not null;
+    public bool HasScreens => Screens.Count != 0;
+    public bool CanEditContent => HasSelection && EditorIdle;
+    public bool CanApplyContent => CanChangeOutput && HasSelection && EditorIdle;
+    public bool CanGeneratePreview => Available && HasSelection && EditorIdle;
+    public string ContentDraftState => !HasSelection ? "请选择需要编辑的屏幕" : Dirty ? "内容草稿 · 尚未应用" : "内容与上次读取一致";
+    public string LocalDraftState => !_settingsAvailable ? "本机设置尚未就绪" : DeviceSettingsDirty ? "本机设置 · 尚未保存" : "本机设置已读取";
+    public string ConnectionHint => !Available ? "后台未连接。已有草稿保留，应用与保存暂不可用。"
+        : !HasSelection ? "尚未发现屏幕。可以重新检测设备，当前不会发送画面。"
+        : Selected!.Dto.State switch
+        {
+            "Blocked" => "设备被占用。可以准备和预览内容，发送需先解决占用。",
+            "Disabled" => "设备输出未开启。预览与内容编辑可用，保存不代表已经播放。",
+            "Unsupported" => "设备协议尚未匹配。当前状态不代表已接管。",
+            "Disconnected" => "此屏幕已断开。草稿保留，实际发送需等待重新连接。",
+            _ => "内容与本机设置分别保存；预览不会发送到设备。",
+        };
+    public bool Available { get => _available; private set { if (SetProperty(ref _available, value)) { UpdateRestartState(); OnPropertyChanged(nameof(ScreenDetail)); } } }
     public bool CanChangeOutput => Available && !_restartingLcd;
     public bool CanRestartLcd => CanChangeOutput && RestartCooldownSeconds == 0
         && Screens.Any(s => s.Dto.Family == "TlLcd" && s.Dto.State is not ("Disabled" or "Unsupported" or "Blocked"));
@@ -119,7 +148,7 @@ public sealed class ScreensViewModel : ObservableObject
         : RestartCooldownSeconds > 0 ? "LCD 刚刚重启，请等待倒计时结束后再操作。"
         : "底排三块风扇屏会短暂重启，随后恢复原播放状态。未应用的修改会保留。";
     private int RestartCooldownSeconds => Math.Max(0, (int)Math.Ceiling((_restartCooldownUntil - _now()).TotalSeconds));
-    public bool Dirty { get => _dirty; private set => SetProperty(ref _dirty, value); }
+    public bool Dirty { get => _dirty; private set { if (SetProperty(ref _dirty, value)) OnPropertyChanged(nameof(ContentDraftState)); } }
     public string Message { get => _message; private set => SetProperty(ref _message, value); }
     public string PreviewNote { get => _previewNote; private set => SetProperty(ref _previewNote, value); }
     public BitmapSource? Preview { get => _preview; private set { if (SetProperty(ref _preview, value)) OnPropertyChanged(nameof(PreviewClip)); } }
@@ -135,6 +164,7 @@ public sealed class ScreensViewModel : ObservableObject
             if (_selected?.Id == value?.Id) return;
             if ((Dirty || DeviceSettingsDirty) && !_loading && !_confirm("放弃这块屏幕尚未保存的修改并切换？")) { OnPropertyChanged(); return; }
             SetProperty(ref _selected, value); LoadSelected(); OnPropertyChanged(nameof(ScreenDetail)); OnPropertyChanged(nameof(PreviewClip));
+            NotifyEditorState();
         }
     }
     public AssetChoice? Asset { get => _asset; set { if (SetProperty(ref _asset, value)) Changed(); } }
@@ -147,7 +177,7 @@ public sealed class ScreensViewModel : ObservableObject
     public int Fps { get => _fps; set { if (SetProperty(ref _fps, value)) Changed(); } }
     public bool Enabled { get => _enabled; set { if (SetProperty(ref _enabled, value)) Changed(); } }
     public string ScreenDetail => Selected is { } s
-        ? $"{s.Detail}\n{s.Dto.FramesWritten} 次写入 · {s.Dto.Dropped} 次失败 · {s.Dto.EffectiveFps:0.0} fps\n{(s.Dto.ControlVerified ? "实机控制已确认" : "实机控制待确认")}{(s.Dto.Family == "TlLcd" ? " · 物理位置未校准" : "")}\n{s.Dto.BlockedBy ?? s.Dto.LastError}"
+        ? $"{(Available ? string.Empty : "上次读取 · ")}{s.Detail}\n{s.Dto.FramesWritten} 次写入 · {s.Dto.Dropped} 次失败 · 实际发送 {s.Dto.EffectiveFps:0.0} fps\n{(s.Dto.ControlVerified ? "实机控制已确认" : "实机控制待确认")}{(s.Dto.Family == "TlLcd" ? " · 物理位置未校准" : "")}\n{s.Dto.BlockedBy ?? s.Dto.LastError}"
         : "尚未发现屏幕。灯光控制与屏幕连接相互独立。";
 
     public async Task RefreshAsync()
@@ -276,12 +306,17 @@ public sealed class ScreensViewModel : ObservableObject
         OnPropertyChanged(nameof(RestartLcdText)); OnPropertyChanged(nameof(RestartLcdHint));
         RestartLcdCommand.RaiseCanExecuteChanged();
         UpdateSettingsState();
+        NotifyEditorState();
     }
     public ScreenAssignmentDto Build()
     {
         if (Selected is null) throw new InvalidOperationException("请先选择屏幕。");
         if (!double.IsFinite(Brightness) || Brightness is < 0 or > 100 || Fps is < 1 or > 15) throw new InvalidOperationException("亮度范围为 0～100%，刷新帧率范围为 1～15。");
-        return new(Selected.Id, Asset?.Dto?.Id, Background, Overlay?.Id ?? "none", _deviceSettings is null ? Rotation : _savedRotation, Brightness / 100, Fps, Enabled, Accent, Fit?.Id ?? "cover");
+        var overlay = Overlay?.Id ?? "none";
+        var region = overlay == "dashboard"
+            ? _baseline.Assignments.FirstOrDefault(a => a.ScreenId == Selected.Id)?.OverlayLayout
+            : null;
+        return new(Selected.Id, Asset?.Dto?.Id, Background, overlay, _deviceSettings is null ? Rotation : _savedRotation, Brightness / 100, Fps, Enabled, Accent, Fit?.Id ?? "cover", OverlayLayout: region);
     }
     private void LoadSelected()
     {
@@ -368,6 +403,7 @@ public sealed class ScreensViewModel : ObservableObject
     {
         OnPropertyChanged(nameof(CanSaveDeviceSettings)); OnPropertyChanged(nameof(DeviceSettingsAvailable));
         SaveDeviceSettingsCommand.RaiseCanExecuteChanged();
+        OnPropertyChanged(nameof(LocalDraftState));
     }
     private void LocalChanged()
     {
@@ -426,7 +462,27 @@ public sealed class ScreensViewModel : ObservableObject
     }
 
     private void Changed() { if (!_loading) { _draftVersion++; Dirty = true; Preview = null; PreviewNote = "草稿已修改，点击“生成预览”更新画面。"; } }
-    private void Report(Exception ex) { Message = ex is StreamJsonRpc.RemoteMethodNotFoundException ? "当前后台尚未提供屏幕服务。" : ex.Message; _error(ex); }
+    private async Task RunEditorAsync(string caption, Func<Task> operation)
+    {
+        _editorOperations++; BusyText = caption; ErrorText = string.Empty;
+        OnPropertyChanged(nameof(EditorBusy)); OnPropertyChanged(nameof(EditorIdle));
+        NotifyEditorState();
+        try { await operation().ConfigureAwait(true); }
+        finally
+        {
+            _editorOperations--;
+            if (!EditorBusy) BusyText = string.Empty;
+            OnPropertyChanged(nameof(EditorBusy)); OnPropertyChanged(nameof(EditorIdle));
+            NotifyEditorState();
+        }
+    }
+    private void NotifyEditorState()
+    {
+        OnPropertyChanged(nameof(HasSelection)); OnPropertyChanged(nameof(HasScreens)); OnPropertyChanged(nameof(ConnectionHint));
+        OnPropertyChanged(nameof(CanApplyContent)); OnPropertyChanged(nameof(CanGeneratePreview));
+        OnPropertyChanged(nameof(CanEditContent)); OnPropertyChanged(nameof(ContentDraftState));
+    }
+    private void Report(Exception ex) { Message = ex is StreamJsonRpc.RemoteMethodNotFoundException ? "当前后台尚未提供屏幕服务。" : ex.Message; ErrorText = Message; _error(ex); }
     private static string Number(double? value, string suffix) => value is { } n && double.IsFinite(n) ? n.ToString("0", CultureInfo.CurrentCulture) + suffix : "不可用";
     private static string Bytes(long? value) => value is { } n ? $"{n / 1073741824.0:0.0} GB" : "不可用";
 }

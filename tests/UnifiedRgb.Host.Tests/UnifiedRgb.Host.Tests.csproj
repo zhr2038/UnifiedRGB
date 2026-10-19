@@ -12,6 +12,7 @@
     <Using Include="System.IO" />
   </ItemGroup>
   <ItemGroup>
+    <EmbeddedResource Include="Fixtures/ScenePackages/generic-region-v2.zip" LogicalName="GenericRegionFixtureV2.zip" />
     <ProjectReference Include="../../src/UnifiedRgb.Host/UnifiedRgb.Host.csproj" />
     <ProjectReference Include="../../src/UnifiedRgb.Contracts/UnifiedRgb.Contracts.csproj" />
     <ProjectReference Include="../../src/UnifiedRgb.Cli/UnifiedRgb.Cli.csproj" />

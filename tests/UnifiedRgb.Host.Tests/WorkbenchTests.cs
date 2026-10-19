@@ -15,7 +15,7 @@ namespace UnifiedRgb.Host.Tests;
 public sealed class WorkbenchTests
 {
     private static readonly JsonSerializerOptions Options = ContractsJson.Configure(new JsonSerializerOptions());
-    private static readonly ControllerDto Controller = new("lianli:rf:EF-7E-63-62-32-E1", "Lian Li", "H2", "LianLi", "H2", "", [new(0, "ring", "Ring", 24, 0, 0, "H2", 1, FaceOnFill: true)], 60, "Active", null);
+    private static readonly ControllerDto Controller = new("lianli:rf:02-00-00-00-00-03", "Lian Li", "H2", "LianLi", "H2", "", [new(0, "ring", "Ring", 24, 0, 0, "H2", 1, FaceOnFill: true)], 60, "Active", null);
     private static readonly ZoneRefDto Target = new(Controller.Id, 0);
     private static readonly AssignmentDto Wave = new([Target], "Stacking", ["#FF0000"], .75f, 1, false, 73, "Accepted full stacking with H2-to-top reverse-flow wave return", "LConnect", "Vendor", null, new([new(24, [new(Target, true)])]), new(4000, 600, 24, .25));
     private static readonly EffectDto Effect = new("Stacking", "Stacking", 1, 3, true, true, true, ["#FF0000"]);

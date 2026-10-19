@@ -329,8 +329,8 @@ public class PlaybackCalibrationTests
         {
             Loop = new RenderLoop(EffectRegistry.Default, _bus)
             {
-                ChainReversed = id => id.Value == "lianli:rf:1B-7B-F1-72-AB-3C",
-                Ring = id => id.Value == "lianli:rf:EF-7E-63-62-32-E1" ? new RingGeometry(true, false, 0) : default,
+                ChainReversed = id => id.Value == "lianli:rf:02-00-00-00-00-02",
+                Ring = id => id.Value == "lianli:rf:02-00-00-00-00-03" ? new RingGeometry(true, false, 0) : default,
                 FrameSets = sets,
                 Player = Player,
             };
@@ -351,10 +351,10 @@ public class PlaybackCalibrationTests
 
         public ControllerDescriptor[] Chains { get; } =
         [
-            Chain("lianli:rf:35-F7-EF-72-AB-3C", "TL", 3, ZoneLayout.Matrix(39, 2)),
-            Chain("lianli:rf:06-A8-F0-72-AB-3C", "TL", 3, ZoneLayout.Matrix(39, 2)),
-            Chain("lianli:rf:1B-7B-F1-72-AB-3C", "TL", 3, ZoneLayout.Matrix(39, 2)),
-            Chain("lianli:rf:EF-7E-63-62-32-E1", "H2", 1, ZoneLayout.Ring(24)),
+            Chain("lianli:rf:02-00-00-00-00-04", "TL", 3, ZoneLayout.Matrix(39, 2)),
+            Chain("lianli:rf:02-00-00-00-00-01", "TL", 3, ZoneLayout.Matrix(39, 2)),
+            Chain("lianli:rf:02-00-00-00-00-02", "TL", 3, ZoneLayout.Matrix(39, 2)),
+            Chain("lianli:rf:02-00-00-00-00-03", "H2", 1, ZoneLayout.Ring(24)),
         ];
 
         public RecordingPlayer Player { get; } = new();

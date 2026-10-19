@@ -343,7 +343,7 @@ public sealed class HostIntegrationTests
             o.Screens.FanLcdRestart = new FanLcdRestartOptions
             {
             Enabled = true,
-            ControllerId = "lianli:rf:35-F7-EF-72-AB-3C",
+            ControllerId = "lianli:rf:02-00-00-00-00-04",
             ScreenIds = [Devices.Tl1.Id],
             };
         }, null, Devices.Tl1, Devices.H2);
@@ -375,7 +375,7 @@ public sealed class HostIntegrationTests
             o.Screens.FanLcdRestart = new FanLcdRestartOptions
             {
             Enabled = true,
-            ControllerId = "lianli:rf:35-F7-EF-72-AB-3C",
+            ControllerId = "lianli:rf:02-00-00-00-00-04",
             ScreenIds = [Devices.Tl1.Id, Devices.Tl2.Id],
             };
         }, s => s.AddSingleton<IFanLcdGroupRecovery>(recovery), Devices.Tl1, Devices.Tl2, Devices.H2);

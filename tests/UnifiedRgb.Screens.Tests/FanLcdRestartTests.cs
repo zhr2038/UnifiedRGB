@@ -11,7 +11,7 @@ namespace UnifiedRgb.Screens.Tests;
 /// </summary>
 public sealed class FanLcdRestartTests
 {
-    private const string Controller = "lianli:rf:35-F7-EF-72-AB-3C";
+    private const string Controller = "lianli:rf:02-00-00-00-00-04";
     private static readonly string Tl1 = Devices.Tl1.Id;
     private static readonly string Tl2 = Devices.Tl2.Id;
     private static readonly string Tl3 = Devices.Tl3.Id;
@@ -171,7 +171,7 @@ public sealed class FanLcdRestartTests
     [Fact]
     public async Task Rf_precheck_failure_sends_nothing_disturbs_no_worker_and_consumes_no_cooldown()
     {
-        var recovery = new FakeRecovery { ValidateError = (_, _) => new InvalidOperationException("lianli:rf:35-F7-EF-72-AB-3C is not actively owned by this Host.") };
+        var recovery = new FakeRecovery { ValidateError = (_, _) => new InvalidOperationException("lianli:rf:02-00-00-00-00-04 is not actively owned by this Host.") };
         await using var rig = await RunningAsync(recovery, Mapped(Tl1, Tl2, Tl3));
         var opens = rig.Opener.Opens;
         var r = await rig.Manager.RestartFanLcdAsync();

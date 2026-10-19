@@ -10,6 +10,39 @@ namespace UnifiedRgb.Host.Tests;
 public sealed class ScreenWorkbenchTests
 {
     [Fact]
+    public async Task Editing_and_saving_a_dashboard_keeps_its_authored_region()
+    {
+        var service = new RecordingScreenWorkbench();
+        var region = new ScreenOverlayLayoutDto(.50, .20, .47, .66, 2, 0);
+        service.Scene = new(service.Scene.Assignments.Select(a => a.ScreenId == "screen:turzx:test"
+            ? a with { Overlay = "dashboard", OverlayLayout = region } : a).ToArray());
+        var vm = New(service); await vm.RefreshAsync();
+        vm.Selected = vm.Screens.Single(s => s.Id == "screen:turzx:test");
+        vm.Brightness = 72; vm.Fps = 12;
+        vm.Build().OverlayLayout.Should().Be(region);
+        await vm.ApplyCommand.ExecuteAsync();
+        var saved = service.Scene.Assignments.Single(a => a.ScreenId == "screen:turzx:test");
+        saved.OverlayLayout.Should().Be(region);
+        saved.Brightness.Should().Be(.72); saved.Fps.Should().Be(12);
+    }
+
+    [Theory]
+    [InlineData("none")]
+    [InlineData("compact")]
+    public async Task Explicitly_switching_away_from_dashboard_clears_the_incompatible_region(string mode)
+    {
+        var service = new RecordingScreenWorkbench();
+        service.Scene = new(service.Scene.Assignments.Select(a => a.ScreenId == "screen:turzx:test"
+            ? a with { Overlay = "dashboard", OverlayLayout = new(.50, .20, .47, .66, 2, 0) } : a).ToArray());
+        var vm = New(service); await vm.RefreshAsync();
+        vm.Selected = vm.Screens.Single(s => s.Id == "screen:turzx:test");
+        vm.Overlay = vm.Overlays.Single(o => o.Id == mode);
+        vm.Build().OverlayLayout.Should().BeNull();
+        await vm.ApplyCommand.ExecuteAsync();
+        service.Scene.Assignments.Single(a => a.ScreenId == "screen:turzx:test").OverlayLayout.Should().BeNull();
+    }
+
+    [Fact]
     public async Task Constructing_reading_selecting_and_editing_screen_drafts_never_writes()
     {
         var service = new RecordingScreenWorkbench();

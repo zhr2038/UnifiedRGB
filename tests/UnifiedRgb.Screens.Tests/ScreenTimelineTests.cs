@@ -157,7 +157,7 @@ public sealed class ScreenTimelineTests
         await using var rig = new Rig(recovery, o =>
         {
             Rig.AllOutput(o);
-            o.FanLcdRestart = new FanLcdRestartOptions { Enabled = true, ControllerId = "lianli:rf:35-F7-EF-72-AB-3C", ScreenIds = [Tl] };
+            o.FanLcdRestart = new FanLcdRestartOptions { Enabled = true, ControllerId = "lianli:rf:02-00-00-00-00-04", ScreenIds = [Tl] };
         }, Devices.Tl1);
         rig.Manager.RestartSettle = TimeSpan.FromMilliseconds(20);
         await rig.Manager.SetScreenSceneAsync(Images.Scene(new ScreenAssignmentDto(Tl, Fps: 5)));

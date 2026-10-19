@@ -114,6 +114,35 @@ internal static class Pkg
         return Zip([("scene.json", Utf8(m)), .. files.Select(f => (f.Key, f.Value))]);
     }
 
+    /// <summary>A schemaVersion 2 overlay region (generic default: right half, two columns, no backing).</summary>
+    public static JsonObject Region(double x = 0.50, double y = 0.16, double width = 0.48, double height = 0.74, int columns = 2, double backgroundOpacity = 0) => new()
+    {
+        ["x"] = x,
+        ["y"] = y,
+        ["width"] = width,
+        ["height"] = height,
+        ["columns"] = columns,
+        ["backgroundOpacity"] = backgroundOpacity,
+    };
+
+    /// <summary>
+    /// A schemaVersion 2 screen-only package: dashboard overlay, accent #FAD61D and a region (<paramref name="screen"/> may change
+    /// the screen track, <paramref name="edit"/> the manifest, both after the hashes are computed).
+    /// </summary>
+    public static byte[] RegionScreenOnly(byte[] media, Action<JsonObject>? screen = null, Action<JsonObject>? edit = null, string mediaPath = "media/panel.png")
+    {
+        var files = new Dictionary<string, byte[]> { [mediaPath] = media };
+        var track = ScreenTrack("panel", mediaPath);
+        track["overlay"] = "dashboard";
+        track["accentColor"] = "#FAD61D";
+        track["overlayLayout"] = Region();
+        screen?.Invoke(track);
+        var m = Manifest(files, [], [track]);
+        m["schemaVersion"] = 2;
+        edit?.Invoke(m);
+        return Zip([("scene.json", Utf8(m)), .. files.Select(f => (f.Key, f.Value))]);
+    }
+
     public static byte[] Utf8(JsonNode node) => Encoding.UTF8.GetBytes(node.ToJsonString());
 
     /// <summary>Writes the entries in order; <paramref name="tweak"/> may change each created entry (e.g. symlink attributes).</summary>
@@ -250,6 +279,12 @@ internal sealed class FakeScreens : IScreenDeviceEnumerator, IScreenUsbOpener, I
 
     public static ScreenDeviceInfo H2 { get; } = ScreenDeviceInfo.FromPath($@"\\?\usb#vid_1cbe&pid_a021#1d3343b614a38505#{Guid}")!;
 
+    /// <summary>A synthetic rectangular case screen (enumerated only when <see cref="CasePresent"/>).</summary>
+    public static ScreenDeviceInfo Case { get; } = ScreenDeviceInfo.FromPath($@"\\?\usb#vid_1cbe&pid_0088#00000000000c0001#{Guid}")!;
+
+    /// <summary>True: the rectangular case screen is present too (default false keeps the historical TL+H2 platform).</summary>
+    public bool CasePresent { get; init; }
+
     public int Opens => Volatile.Read(ref _opens);
 
     public ScreenPlatform Platform => new(this, this, this, this, null, TimeProvider.System);
@@ -257,7 +292,7 @@ internal sealed class FakeScreens : IScreenDeviceEnumerator, IScreenUsbOpener, I
     /// <summary>False: the TL screen is unplugged (not enumerated); a screen scene still naming it reports it Disconnected.</summary>
     public volatile bool TlPresent = true;
 
-    public IReadOnlyList<ScreenDeviceInfo> Enumerate() => TlPresent ? [Tl, H2] : [H2];
+    public IReadOnlyList<ScreenDeviceInfo> Enumerate() => (TlPresent ? [Tl, H2] : new[] { H2 }).Concat(CasePresent ? [Case] : []).ToArray();
 
     /// <summary>False (default): every open is refused. True: an in-memory sink accepts writes (never a real device).</summary>
     public bool AcceptOpens { get; init; }

@@ -32,6 +32,9 @@ internal sealed record Reading(string Label, string Primary, string? Detail)
 /// the centre and "dashboard" a 2x2 grid in the inscribed square (side 0.64 D, corners at 0.4525 D), both kept inside
 /// <see cref="SafeRadius"/>. A value that is missing, or older than <see cref="StaleAfter"/>, renders as an em dash, never as 0.
 /// The rendered layer is cached until its text changes, so a steady 1 Hz sampler costs one render a second.
+/// With an overlay region (<see cref="ScreenOverlayLayoutDto"/>, rectangles only) the four readings sit in a Columns-wide grid
+/// inside that region alone: optional midnight backing, accent labels and hairline separators, large stable figures; every pixel
+/// outside the region stays transparent. Without one the historical layouts above are drawn exactly as before.
 /// </summary>
 /// <param name="rasterize">Test seam: replaces the RenderTargetBitmap rasterization of the drawn visual.</param>
 internal sealed class OverlayRenderer(Func<DrawingVisual, int, int, PixelFrame>? rasterize = null)
@@ -91,10 +94,27 @@ internal sealed class OverlayRenderer(Func<DrawingVisual, int, int, PixelFrame>?
     /// area, or null when WPF produced a completely transparent layer. Every layout draws translucent backing panels, so an empty
     /// layer means offscreen rendering did not run (see <see cref="HeadlessRendering"/>); it is not cached, and the next call retries.
     /// </summary>
-    public PixelFrame? Render(int width, int height, OverlayShape shape, string overlay, Color accent, PcTelemetryDto? telemetry, DateTimeOffset now)
+    /// <param name="layout">
+    /// Optional region (rectangle shape and the dashboard overlay only, validated by the scene); null keeps the historical layout.
+    /// </param>
+    public PixelFrame? Render(
+        int width, int height, OverlayShape shape, string overlay, Color accent, PcTelemetryDto? telemetry, DateTimeOffset now, ScreenOverlayLayoutDto? layout = null)
     {
+        if (layout is not null && (shape != OverlayShape.Rectangle || overlay != OverlayLayouts.RegionOverlay || OverlayLayouts.Problem(layout) is not null))
+        {
+            throw new ArgumentException("An overlay region needs a rectangular panel, the dashboard overlay and valid bounds.", nameof(layout));
+        }
+        if (layout is not null && OverlayLayouts.CanvasProblem(layout, width, height) is { } canvasProblem)
+        {
+            throw new ArgumentException(canvasProblem, nameof(layout));
+        }
+
         var readings = Readings(telemetry, now);
         var key = string.Join('|', width, height, shape, overlay, accent, string.Join(';', readings));
+        if (layout is not null)
+        {
+            key += "|" + OverlayLayouts.Key(layout);
+        }
         if (key == _cacheKey && _cache is not null)
         {
             return _cache;
@@ -106,6 +126,9 @@ internal sealed class OverlayRenderer(Func<DrawingVisual, int, int, PixelFrame>?
             var values = readings.Select(r => (r.Label, r.Value)).ToList();
             switch (shape, overlay)
             {
+                case (OverlayShape.Rectangle, _) when layout is not null:
+                    DrawRegion(dc, OverlayLayouts.Pixels(layout, width, height), layout, accent, readings);
+                    break;
                 case (OverlayShape.Round, "compact"):
                     DrawRoundCompact(dc, width, height, accent, readings);
                     break;
@@ -122,6 +145,11 @@ internal sealed class OverlayRenderer(Func<DrawingVisual, int, int, PixelFrame>?
         }
 
         var layer = (rasterize ?? Rasterize)(visual, width, height);
+        if (layout is not null)
+        {
+            ClearOutside(layer, OverlayLayouts.Pixels(layout, width, height)); // strict: nothing, not even antialiasing, leaves the region
+        }
+
         if (!HasAnyAlpha(layer))
         {
             _cache = null;
@@ -139,6 +167,25 @@ internal sealed class OverlayRenderer(Func<DrawingVisual, int, int, PixelFrame>?
         var rtb = new RenderTargetBitmap(width, height, 96, 96, PixelFormats.Pbgra32);
         rtb.Render(visual);
         return WpfCodec.ToPixels(rtb);
+    }
+
+    /// <summary>Makes every pixel outside <paramref name="region"/> fully transparent (premultiplied: all four bytes 0).</summary>
+    private static void ClearOutside(PixelFrame frame, (int X, int Y, int Width, int Height) region)
+    {
+        var p = frame.Pixels;
+        var stride = frame.Width * 4;
+        for (var y = 0; y < frame.Height; y++)
+        {
+            var row = p.AsSpan(y * stride, stride);
+            if (y < region.Y || y >= region.Y + region.Height)
+            {
+                row.Clear();
+                continue;
+            }
+
+            row[..(region.X * 4)].Clear();
+            row[((region.X + region.Width) * 4)..].Clear();
+        }
     }
 
     private static bool HasAnyAlpha(PixelFrame frame)
@@ -275,6 +322,83 @@ internal sealed class OverlayRenderer(Func<DrawingVisual, int, int, PixelFrame>?
                 dc.DrawText(small, new Point(cx - (small.Width / 2), y + (tile * 0.84) - (small.Height / 2)));
             }
         }
+    }
+
+    /// <summary>
+    /// A telemetry region: the four readings in <see cref="ScreenOverlayLayoutDto.Columns"/> columns and ceil(4/Columns) rows,
+    /// clipped to the region. Optional midnight backing at BackgroundOpacity (0 = none); per cell an accent label, the main value
+    /// large and white, the detail smaller below it; hairline accent separators between cells. Padding and text sizes are relative
+    /// to the cell, and each of label, value and detail has ONE size for all cells, fitted to the actual and the
+    /// <see cref="Longest"/> readings (100 %, 105 °C, 256 GB, em dash) so the figures keep their size as values change.
+    /// A soft dark shadow keeps text readable over a moving authored background without a solid block.
+    /// </summary>
+    private static void DrawRegion(
+        DrawingContext dc, (int X, int Y, int Width, int Height) px, ScreenOverlayLayoutDto layout, Color accent, IReadOnlyList<Reading> readings)
+    {
+        var region = new Rect(px.X, px.Y, px.Width, px.Height);
+        dc.PushClip(new RectangleGeometry(region));
+        if (layout.BackgroundOpacity > 0)
+        {
+            var alpha = (byte)Math.Round(layout.BackgroundOpacity * 255, MidpointRounding.AwayFromZero);
+            dc.DrawRectangle(new SolidColorBrush(Color.FromArgb(alpha, 6, 10, 20)), null, region);
+        }
+
+        var cols = layout.Columns;
+        var rows = (readings.Count + cols - 1) / cols;
+        var pad = Math.Min(region.Width, region.Height) * 0.04;
+        var cellW = (region.Width - (2 * pad)) / cols;
+        var cellH = (region.Height - (2 * pad)) / rows;
+        var inset = Math.Min(cellW, cellH) * 0.1;
+        var room = Math.Max(1, cellW - (2 * inset));
+        var tall = Math.Max(1, cellH - (2 * inset));
+
+        // label 0.3 em, value 1 em and detail 0.36 em of the value size; Segoe UI's line height is about 1.33 em
+        var all = readings.Concat(Longest).ToList();
+        var valueSize = FitSize(all.Select(r => r.Primary), Face, tall / ((0.3 + 1 + 0.36) * 1.34), room);
+        var labelSize = FitSize(all.Select(r => r.Label), LabelFace, valueSize * 0.3, room);
+        var detailSize = FitSize(all.Select(r => r.Detail?.Trim()).OfType<string>(), LabelFace, valueSize * 0.36, room);
+
+        var accentBrush = new SolidColorBrush(accent);
+        var separator = new SolidColorBrush(Color.FromArgb(90, accent.R, accent.G, accent.B));
+        var shadow = new SolidColorBrush(Color.FromArgb(150, 0, 0, 0));
+        var detailBrush = new SolidColorBrush(Color.FromArgb(225, 255, 255, 255));
+        var hair = Math.Max(1, Math.Round(Math.Min(region.Width, region.Height) / 240.0));
+        var offset = Math.Max(1, valueSize / 28);
+        for (var i = 0; i < readings.Count; i++)
+        {
+            var col = i % cols;
+            var row = i / cols;
+            var x = region.X + pad + (col * cellW);
+            var y = region.Y + pad + (row * cellH);
+            if (col > 0)
+            {
+                dc.DrawRectangle(separator, null, new Rect(x - (hair / 2), y + inset, hair, cellH - (2 * inset)));
+            }
+
+            if (row > 0)
+            {
+                dc.DrawRectangle(separator, null, new Rect(x + inset, y - (hair / 2), cellW - (2 * inset), hair));
+            }
+
+            var top = y + inset;
+            top += Shadowed(dc, readings[i].Label, LabelFace, labelSize, accentBrush, shadow, new Point(x + inset, top), offset);
+            top += Shadowed(dc, readings[i].Primary, Face, valueSize, Brushes.White, shadow, new Point(x + inset, top), offset);
+            if (readings[i].Detail is { } detail)
+            {
+                Shadowed(dc, detail.Trim(), LabelFace, detailSize, detailBrush, shadow, new Point(x + inset, top), offset);
+            }
+        }
+
+        dc.Pop();
+    }
+
+    /// <summary>Draws the text with a soft offset shadow; returns its line height.</summary>
+    private static double Shadowed(DrawingContext dc, string text, Typeface face, double size, Brush brush, Brush shadow, Point at, double offset)
+    {
+        dc.DrawText(Text(text, face, size, shadow), new Point(at.X + offset, at.Y + offset));
+        var ft = Text(text, face, size, brush);
+        dc.DrawText(ft, at);
+        return ft.Height;
     }
 
     /// <summary>One compact row: for each reading an accent label, the white value and its smaller white detail, with a gap between.</summary>

@@ -14,10 +14,10 @@ namespace UnifiedRgb.Core.Tests;
 /// </summary>
 public class SpatialPathTests
 {
-    private const string Side = "lianli:rf:06-A8-F0-72-AB-3C";
-    private const string Top = "lianli:rf:1B-7B-F1-72-AB-3C";
-    private const string H2Id = "lianli:rf:EF-7E-63-62-32-E1";
-    private const string Bottom = "lianli:rf:35-F7-EF-72-AB-3C";
+    private const string Side = "lianli:rf:02-00-00-00-00-01";
+    private const string Top = "lianli:rf:02-00-00-00-00-02";
+    private const string H2Id = "lianli:rf:02-00-00-00-00-03";
+    private const string Bottom = "lianli:rf:02-00-00-00-00-04";
     private const string Gpu = "native:gpu";
     private const string Rog = "native:rog";
     private const string Ram71 = "native:ram71";
@@ -528,7 +528,7 @@ public class SpatialPathTests
 
         loops.Values.Select(l => l.EffectIndex).Distinct().Should().ContainSingle("one shared index");
         rig.Loop.LastLoopCompile!.Variants!.Should().ContainSingle().Which.Should().Contain("spatial path 144 dots: 12:[native:gpu/0]")
-            .And.Contain("lianli:rf:35-F7-EF-72-AB-3C/0~");
+            .And.Contain("lianli:rf:02-00-00-00-00-04/0~");
     }
 
     [Fact]

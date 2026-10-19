@@ -106,7 +106,7 @@ public class LianLiOwnerTests
             }
 
             RfMac.Read(Convert.FromBase64String(d.GetProperty("mac_addr").GetString()!)).Should().Be(RfMac.Parse(mac), "mac_addr is MacStr in wire order");
-            RfMac.Read(Convert.FromBase64String(d.GetProperty("master_mac_addr").GetString()!)).Should().Be(RfMac.Parse("dc:ba:7e:72:ab:3c"));
+            RfMac.Read(Convert.FromBase64String(d.GetProperty("master_mac_addr").GetString()!)).Should().Be(RfMac.Parse("02:00:00:00:00:05"));
             (d.GetProperty("channel").GetInt32(), d.GetProperty("BindStatus").GetInt32()).Should().Be((8, 1));
         }
 
@@ -176,7 +176,7 @@ public class LianLiOwnerTests
     public async Task A_tl_upload_hands_the_codec_wire_ordered_frames()
     {
         var o = new LianLiOptions { WireFormatVerified = true, ReceiverInterfaceGuid = FakeUsb.Guid };
-        o.Devices.Add(new LianLiDeviceConfig { Mac = "06:a8:f0:72:ab:3c", RecType = 28, FanNum = 3, Leds = 78, Channel = 8, Rx = 2 });
+        o.Devices.Add(new LianLiDeviceConfig { Mac = "02:00:00:00:00:01", RecType = 28, FanNum = 3, Leds = 78, Channel = 8, Rx = 2 });
         var usb = new FakeUsb();
         var wire = new RecordingTransport();
         wire.EnqueueRead(Rf.MasterReply());

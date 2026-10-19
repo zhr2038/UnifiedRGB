@@ -39,10 +39,10 @@ public class LianLiStackingReturnCodecTests
         using var enc = TinyuzEncoder.Open(OwnedCodec);
 
         // profile11's targets (side, top RC, H2, bottom, GPU vertical, ROG, RAM71, RAM73, GPU horizontal) and accepted path
-        var side = Z("lianli:rf:06-A8-F0-72-AB-3C");
-        var top = Z("lianli:rf:1B-7B-F1-72-AB-3C");
-        var h2 = Z("lianli:rf:EF-7E-63-62-32-E1");
-        var bottom = Z("lianli:rf:35-F7-EF-72-AB-3C");
+        var side = Z("lianli:rf:02-00-00-00-00-01");
+        var top = Z("lianli:rf:02-00-00-00-00-02");
+        var h2 = Z("lianli:rf:02-00-00-00-00-03");
+        var bottom = Z("lianli:rf:02-00-00-00-00-04");
         var gpu = Z("msigpu:0:53011462");
         var gpuH = Z("msigpu:0:53011462", 1);
         var rog = Z("asusaura:19AF:0");

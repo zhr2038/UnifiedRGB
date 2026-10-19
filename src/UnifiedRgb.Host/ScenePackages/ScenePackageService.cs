@@ -8,6 +8,7 @@ using UnifiedRgb.Core.Effects.Generators;
 using UnifiedRgb.Core.Engine;
 using UnifiedRgb.Devices;
 using UnifiedRgb.Host.Services;
+using UnifiedRgb.Screens.Composition;
 using UnifiedRgb.Screens.Runtime;
 
 namespace UnifiedRgb.Host.ScenePackages;
@@ -355,7 +356,10 @@ public sealed partial class ScenePackageService : IScenePackageService, IHostedS
         {
             var assetId = await InstallMediaAsync(package, s, ct).ConfigureAwait(false);
             var screenId = snapshot.Bindings.Single(b => b.Role == s.Role).ScreenId!;
-            kept.Add(new ScreenAssignmentDto(screenId, assetId, "#000000", s.Overlay, 0, 1, s.Fps, true, Fit: s.Fit, TimelineId: timelineId));
+            // schemaVersion 2 content: its accent and region (scene content, never device settings); v1 keeps the historical accent
+            var assignment = new ScreenAssignmentDto(screenId, assetId, "#000000", s.Overlay, 0, 1, s.Fps, true, Fit: s.Fit, TimelineId: timelineId,
+                OverlayLayout: s.OverlayLayout);
+            kept.Add(s.AccentColor is { } accent ? assignment with { AccentColor = accent } : assignment);
         }
 
         var candidate = new ScreenSceneDto(kept);
@@ -533,6 +537,29 @@ public sealed partial class ScenePackageService : IScenePackageService, IHostedS
                     problems.Add($"Screen {screenId} is bound to more than one role.");
                 }
 
+                string? regionProblem = null;
+                if (s.OverlayLayout is { } layout)
+                {
+                    regionProblem = OverlayLayouts.TargetProblem(screenId);
+                    if (regionProblem is null)
+                    {
+                        try
+                        {
+                            var probe = new ScreenAssignmentDto(screenId, Overlay: "dashboard", OverlayLayout: layout);
+                            var normalized = _screenScenes?.NormalizeToLocal(new ScreenSceneDto([probe])).Assignments.Single() ?? probe;
+                            regionProblem = OverlayLayouts.TargetProblem(screenId, layout, normalized.Rotation);
+                        }
+                        catch (ArgumentException ex)
+                        {
+                            regionProblem = ex.Message;
+                        }
+                    }
+                }
+                if (regionProblem is { } region)
+                {
+                    problems.Add($"Screen role {s.Role}: screen {screenId}: {region} (the package's overlay region is never dropped or widened).");
+                }
+
                 var device = discovered.FirstOrDefault(d => string.Equals(d.Id, screenId, StringComparison.Ordinal));
                 if (device is null)
                 {
@@ -632,7 +659,7 @@ public sealed partial class ScenePackageService : IScenePackageService, IHostedS
 
     private static ScenePackageInfoDto InfoOf(InstalledScenePackage p) =>
         new(p.ContentId, p.Manifest.Id, p.Manifest.Name, p.Manifest.Revision, ScenePackageFormat.PlaybackContract, p.Manifest.DurationMs,
-            p.Manifest.Lighting.Count, p.Manifest.Screens.Count);
+            p.Manifest.Lighting.Count, p.Manifest.Screens.Count, p.Manifest.SchemaVersion);
 
     private static ScenePackageDetailsDto DetailsOf(InstalledScenePackage p)
     {

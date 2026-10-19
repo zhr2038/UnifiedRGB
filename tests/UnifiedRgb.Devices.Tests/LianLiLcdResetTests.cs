@@ -13,10 +13,10 @@ namespace UnifiedRgb.Devices.Tests;
 /// </summary>
 public class LianLiLcdResetTests
 {
-    private static readonly RfMac Bottom = RfMac.Parse("35-F7-EF-72-AB-3C");
-    private static readonly RfMac Top = RfMac.Parse("1B-7B-F1-72-AB-3C");
-    private static readonly RfMac Waterblock = RfMac.Parse("EF-7E-63-62-32-E1");
-    private static readonly RfMac Side = RfMac.Parse("06-A8-F0-72-AB-3C");
+    private static readonly RfMac Bottom = RfMac.Parse("02-00-00-00-00-04");
+    private static readonly RfMac Top = RfMac.Parse("02-00-00-00-00-02");
+    private static readonly RfMac Waterblock = RfMac.Parse("02-00-00-00-00-03");
+    private static readonly RfMac Side = RfMac.Parse("02-00-00-00-00-01");
     private static readonly RfAddress BottomAt = new(8, 5);
 
     private sealed record Rec(RfMac Mac, RfMac MasterMac, byte Channel, byte Rx, byte DevType, byte Fans, byte FanType, byte CmdSeq, uint Counter, byte Pwm = 137);
@@ -72,10 +72,10 @@ public class LianLiLcdResetTests
     [Fact]
     public void Packet_matches_the_hardware_accepted_bytes_with_a_zero_tail_and_no_pwm()
     {
-        var master = RfMac.Parse("DC-BA-7E-72-AB-3C");
+        var master = RfMac.Parse("02-00-00-00-00-05");
         var p = RfLcdGroupReset.Packet(Bottom, master, BottomAt, slaveIndex: 2, sequence: 1);
         p.Should().HaveCount(240);
-        Convert.ToHexString(p.AsSpan(0, 18)).Should().Be("121635F7EF72AB3CDCBA7E72AB3C05080201");
+        Convert.ToHexString(p.AsSpan(0, 18)).Should().Be("121602000000000402000000000505080201");
         p.AsSpan(18).ToArray().Should().OnlyContain(b => b == 0, "SyncControlInfo array8 leaves [18..240) zero: no PWM/value bytes");
         var frames = RfRelay.Frames(BottomAt, p);
         frames.Should().HaveCount(4).And.OnlyContain(f => f.Length == 64);

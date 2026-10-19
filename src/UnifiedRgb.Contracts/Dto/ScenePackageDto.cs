@@ -10,7 +10,8 @@ public sealed record ScenePackageUploadDto(string Name, string Base64);
 
 /// <summary>
 /// One installed, validated package. ContentId is the immutable lowercase SHA-256 content address (independent of bindings);
-/// Id/Name/Revision come from the manifest; PlaybackContract is the versioned playback semantics ("rgb24-hold-physical-ms-v1").
+/// Id/Name/Revision come from the manifest; PlaybackContract is the versioned playback semantics ("rgb24-hold-physical-ms-v1");
+/// SchemaVersion is the manifest's declared format version (1, or 2 with optional screen accent/overlay regions), never upgraded.
 /// </summary>
 public sealed record ScenePackageInfoDto(
     string ContentId,
@@ -20,7 +21,8 @@ public sealed record ScenePackageInfoDto(
     string PlaybackContract,
     double DurationMs,
     int LightingRoles,
-    int ScreenRoles);
+    int ScreenRoles,
+    int SchemaVersion = 1);
 
 /// <summary>
 /// One authored role. Kind is "lighting" or "screen". Lighting: LedCount/Frames, Width/Height 0. Screen: Width/Height of the

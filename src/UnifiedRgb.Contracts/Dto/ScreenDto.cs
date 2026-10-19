@@ -32,6 +32,7 @@ public sealed record ScreenAssetUploadDto(string Name, string Base64);
 /// 0/90/180/270 clockwise; Brightness 0..1; Fps 1..15; Fit "cover" (crop) or "contain" (letterbox on BackgroundColor).
 /// TimelineId (optional, OPUS-GENERIC-SCENE-PACKAGES; not written when null) puts the screen on a shared playback timeline (a
 /// package's "package:&lt;contentId&gt;:&lt;bindingId&gt;") instead of the worker's local start; null keeps the historical behavior.
+/// OverlayLayout (optional, scene content; not written when null) confines the overlay to a region; null = historical overlay.
 /// </summary>
 public sealed record ScreenAssignmentDto(
     string ScreenId,
@@ -45,7 +46,17 @@ public sealed record ScreenAssignmentDto(
     string AccentColor = "#5DDAC8",
     string Fit = "cover",
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
-    string? TimelineId = null);
+    string? TimelineId = null,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    ScreenOverlayLayoutDto? OverlayLayout = null);
+
+/// <summary>
+/// Optional telemetry region of a dashboard overlay (scene package schemaVersion 2; not written when null). X/Y/Width/
+/// Height are fractions of the CONTENT canvas before the screen's local rotation (finite, X,Y &gt;= 0, Width,Height &gt; 0, every
+/// value and X+Width, Y+Height &lt;= 1). Columns 1..4 arrange the four readings (rows = ceil(4/Columns)); BackgroundOpacity 0..1 is
+/// the region's backing (0 = none). Rectangular screens only. Null keeps the historical full-screen overlay exactly.
+/// </summary>
+public sealed record ScreenOverlayLayoutDto(double X, double Y, double Width, double Height, int Columns, double BackgroundOpacity);
 
 /// <summary>Screen content only: never RGB zones. At most one assignment per screen id.</summary>
 public sealed record ScreenSceneDto(IReadOnlyList<ScreenAssignmentDto> Assignments);

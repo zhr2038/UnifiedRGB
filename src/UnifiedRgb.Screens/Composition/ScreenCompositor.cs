@@ -12,7 +12,8 @@ internal sealed record ComposeResult(PixelFrame Canvas, string? Warning);
 /// <summary>
 /// Composes one assignment into its device canvas (STA thread only): background colour, asset fitted by cover/contain and
 /// centred, telemetry overlay (round layout inside the visible circle on TL-LCD/H2, see <see cref="OverlayShape"/>), clockwise
-/// rotation (content is laid out at the swapped size for 90/270), brightness, opaque. Background colour and asset still fill
+/// rotation (content is laid out at the swapped size for 90/270; an overlay region is placed on that content canvas, so it turns
+/// with the content), brightness, opaque. Background colour and asset still fill
 /// the whole raster on every family.
 /// Fitted asset frames are cached up to <paramref name="cacheBytes"/>; once full, further frames are recomputed per use.
 /// </summary>
@@ -79,10 +80,18 @@ internal sealed class ScreenCompositor(AssetStore assets, long cacheBytes, Overl
             }
         }
 
+        var shape = OverlayRenderer.ShapeOf(family.Family);
+        if (a.OverlayLayout is not null && (shape != OverlayShape.Rectangle || a.Overlay != OverlayLayouts.RegionOverlay))
+        {
+            // validation refuses this before any commit; a region is never dropped or widened to the full screen
+            return ComposeBlocked(family, "an overlay region needs a rectangular screen and the dashboard overlay");
+        }
+
         if (a.Overlay != "none")
         {
             var (ar, ag, ab) = ScreenColor.Parse(a.AccentColor);
-            if (_overlay.Render(cw, ch, OverlayRenderer.ShapeOf(family.Family), a.Overlay, Color.FromRgb(ar, ag, ab), telemetry, now) is { } layer)
+            // the region is in content-canvas fractions (before the local rotation below)
+            if (_overlay.Render(cw, ch, shape, a.Overlay, Color.FromRgb(ar, ag, ab), telemetry, now, a.OverlayLayout) is { } layer)
             {
                 PixelOps.BlendOver(content, layer, 0, 0);
             }
