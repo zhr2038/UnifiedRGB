@@ -2,9 +2,13 @@
 # The sandboxed shell lacks ProgramFiles(x86) & co., which makes NuGet restore fail with "path1 null".
 export MSBUILDDISABLENODEREUSE=1 DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_NOLOGO=1 DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1
 dn() {
+  local urgb_sdk="${URGB_DOTNET:-dotnet}"
+  if [[ -z "${URGB_DOTNET:-}" && -x "$HOME/dotnet-sdk/dotnet.exe" ]]; then
+    urgb_sdk="$HOME/dotnet-sdk/dotnet.exe"
+  fi
   env 'ProgramFiles(x86)=C:\Program Files (x86)' 'ProgramFiles=C:\Program Files' 'ProgramData=C:\ProgramData' \
       'CommonProgramFiles=C:\Program Files\Common Files' 'CommonProgramFiles(x86)=C:\Program Files (x86)\Common Files' \
-      "${URGB_DOTNET:-dotnet}" "$@"
+      "$urgb_sdk" "$@"
 }
 # Terse solution build: unique errors/warnings only.
 bld() { dn build src/UnifiedRgb.sln -warnaserror "$@" 2>&1 | grep -E " error | warning |已用时间|Time Elapsed" | sed 's/ \[D:.*//;s/^D:.*unified-rgb-controller.//' | sort -u | head -80; }
