@@ -114,7 +114,7 @@ public static class HostComposition
         services.AddSingleton<IFanLcdGroupRecovery>(sp => new LianLiFanLcdRecovery(sp.GetRequiredService<AdapterHost>()));
         services.AddSingleton(sp => new ScreenManager(
             options.Screens, options.ResolvedDataDirectory, sp.GetRequiredService<ScreenPlatform>(), sp.GetService<ILoggerFactory>(),
-            sp.GetService<IFanLcdGroupRecovery>()));
+            sp.GetService<IFanLcdGroupRecovery>(), () => WholeCaseBlackout.IsRequested(sp.GetRequiredService<LightingEngine>().Loop.Scene)));
         services.AddSingleton<IScreenService>(sp => sp.GetRequiredService<ScreenManager>());
         services.AddSingleton<IScreenSceneBinding>(sp => sp.GetRequiredService<ScreenManager>());
         services.AddSingleton<IScreenPackageMedia>(sp => sp.GetRequiredService<ScreenManager>());

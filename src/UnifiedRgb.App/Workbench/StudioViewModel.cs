@@ -265,23 +265,25 @@ public sealed class StudioViewModel : ObservableObject
     {
         var service = _client.Require();
         var current = await service.GetSceneAsync().ConfigureAwait(true);
-        if (current.Assignments.Count > 0 && current.Assignments.All(a => a.Brightness == 0 || a.Colors.Count > 0 && a.Colors.All(c => c.Equals("#000000", StringComparison.OrdinalIgnoreCase)))) return;
+        if (IsPersistedBlackout(current))
+        { Message = "灯光已处于熄灭状态；长屏休眠请求保持，不覆盖原有恢复点。实际状态见屏幕内容。"; return; }
         var controllers = await service.ListControllersAsync().ConfigureAwait(true);
         var targets = controllers.SelectMany(c => c.Zones.Select(z => new ZoneRefDto(c.Id, z.Id))).ToArray();
         if (targets.Length == 0) throw new InvalidOperationException("没有可以熄灭的灯光分区。");
         await service.SaveProfileAsync(new(BeforeLightsOffProfile, new(current.Assignments, Package: current.Package))).ConfigureAwait(true);
         await service.SetSceneAsync(new([new(targets, "StaticColor", ["#000000"], Brightness: 0, Strategy: "Vendor")])).ConfigureAwait(true);
-        Message = current.Screens?.Assignments.Any(a => a.TimelineId is not null) == true
-            ? "灯光已熄灭并保存恢复点。与灯效共享时间的场景包屏幕暂时黑屏，点击恢复后一同继续。"
-            : "全机灯光已熄灭；已保存熄灯前场景，可点击恢复。屏幕内容不变。";
+        Message = "已保存熄灯前场景并关闭灯光；已接管的长屏将关闭背光并停止发帧，点击恢复后唤醒。";
     }
+    internal static bool IsPersistedBlackout(SceneDto scene) => scene.Package is null && scene.Assignments.Count > 0
+        && scene.Assignments.All(a => a.EffectId == "StaticColor" && a.FrameSetId is null
+            && (a.Brightness == 0 || a.Colors.Count > 0 && a.Colors.All(c => c.Equals("#000000", StringComparison.OrdinalIgnoreCase))));
     private async Task RestoreAsync()
     {
         var service = _client.Require();
         var backup = await service.LoadProfileAsync(BeforeLightsOffProfile).ConfigureAwait(true);
         await service.SetSceneAsync(new(backup.Scene.Assignments, Package: backup.Scene.Package)).ConfigureAwait(true);
         await RefreshAsync(true).ConfigureAwait(true);
-        Message = "已恢复熄灯前保存的场景。";
+        Message = "已恢复熄灯前保存的场景；长屏在新画面就绪后恢复背光。";
     }
     private void NotifyDraftAccess() { OnPropertyChanged(nameof(CanEditDraft)); OnPropertyChanged(nameof(SceneDescription)); ApplyCommand.RaiseCanExecuteChanged(); }
     public void SetConnected(bool connected)

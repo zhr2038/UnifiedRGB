@@ -93,6 +93,7 @@ internal sealed class FakeChannel : IScreenUsbChannel
 
     /// <summary>When set, each response read throws this instead of returning 0 bytes.</summary>
     public Func<Exception?>? FailRead { get; set; }
+    public Func<byte[], byte[]>? Reply { get; set; }
 
     public int Read(Span<byte> buffer, int timeoutMs)
     {
@@ -100,6 +101,11 @@ internal sealed class FakeChannel : IScreenUsbChannel
         if (FailRead?.Invoke() is { } ex)
         {
             throw ex;
+        }
+
+        if (Reply is not null && Writes.TryPeek(out _))
+        {
+            var reply = Reply(Writes.Last()); reply.CopyTo(buffer); return reply.Length;
         }
 
         return 0;

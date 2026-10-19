@@ -18,6 +18,7 @@ public static class ScreenStates
     public const string Disconnected = "Disconnected";
     public const string Unsupported = "Unsupported";
     public const string Stopped = "Stopped";
+    public const string Sleeping = "Sleeping";
 
     public const string HeldByAnotherProgram = "another program has the device open";
 
@@ -49,6 +50,8 @@ internal sealed record ScreenWorkerContext(
     public ScreenEncodeFunc Encode { get; init; } = static (f, c, r, q, i) => ScreenFrameEncoder.Encode(f, c, r, q, i);
     public Func<string, ScreenRateTrial?> TrialOf { get; init; } = static _ => null;
     public Action<string> AbortTrial { get; init; } = static _ => { };
+    public Func<bool> WholeCaseBlackout { get; init; } = static () => false;
+    public string? BacklightStateDirectory { get; init; }
 }
 
 internal sealed record WorkerCommand(ScreenAssignmentDto? Assignment, bool Paused, bool Stop = false);
@@ -237,8 +240,14 @@ internal sealed partial class ScreenWorker : IDisposable
         double waitedMs = 0;
         var lastSlow = false;
         var correlationDisabled = false;
+        ScreenBacklightLatch? backlight = null;
+        var offIssued = false;
+        bool? lastPowerRequest = null;
+        string? powerError = null;
         try
         {
+            if (family.Family == ScreenFamily.Turzx && _ctx.BacklightStateDirectory is { } stateDirectory)
+                backlight = new ScreenBacklightLatch(stateDirectory, _device.Id, _ctx.Options.TurzxRestoreBacklight);
             while (!_stopping)
             {
                 if (_mailbox.TryTake() is { } cmd)
@@ -261,11 +270,23 @@ internal sealed partial class ScreenWorker : IDisposable
                     lastSlow = false;
                 }
 
-                if (paused || assignment is not { Enabled: true })
+                var powerOff = backlight is not null && _ctx.WholeCaseBlackout();
+                if (lastPowerRequest != powerOff) { lastPowerRequest = powerOff; powerError = null; offIssued = false; }
+                if (powerError is not null)
+                {
+                    CloseChannel(); SetState(ScreenStates.Error, null, keepError: false, powerError);
+                    _mailbox.Wait(250); continue; // no repeated control commands until the user changes the requested state
+                }
+                if (powerOff && offIssued)
+                {
+                    CloseChannel(); SetState(ScreenStates.Sleeping, null, keepError: false);
+                    _mailbox.Wait(250); continue;
+                }
+                if (!powerOff && (paused || assignment is not { Enabled: true }))
                 {
                     CloseChannel();
                     SetState(paused ? ScreenStates.Stopped : ScreenStates.Idle, null, keepError: false);
-                    _mailbox.Wait(-1);
+                    _mailbox.Wait(backlight is null ? -1 : 250); // observe RGB-only blackout/restore without changing the screen scene
                     continue;
                 }
 
@@ -324,6 +345,20 @@ internal sealed partial class ScreenWorker : IDisposable
                     }
                 }
 
+                if (powerOff)
+                {
+                    try
+                    {
+                        backlight!.Save(true); // recovery survives a crash between the native off and a later restore
+                        TransferBacklight(0, stamp!, response);
+                        offIssued = true;
+                        CloseChannel(); SetState(ScreenStates.Sleeping, null, keepError: false);
+                    }
+                    catch (IOException ex) { CloseChannel(); powerError = "screen backlight off: " + ex.Message; }
+                    continue;
+                }
+
+                if (assignment is null) continue;
                 var trial = _ctx.TrialOf(_device.Id);
                 var targetFps = trial?.Info.Fps ?? assignment.Fps;
                 var period = 1000.0 / targetFps;
@@ -345,6 +380,7 @@ internal sealed partial class ScreenWorker : IDisposable
                 previousStart = frameStart;
                 double composeMs = 0, encodeMs = 0;
                 var bootstrapping = false;
+                var powerChanging = false;
                 try
                 {
                     EncodedFrame frame;
@@ -430,11 +466,20 @@ internal sealed partial class ScreenWorker : IDisposable
                     }
                     var readError = ReadResponse(response, family.Family == ScreenFamily.TlLcd ? trial?.Info.TlReadTimeoutMs ?? family.ReadTimeoutMs : family.ReadTimeoutMs);
                     var readMs = _ctx.Time.GetElapsedTime(readStart).TotalMilliseconds;
+                    var contentReadFacts = (_channel as IScreenUsbDiagnostics)?.LastRead;
+                    if (backlight is { Off: true } && warning?.StartsWith(ScreenCompositor.BlockedPrefix, StringComparison.Ordinal) != true)
+                    {
+                        // Restore only AFTER a fresh valid picture was accepted, so the old vendor picture never flashes on wake.
+                        powerChanging = true;
+                        TransferBacklight(backlight.RestoreLevel, stamp!, response);
+                        backlight.Save(false);
+                        powerChanging = false;
+                    }
                     _backoff.Reset();
                     retryAt = 0;
                     Wrote(warning ?? readError);
                     var skipped = trial?.Info.LegacyPacing == true ? 0 : pacing.Completed(_ctx.Time.GetTimestamp(), _ctx.Time.TimestampFrequency);
-                    var facts = (_channel as IScreenUsbDiagnostics)?.LastRead;
+                    var facts = contentReadFacts;
                     _performance.Add(new ScreenFrameWork(composeMs, encodeMs, packetMs, writeMs, readMs, waitedMs, intervalMs,
                         _ctx.Time.GetElapsedTime(frameStart).TotalMilliseconds, frame.Image.Length, packet.Length,
                         facts?.Reads ?? 0, facts?.Timeouts ?? 0, facts?.ZeroLength ?? 0, facts?.FirstMs ?? 0, facts?.DrainMs ?? 0,
@@ -444,6 +489,7 @@ internal sealed partial class ScreenWorker : IDisposable
                 }
                 catch (ScreenTransferException ex)
                 {
+                    if (powerChanging) powerError = "screen backlight wake: " + ex.Message;
                     if (ex.Kind == ScreenTransferError.ResponseMismatch) correlationDisabled = true;
                     _ctx.AbortTrial(_device.Id);
                     CloseChannel();
@@ -453,7 +499,7 @@ internal sealed partial class ScreenWorker : IDisposable
                     }
 
                     // a failed layer clear is not a dropped content frame; the reopened channel clears again
-                    retryAt = bootstrapping
+                    retryAt = powerChanging ? Fail(ex.Kind, powerError!, countDrop: false) : bootstrapping
                         ? Fail(ex.Kind, "H2 layer clear: " + ex.Message, countDrop: false)
                         : Fail(ex.Kind, ex.Message, countDrop: true);
                     continue;
@@ -462,6 +508,11 @@ internal sealed partial class ScreenWorker : IDisposable
                 catch (Exception ex)
 #pragma warning restore CA1031
                 {
+                    if (powerChanging)
+                    {
+                        CloseChannel(); powerError = "screen backlight wake state: " + ex.Message;
+                        continue; // the device may already be awake; never repeat a native control because a disk save failed
+                    }
                     _ctx.AbortTrial(_device.Id);
                     staticFrame = null;
                     retryAt = 0;
@@ -515,6 +566,20 @@ internal sealed partial class ScreenWorker : IDisposable
         {
             return "response read: " + ex.Message;
         }
+    }
+
+    private void TransferBacklight(byte level, ScreenTimestamp stamp, byte[] response)
+    {
+        var timestamp = stamp.Next();
+        if (_channel is IScreenUsbDiagnostics diagnostics)
+        {
+            diagnostics.CorrelatedReplies = false; diagnostics.ReplyQuietMs = ScreenReplyFlow.DrainTimeoutMs;
+            diagnostics.ExpectResponse(TurzxBacklightProtocol.Command, timestamp);
+        }
+        _channel!.Write(TurzxBacklightProtocol.Build(level, timestamp), _device.Family.WriteTimeoutMs);
+        var count = _channel.Read(response, _device.Family.ReadTimeoutMs);
+        if (!TurzxBacklightProtocol.MatchesReply(response.AsSpan(0, count), timestamp))
+            throw new ScreenTransferException(ScreenTransferError.ResponseMismatch, "Native backlight command was not acknowledged for this request.");
     }
 
     /// <param name="note">A non-fatal note for LastError (a compose warning or a tolerated response-read error), else null.</param>

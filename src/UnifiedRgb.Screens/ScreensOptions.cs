@@ -16,6 +16,9 @@ public sealed class ScreensOptions
 
     public ScreenFamilyOptions Turzx { get; set; } = new();
 
+    /// <summary>Native volatile backlight wake target (0..255), independent of image brightness. Model reference default170; no proven hardware readback.</summary>
+    public byte TurzxRestoreBacklight { get; set; } = 170;
+
     /// <summary>
     /// Clockwise rotation from the landscape 1920x480 authoring canvas to the native 480x1920 TURZX raster (90 or 270). This is
     /// our own pixel transform; no firmware orientation command is ever sent. The physically correct value is unverified.

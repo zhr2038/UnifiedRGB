@@ -3,7 +3,7 @@ namespace UnifiedRgb.Contracts.Dto;
 /// <summary>
 /// One USB screen (OPUS-SCREENS work order). Id is "screen:&lt;tl-lcd|h2|turzx&gt;:&lt;instance&gt;"; Family is "TlLcd", "H2" or
 /// "Turzx". Width/Height are the authoring canvas at Rotation 0 (Turzx: landscape 1920x480). State is "Disabled", "Idle",
-/// "Running", "Blocked", "Error", "Disconnected", "Unsupported" or "Stopped". FramesWritten counts completed USB writes, which
+/// "Running", "Blocked", "Error", "Disconnected", "Unsupported", "Stopped" or "Sleeping" (native backlight off). FramesWritten counts completed USB writes, which
 /// are not optical proof; ControlVerified is the owner's acceptance flag from configuration. A physical position (left/middle/
 /// right) is never inferred.
 /// </summary>

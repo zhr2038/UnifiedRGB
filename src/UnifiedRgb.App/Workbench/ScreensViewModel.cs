@@ -18,7 +18,7 @@ public sealed record ScreenChoice(ScreenDeviceDto Dto)
     public static string StateName(string state) => state switch
     {
         "Disabled" => "输出未开启", "Idle" => "待播放", "Running" => "正在发送", "Blocked" => "被其他程序占用",
-        "Error" => "通信异常", "Disconnected" => "未连接", "Unsupported" => "协议未匹配", "Stopped" => "已暂停", _ => state,
+        "Error" => "通信异常", "Disconnected" => "未连接", "Unsupported" => "协议未匹配", "Stopped" => "已暂停", "Sleeping" => "已休眠 · 背光关闭", _ => state,
     };
 }
 public sealed record AssetChoice(ScreenAssetDto? Dto)

@@ -34,6 +34,7 @@ public static class DisplayNames
 
     public static string State(string? state) => state switch
     {
+        "Sleeping" => "屏幕休眠 · 背光已关闭",
         "Active" => "运行中", "Blocked" => "未接管", "Contended" => "控制被占用",
         "Offline" => "离线", "BringUp" => "校验中", _ => state ?? "状态未知",
     };

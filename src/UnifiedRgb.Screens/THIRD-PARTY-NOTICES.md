@@ -8,12 +8,15 @@ to 504 bytes inside a 512-byte block ending A1 1A, the big-endian payload length
 bound) were derived from:
 
 - Repository: https://github.com/phstudy/turing-smart-screen-cli
-- Commit: ffc652ab7fa421ff57e7a2bf67c20bfccb884784 (`src/turingscreencli/operations.py` `_send_png_bytes`,
+- Commit: ffc652ab7fa421ff57e7a2bf67c20bfccb884784 (`src/turingscreencli/operations.py` `_send_png_bytes` and `send_brightness_command`,
   `src/turingscreencli/transport.py`)
 - Captured copy: `analysis/evidence-extract/screens-native-20261018/turzx-*` and `reference.json`
 
-This is an independent C# reimplementation of the image-push path only; no source file of that project is
-included, and none of its storage, video, brightness, firmware or reset operations is implemented.
+This is an independent C# reimplementation of image push and the narrowly typed volatile backlight command14
+(level at byte8), used to turn the case display's backlight off during whole-case blackout and restore a configured
+wake level. No source file of that project is included. Storage, video, persistent-device settings and reset operations
+are not implemented. The image-push API still rejects backlight/control commands; the separate backlight builder can
+only construct command14 and never writes device flash.
 
 ```
 MIT License

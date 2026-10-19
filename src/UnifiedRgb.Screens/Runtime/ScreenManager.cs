@@ -130,7 +130,7 @@ public sealed partial class ScreenManager : IScreenService, IScreenSceneBinding,
 
     /// <param name="lcdRecovery">Optional RF side of <see cref="RestartFanLcdAsync"/> (the Host's Lian Li adapter); null refuses it.</param>
     public ScreenManager(ScreensOptions options, string dataDirectory, ScreenPlatform platform, ILoggerFactory? loggers = null,
-        IFanLcdGroupRecovery? lcdRecovery = null)
+        IFanLcdGroupRecovery? lcdRecovery = null, Func<bool>? wholeCaseBlackout = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentException.ThrowIfNullOrEmpty(dataDirectory);
@@ -155,6 +155,8 @@ public sealed partial class ScreenManager : IScreenService, IScreenSceneBinding,
             Encode = Encode,
             TrialOf = TrialOf,
             AbortTrial = AbortTrialOf,
+            WholeCaseBlackout = wholeCaseBlackout ?? (static () => false),
+            BacklightStateDirectory = Path.Combine(root, "backlight"),
         };
         if (!HeadlessRendering.Enabled)
         {
