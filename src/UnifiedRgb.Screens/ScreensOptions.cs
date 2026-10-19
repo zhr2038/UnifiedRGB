@@ -19,6 +19,20 @@ public sealed class ScreensOptions
     /// <summary>Native volatile backlight wake target (0..255), independent of image brightness. Model reference default170; no proven hardware readback.</summary>
     public byte TurzxRestoreBacklight { get; set; } = 170;
 
+    /// <summary>Native LCD-only wake target, percentage0..100; not image brightness or a hardware readback.</summary>
+    public byte TlLcdRestoreBacklight { get; set; } = 100;
+
+    /// <summary>Native LCD-only wake target, percentage0..100; does not set pump/fan parameters.</summary>
+    public byte H2RestoreBacklight { get; set; } = 100;
+
+    public byte RestoreBacklightOf(ScreenFamily family) => family switch
+    {
+        ScreenFamily.Turzx => TurzxRestoreBacklight,
+        ScreenFamily.TlLcd when TlLcdRestoreBacklight <= 100 => TlLcdRestoreBacklight,
+        ScreenFamily.H2 when H2RestoreBacklight <= 100 => H2RestoreBacklight,
+        _ => throw new ArgumentOutOfRangeException(nameof(family), "Invalid LCD backlight family or percentage."),
+    };
+
     /// <summary>
     /// Clockwise rotation from the landscape 1920x480 authoring canvas to the native 480x1920 TURZX raster (90 or 270). This is
     /// our own pixel transform; no firmware orientation command is ever sent. The physically correct value is unverified.

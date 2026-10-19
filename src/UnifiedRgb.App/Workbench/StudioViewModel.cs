@@ -272,7 +272,7 @@ public sealed class StudioViewModel : ObservableObject
         if (targets.Length == 0) throw new InvalidOperationException("没有可以熄灭的灯光分区。");
         await service.SaveProfileAsync(new(BeforeLightsOffProfile, new(current.Assignments, Package: current.Package))).ConfigureAwait(true);
         await service.SetSceneAsync(new([new(targets, "StaticColor", ["#000000"], Brightness: 0, Strategy: "Vendor")])).ConfigureAwait(true);
-        Message = "已保存熄灯前场景并关闭灯光；已接管的长屏将关闭背光并停止发帧，点击恢复后唤醒。";
+        Message = "已保存熄灯前场景并关闭灯光；已接管的屏幕将关闭背光并停止发帧，点击恢复后唤醒。";
     }
     internal static bool IsPersistedBlackout(SceneDto scene) => scene.Package is null && scene.Assignments.Count > 0
         && scene.Assignments.All(a => a.EffectId == "StaticColor" && a.FrameSetId is null
@@ -283,7 +283,7 @@ public sealed class StudioViewModel : ObservableObject
         var backup = await service.LoadProfileAsync(BeforeLightsOffProfile).ConfigureAwait(true);
         await service.SetSceneAsync(new(backup.Scene.Assignments, Package: backup.Scene.Package)).ConfigureAwait(true);
         await RefreshAsync(true).ConfigureAwait(true);
-        Message = "已恢复熄灯前保存的场景；长屏在新画面就绪后恢复背光。";
+        Message = "已恢复熄灯前保存的场景；屏幕在新画面就绪后恢复背光。";
     }
     private void NotifyDraftAccess() { OnPropertyChanged(nameof(CanEditDraft)); OnPropertyChanged(nameof(SceneDescription)); ApplyCommand.RaiseCanExecuteChanged(); }
     public void SetConnected(bool connected)

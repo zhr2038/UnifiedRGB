@@ -246,8 +246,8 @@ internal sealed partial class ScreenWorker : IDisposable
         string? powerError = null;
         try
         {
-            if (family.Family == ScreenFamily.Turzx && _ctx.BacklightStateDirectory is { } stateDirectory)
-                backlight = new ScreenBacklightLatch(stateDirectory, _device.Id, _ctx.Options.TurzxRestoreBacklight);
+            if (_ctx.BacklightStateDirectory is { } stateDirectory)
+                backlight = new ScreenBacklightLatch(stateDirectory, _device.Id, _ctx.Options.RestoreBacklightOf(family.Family));
             while (!_stopping)
             {
                 if (_mailbox.TryTake() is { } cmd)
@@ -464,11 +464,14 @@ internal sealed partial class ScreenWorker : IDisposable
                         configured.ReplyQuietMs = trial?.Info.ReplyQuietMs ?? 10;
                         configured.CorrelatedReplies = correlationDisabled ? false : trial?.Info.CorrelatedReplies;
                     }
-                    var readError = ReadResponse(response, family.Family == ScreenFamily.TlLcd ? trial?.Info.TlReadTimeoutMs ?? family.ReadTimeoutMs : family.ReadTimeoutMs);
+                    var readError = ReadResponse(response, family.Family == ScreenFamily.TlLcd ? trial?.Info.TlReadTimeoutMs ?? family.ReadTimeoutMs : family.ReadTimeoutMs, out var replyBytes);
                     var readMs = _ctx.Time.GetElapsedTime(readStart).TotalMilliseconds;
                     var contentReadFacts = (_channel as IScreenUsbDiagnostics)?.LastRead;
                     if (backlight is { Off: true } && warning?.StartsWith(ScreenCompositor.BlockedPrefix, StringComparison.Ordinal) != true)
                     {
+                        if (readError is not null || (family.Family != ScreenFamily.TlLcd
+                            && !ScreenReplyFlow.MatchesImageReply(response.AsSpan(0, replyBytes), frame.Command, requestTimestamp)))
+                            throw new ScreenTransferException(ScreenTransferError.ResponseMismatch, "Fresh content was not acknowledged; leave the backlight off.");
                         // Restore only AFTER a fresh valid picture was accepted, so the old vendor picture never flashes on wake.
                         powerChanging = true;
                         TransferBacklight(backlight.RestoreLevel, stamp!, response);
@@ -555,11 +558,14 @@ internal sealed partial class ScreenWorker : IDisposable
     /// One bounded response read. A timeout or an unexpected read error is tolerated (the write already completed) and returned
     /// as the frame's LastError note; a disconnect or abort propagates like a write failure.
     /// </summary>
-    private string? ReadResponse(byte[] buffer, int timeoutMs)
+    private string? ReadResponse(byte[] buffer, int timeoutMs) => ReadResponse(buffer, timeoutMs, out _);
+
+    private string? ReadResponse(byte[] buffer, int timeoutMs, out int count)
     {
+        count = 0;
         try
         {
-            _channel!.Read(buffer, timeoutMs);
+            count = _channel!.Read(buffer, timeoutMs);
             return null;
         }
         catch (ScreenTransferException ex) when (ex.Kind is not (ScreenTransferError.Disconnected or ScreenTransferError.Aborted or ScreenTransferError.ReplyBacklog or ScreenTransferError.ResponseMismatch))
@@ -570,16 +576,41 @@ internal sealed partial class ScreenWorker : IDisposable
 
     private void TransferBacklight(byte level, ScreenTimestamp stamp, byte[] response)
     {
+        var family = _device.Family.Family;
+        if (family == ScreenFamily.TlLcd) DrainTlReplies(response, null);
         var timestamp = stamp.Next();
         if (_channel is IScreenUsbDiagnostics diagnostics)
         {
             diagnostics.CorrelatedReplies = false; diagnostics.ReplyQuietMs = ScreenReplyFlow.DrainTimeoutMs;
             diagnostics.ExpectResponse(TurzxBacklightProtocol.Command, timestamp);
         }
-        _channel!.Write(TurzxBacklightProtocol.Build(level, timestamp), _device.Family.WriteTimeoutMs);
+        var packet = family == ScreenFamily.Turzx ? TurzxBacklightProtocol.Build(level, timestamp)
+            : LianLiBacklightProtocol.Build(family, level, timestamp);
+        _channel!.Write(packet, _device.Family.WriteTimeoutMs);
+        // PID0006 hardware returns a 511-byte command14/C8 status behind old image replies. Consume the old queue first,
+        // then require this control's own timestamp and drain to a real timeout. USB status still is not optical acceptance.
+        if (family == ScreenFamily.TlLcd) { DrainTlReplies(response, timestamp); return; }
         var count = _channel.Read(response, _device.Family.ReadTimeoutMs);
         if (!TurzxBacklightProtocol.MatchesReply(response.AsSpan(0, count), timestamp))
             throw new ScreenTransferException(ScreenTransferError.ResponseMismatch, "Native backlight command was not acknowledged for this request.");
+    }
+
+    private void DrainTlReplies(byte[] response, uint? expectedTimestamp)
+    {
+        var matched = false;
+        for (var i = 0; i < ScreenReplyFlow.OpenDrainLimit; i++)
+        {
+            var count = _channel!.Read(response, ScreenReplyFlow.DrainTimeoutMs);
+            if (expectedTimestamp is { } timestamp && LianLiBacklightProtocol.MatchesReply(response.AsSpan(0, count), timestamp)) matched = true;
+            // A successful ZLP is not a quiet pipe. Actual WinUSB diagnostics distinguish it from a timeout.
+            if (_channel is IScreenUsbDiagnostics facts ? facts.LastRead.Timeouts > 0 : count == 0)
+            {
+                if (expectedTimestamp.HasValue && !matched)
+                    throw new ScreenTransferException(ScreenTransferError.ResponseMismatch, "TL LCD backlight command was not acknowledged for this request.");
+                return;
+            }
+        }
+        throw new ScreenTransferException(ScreenTransferError.ReplyBacklog, "TL LCD status queue did not settle before another screen command.");
     }
 
     /// <param name="note">A non-fatal note for LastError (a compose warning or a tolerated response-read error), else null.</param>
