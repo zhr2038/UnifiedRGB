@@ -349,13 +349,18 @@ public sealed class RenderLoop : IDisposable
     /// not exist yet are kept in the scene but not rendered; they light up when SetControllers brings the controller in.
     /// Unknown effects always throw.
     /// </summary>
-    public void SetScene(Scene scene, bool allowMissingZones)
+    public void SetScene(Scene scene, bool allowMissingZones) => SetScene(scene, allowMissingZones, null);
+
+    /// <summary>Prepare completely, then run a durable-state commit before any live plan/anchor/mailbox publication.</summary>
+    public void SetScene(Scene scene, bool allowMissingZones, Action? beforePublish)
     {
         ArgumentNullException.ThrowIfNull(scene);
         lock (_gate)
         {
             ValidatePaths(scene);
-            Activate(scene, skipMissing: allowMissingZones, force: false);
+            var compiled = Compile(scene, allowMissingZones);
+            beforePublish?.Invoke();
+            Activate(compiled, force: false, forceFor: null);
             _scene = scene;
         }
     }

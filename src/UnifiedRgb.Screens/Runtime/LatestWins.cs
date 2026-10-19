@@ -8,6 +8,7 @@ internal sealed class LatestWins<T> : IDisposable
     where T : class
 {
     private readonly SemaphoreSlim _signal = new(0, 1);
+    private readonly ScreenWaitTimer _timer = new();
     private T? _value;
 
     public void Post(T value)
@@ -32,9 +33,9 @@ internal sealed class LatestWins<T> : IDisposable
     public T? TryTake() => Interlocked.Exchange(ref _value, null);
 
     /// <summary>Waits up to <paramref name="timeoutMs"/> (-1 = forever) for a post; true when one may be waiting.</summary>
-    public bool Wait(int timeoutMs) => _signal.Wait(timeoutMs);
+    public bool Wait(int timeoutMs) => _timer.TryWait(_signal, timeoutMs, out var signaled) ? signaled : _signal.Wait(timeoutMs);
 
-    public void Dispose() => _signal.Dispose();
+    public void Dispose() { _timer.Dispose(); _signal.Dispose(); }
 }
 
 /// <summary>Reopen delay after failures: initial, doubling per consecutive failure, capped; reset by a success.</summary>

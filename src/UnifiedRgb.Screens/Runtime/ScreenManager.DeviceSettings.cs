@@ -86,7 +86,11 @@ public sealed partial class ScreenManager : IScreenDeviceSettingsService
         await EnterMutationAsync(ct).ConfigureAwait(false);
         try
         {
+            lock (_publicationGate)
+            {
+            ObjectDisposedException.ThrowIf(_stopped || _disposed, this);
             Dictionary<string, ScreenDeviceSetting> next;
+            ScreenSceneDto normalized;
             lock (_gate)
             {
                 ObjectDisposedException.ThrowIf(_disposed, this);
@@ -104,12 +108,16 @@ public sealed partial class ScreenManager : IScreenDeviceSettingsService
                 }
 
                 next = new Dictionary<string, ScreenDeviceSetting>(current, StringComparer.Ordinal) { [id] = wanted };
+                normalized = NormalizeWith(_scene!, next);
             }
 
             // file I/O outside _gate, still under the mutation gate (no scene commit can interleave); a failure changes nothing
             try
             {
-                _settingsStore.Save(next);
+                List<SceneStateFile> files = [new("screens/device-settings.json", ScreenDeviceSettingsStore.Serialize(next))];
+                if (!ReferenceEquals(normalized, _scene)) files.Add(new("screens/scene.json", System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(normalized, ContractsJsonContext.Default.ScreenSceneDto)));
+                ct.ThrowIfCancellationRequested();
+                SceneStateFiles.Commit(_stateRoot, files);
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
@@ -120,7 +128,6 @@ public sealed partial class ScreenManager : IScreenDeviceSettingsService
             lock (_gate)
             {
                 Volatile.Write(ref _deviceSettings, next);
-                var normalized = NormalizeHeld(_scene!);
                 if (!ReferenceEquals(normalized, _scene))
                 {
                     _scene = normalized;
@@ -133,13 +140,9 @@ public sealed partial class ScreenManager : IScreenDeviceSettingsService
                 }
             }
 
-            if (changed is not null)
-            {
-                SaveSceneLogged(changed); // keeps scene.json's Rotation consistent (also for a rollback to an older Host)
-            }
-
             LogDeviceSettingsSaved(_log, id, wanted.Rotation, wanted.EncodingQuality, changed is not null);
             return Dto(id, wanted);
+            }
         }
         finally
         {
@@ -180,8 +183,10 @@ public sealed partial class ScreenManager : IScreenDeviceSettingsService
 
     /// <summary>_gate held. Each assignment with a saved setting at that rotation; the same instance when nothing changes.</summary>
     private ScreenSceneDto NormalizeHeld(ScreenSceneDto scene)
+        => NormalizeWith(scene, _deviceSettings!);
+
+    private static ScreenSceneDto NormalizeWith(ScreenSceneDto scene, IReadOnlyDictionary<string, ScreenDeviceSetting> settings)
     {
-        var settings = _deviceSettings!;
         ScreenAssignmentDto[]? copy = null;
         for (var i = 0; i < scene.Assignments.Count; i++)
         {
@@ -253,19 +258,6 @@ public sealed partial class ScreenManager : IScreenDeviceSettingsService
         }
 
         Volatile.Write(ref _deviceSettings, loaded);
-    }
-
-    /// <summary>Persists settings established by a committed legacy SetScreenScene; an I/O failure is logged (memory stays).</summary>
-    private void SaveEstablishedLogged(IReadOnlyDictionary<string, ScreenDeviceSetting> settings)
-    {
-        try
-        {
-            _settingsStore.Save(settings);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            LogDeviceSettingsSaveFailed(_log, _settingsStore.Path, ex.Message);
-        }
     }
 
     private static HashSet<string> Indexed8Ids(ScreensOptions options, ILogger log)

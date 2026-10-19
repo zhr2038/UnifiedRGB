@@ -73,6 +73,14 @@ public interface IScreenSceneTransaction : IDisposable
     void Commit();
 }
 
+/// <summary>Production transactions expose prepared state bytes; a coordinator persists them with RGB before Publish.</summary>
+public interface IPreparedScreenSceneTransaction : IScreenSceneTransaction
+{
+    IReadOnlyList<SceneStateFile> Files { get; }
+    void Coordinate(Action commit);
+    void Publish();
+}
+
 /// <summary>
 /// The screen subsystem: discovery/hotplug, one worker per present display whose output gate is open, the asset store,
 /// preview, telemetry and the persisted screen scene. Independent of the RGB engine and writers. With the master gate closed
@@ -84,6 +92,7 @@ public sealed partial class ScreenManager : IScreenService, IScreenSceneBinding,
     private const long PreviewCacheBytes = 32L * 1024 * 1024;
 
     private readonly ScreensOptions _options;
+    private readonly string _stateRoot;
     private readonly ScreenPlatform _platform;
     private readonly ILogger _log;
     private readonly AssetStore _assets;
@@ -101,7 +110,11 @@ public sealed partial class ScreenManager : IScreenService, IScreenSceneBinding,
     // Deliberately not disposed: a transaction handed out before disposal still releases it.
     private readonly SemaphoreSlim _mutation = new(1, 1);
     private readonly object _gate = new();
+    private readonly object _publicationGate = new();
+    private readonly object _stopGate = new();
+    private SceneTransaction? _sceneTransaction;
     private readonly Dictionary<string, ScreenWorker> _workers = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, WorkerRecovery> _workerRecovery = new(StringComparer.Ordinal);
     private int _mutationWaiters;
     private ScreenCompositor? _previewCompositor;
     private ScreenSceneDto? _scene;
@@ -112,6 +125,8 @@ public sealed partial class ScreenManager : IScreenService, IScreenSceneBinding,
     private Task? _discoveryLoop;
     private Task? _telemetryLoop;
     private bool _disposed;
+    private bool _stopped;
+    private Task? _stopTask;
 
     /// <param name="lcdRecovery">Optional RF side of <see cref="RestartFanLcdAsync"/> (the Host's Lian Li adapter); null refuses it.</param>
     public ScreenManager(ScreensOptions options, string dataDirectory, ScreenPlatform platform, ILoggerFactory? loggers = null,
@@ -122,6 +137,7 @@ public sealed partial class ScreenManager : IScreenService, IScreenSceneBinding,
         ArgumentNullException.ThrowIfNull(platform);
         loggers ??= NullLoggerFactory.Instance;
         _options = options;
+        _stateRoot = Path.GetFullPath(dataDirectory);
         _platform = platform;
         _lcdRecovery = lcdRecovery;
         _log = loggers.CreateLogger<ScreenManager>();
@@ -137,6 +153,8 @@ public sealed partial class ScreenManager : IScreenService, IScreenSceneBinding,
             Timeline = () => Volatile.Read(ref _timeline),
             EncodingOf = EncodingOf,
             Encode = Encode,
+            TrialOf = TrialOf,
+            AbortTrial = AbortTrialOf,
         };
         if (!HeadlessRendering.Enabled)
         {
@@ -179,7 +197,7 @@ public sealed partial class ScreenManager : IScreenService, IScreenSceneBinding,
             EnsureScene();
             foreach (var d in present)
             {
-                list.Add(_workers.TryGetValue(d.Id, out var w) ? w.Snapshot() : Idle(d.Family, d.Id, d.Instance,
+                list.Add(_workers.TryGetValue(d.Id, out var w) ? WorkerSnapshot(d.Id, w) : Idle(d.Family, d.Id, d.Instance,
                     !_options.OutputAllowed(d.Family.Family) ? ScreenStates.Disabled
                     : _quiesced?.Contains(d.Id) == true ? ScreenStates.Stopped : ScreenStates.Idle));
             }
@@ -195,6 +213,14 @@ public sealed partial class ScreenManager : IScreenService, IScreenSceneBinding,
 
         IReadOnlyList<ScreenDeviceDto> ordered = [.. list.OrderBy(s => Enum.Parse<ScreenFamily>(s.Family)).ThenBy(s => s.Id, StringComparer.Ordinal)];
         return Task.FromResult(ordered);
+    }
+
+    private ScreenDeviceDto WorkerSnapshot(string id, ScreenWorker worker)
+    {
+        var snapshot = worker.Snapshot();
+        return worker.HasExited && _workerRecovery.TryGetValue(id, out var recovery) && recovery.Attempts >= 3
+            ? snapshot with { LastError = snapshot.LastError + " · 自动恢复3次已用尽，请检查原因后重新应用内容。" }
+            : snapshot;
     }
 
     public async Task<PcTelemetryDto> GetPcTelemetryAsync(CancellationToken ct = default)
@@ -256,6 +282,7 @@ public sealed partial class ScreenManager : IScreenService, IScreenSceneBinding,
         {
             lock (_gate)
             {
+                ObjectDisposedException.ThrowIf(_stopped || _disposed, this);
                 EnsureScene();
                 if (_scene!.Assignments.Any(a => a.BackgroundAssetId == assetId))
                 {
@@ -371,6 +398,7 @@ public sealed partial class ScreenManager : IScreenService, IScreenSceneBinding,
     public async Task SetScreenSceneAsync(ScreenSceneDto scene, CancellationToken ct = default)
     {
         using var transaction = await BeginSceneCoreAsync(scene, establish: true, ct).ConfigureAwait(false);
+        ct.ThrowIfCancellationRequested();
         transaction.Commit();
     }
 
@@ -429,7 +457,11 @@ public sealed partial class ScreenManager : IScreenService, IScreenSceneBinding,
                 }
             }
 
-            return new SceneTransaction(this, normalized, established);
+            lock (_gate)
+            {
+                ObjectDisposedException.ThrowIf(_stopped || _disposed, this);
+                return _sceneTransaction = new SceneTransaction(this, normalized, established);
+            }
         }
         catch
         {
@@ -461,17 +493,27 @@ public sealed partial class ScreenManager : IScreenService, IScreenSceneBinding,
     // ---- lifetime ----
 
     /// <summary>Host stop: stops loops and workers (each aborts its pending transfer and closes its handle).</summary>
-    public async Task StopAsync()
+    public Task StopAsync()
     {
-        await _cts.CancelAsync().ConfigureAwait(false);
+        lock (_stopGate) { return _stopTask ??= StopCoreAsync(); }
+    }
+
+    private async Task StopCoreAsync()
+    {
         Task?[] loops;
         ScreenWorker[] workers;
-        lock (_gate)
+        lock (_publicationGate)
         {
-            loops = [_discoveryLoop, _telemetryLoop];
-            workers = [.. _workers.Values];
-            _workers.Clear();
+            lock (_gate)
+            {
+                _stopped = true;
+                _sceneTransaction?.Dispose(); // cancel an uncommitted lease; do not wait forever for an abandoned transaction
+                loops = [_discoveryLoop, _telemetryLoop];
+                workers = [.. _workers.Values];
+                _workers.Clear();
+            }
         }
+        await _cts.CancelAsync().ConfigureAwait(false);
 
         foreach (var loop in loops)
         {
@@ -486,6 +528,7 @@ public sealed partial class ScreenManager : IScreenService, IScreenSceneBinding,
 
     public async ValueTask DisposeAsync()
     {
+        await StopAsync().ConfigureAwait(false);
         lock (_gate)
         {
             if (_disposed)
@@ -496,7 +539,6 @@ public sealed partial class ScreenManager : IScreenService, IScreenSceneBinding,
             _disposed = true;
         }
 
-        await StopAsync().ConfigureAwait(false);
         _sampler.Dispose();
         if (_previewThread.IsValueCreated)
         {
@@ -523,6 +565,11 @@ public sealed partial class ScreenManager : IScreenService, IScreenSceneBinding,
         try
         {
             await _mutation.WaitAsync(ct).ConfigureAwait(false);
+            if (_disposed || _stopped)
+            {
+                _mutation.Release();
+                throw new ObjectDisposedException(nameof(ScreenManager));
+            }
         }
         finally
         {
@@ -534,11 +581,12 @@ public sealed partial class ScreenManager : IScreenService, IScreenSceneBinding,
     /// Activates a validated, normalized scene (and any local settings a legacy SetScreenScene established); the mutation gate is
     /// held. The file writes happen outside _gate (but still in order) and are logged on failure.
     /// </summary>
-    private void CommitHeld(ScreenSceneDto scene, IReadOnlyDictionary<string, ScreenDeviceSetting>? established)
+    private void PublishHeld(ScreenSceneDto scene, IReadOnlyDictionary<string, ScreenDeviceSetting>? established)
     {
         lock (_gate)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
+            Volatile.Write(ref _rateTrial, null); // any explicit new scene ends the temporary lab override
             if (established is not null)
             {
                 Volatile.Write(ref _deviceSettings, established);
@@ -546,31 +594,14 @@ public sealed partial class ScreenManager : IScreenService, IScreenSceneBinding,
 
             _scene = scene;
             _paused = false;
+            _workerRecovery.Clear(); // explicit apply allows a new bounded recovery burst; polling never replenishes it
             foreach (var (id, w) in _workers)
             {
                 w.Post(AssignmentFor(id), paused: false);
             }
         }
 
-        if (established is not null)
-        {
-            SaveEstablishedLogged(established);
-        }
-
-        SaveSceneLogged(scene);
         LogApplied(_log, scene.Assignments.Count);
-    }
-
-    private void SaveSceneLogged(ScreenSceneDto scene)
-    {
-        try
-        {
-            _sceneStore.Save(scene);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            LogSaveFailed(_log, _sceneStore.Path, ex.Message);
-        }
     }
 
     /// <summary>
@@ -600,14 +631,36 @@ public sealed partial class ScreenManager : IScreenService, IScreenSceneBinding,
 
     /// <summary>Owns one acquisition of the mutation gate: released exactly once, by Commit or by Dispose.</summary>
     private sealed class SceneTransaction(ScreenManager owner, ScreenSceneDto scene, IReadOnlyDictionary<string, ScreenDeviceSetting>? established)
-        : IScreenSceneTransaction
+        : IPreparedScreenSceneTransaction
     {
         private const int Open = 0;
         private const int Done = 1;
         private int _state;
+        public IReadOnlyList<SceneStateFile> Files { get; } = established is null
+            ? [new("screens/scene.json", System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(scene, ContractsJsonContext.Default.ScreenSceneDto))]
+            : [new("screens/scene.json", System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(scene, ContractsJsonContext.Default.ScreenSceneDto)),
+                new("screens/device-settings.json", ScreenDeviceSettingsStore.Serialize(established))];
 
         public void Commit()
         {
+            Coordinate(() => { SceneStateFiles.Commit(owner._stateRoot, Files); Publish(); });
+        }
+
+        public void Coordinate(Action commit)
+        {
+            ArgumentNullException.ThrowIfNull(commit);
+            lock (owner._publicationGate)
+            {
+                ObjectDisposedException.ThrowIf(owner._stopped || owner._disposed, owner);
+                if (Volatile.Read(ref _state) != Open) throw new InvalidOperationException("This screen scene transaction is already committed or disposed.");
+                commit(); // synchronous prepare/persist/publish: stop cannot cut through its durable commit point
+            }
+        }
+
+        public void Publish()
+        {
+            lock (owner._publicationGate)
+            {
             if (Interlocked.CompareExchange(ref _state, Done, Open) != Open)
             {
                 throw new InvalidOperationException("This screen scene transaction is already committed or disposed.");
@@ -615,19 +668,25 @@ public sealed partial class ScreenManager : IScreenService, IScreenSceneBinding,
 
             try
             {
-                owner.CommitHeld(scene, established);
+                owner.PublishHeld(scene, established);
             }
             finally
             {
+                lock (owner._gate) { if (ReferenceEquals(owner._sceneTransaction, this)) owner._sceneTransaction = null; }
                 owner._mutation.Release();
+            }
             }
         }
 
         public void Dispose()
         {
+            lock (owner._publicationGate)
+            {
             if (Interlocked.CompareExchange(ref _state, Done, Open) == Open)
             {
+                lock (owner._gate) { if (ReferenceEquals(owner._sceneTransaction, this)) owner._sceneTransaction = null; }
                 owner._mutation.Release();
+            }
             }
         }
     }
@@ -645,6 +704,7 @@ public sealed partial class ScreenManager : IScreenService, IScreenSceneBinding,
             return;
         }
 
+        SceneStateFiles.Recover(_stateRoot);
         var persisted = _sceneStore.Load();
         LoadDeviceSettingsHeld(persisted);
         _scene = NormalizeHeld(persisted);
@@ -689,7 +749,7 @@ public sealed partial class ScreenManager : IScreenService, IScreenSceneBinding,
         var gone = new List<ScreenWorker>();
         lock (_gate)
         {
-            if (_disposed || _cts.IsCancellationRequested)
+            if (_disposed || _stopped || _cts.IsCancellationRequested)
             {
                 return;
             }
@@ -697,6 +757,32 @@ public sealed partial class ScreenManager : IScreenService, IScreenSceneBinding,
             EnsureScene();
             foreach (var d in present)
             {
+                if (_workers.TryGetValue(d.Id, out var existing) && existing.HasExited && !_paused
+                    && _options.OutputAllowed(d.Family.Family) && _quiesced?.Contains(d.Id) != true)
+                {
+                    var now = _platform.Time.GetTimestamp();
+                    if (!_workerRecovery.TryGetValue(d.Id, out var recovery))
+                    {
+                        recovery = new WorkerRecovery();
+                        _workerRecovery[d.Id] = recovery;
+                        recovery.NotBefore = now + _platform.Time.TimestampFrequency;
+                    }
+                    if (recovery.Attempts < 3 && now >= recovery.NotBefore)
+                    {
+                        var previous = existing.Snapshot();
+                        gone.Add(existing); // already exited: no native operation can overlap its replacement
+                        recovery.Attempts++;
+                        recovery.NotBefore = now + (1L << recovery.Attempts) * _platform.Time.TimestampFrequency;
+                        _workers[d.Id] = new ScreenWorker(d, _workerContext, new WorkerCommand(AssignmentFor(d.Id), _paused), previous);
+                        recovery.StartedAt = now;
+                    }
+                }
+                else if (_workers.TryGetValue(d.Id, out existing) && _workerRecovery.TryGetValue(d.Id, out var recovered)
+                    && existing.Snapshot().State == ScreenStates.Running
+                    && _platform.Time.GetElapsedTime(recovered.StartedAt) >= TimeSpan.FromSeconds(30))
+                {
+                    _workerRecovery.Remove(d.Id); // a healthy interval ends the burst; a single successful frame does not
+                }
                 // a screen quiesced by RestartFanLcdAsync gets no worker (not even a hotplug-fresh one) until the restart restores it
                 if (_options.OutputAllowed(d.Family.Family) && !_workers.ContainsKey(d.Id) && _quiesced?.Contains(d.Id) != true)
                 {
@@ -709,6 +795,7 @@ public sealed partial class ScreenManager : IScreenService, IScreenSceneBinding,
             {
                 gone.Add(_workers[id]);
                 _workers.Remove(id);
+                _workerRecovery.Remove(id);
                 LogDetached(_log, id);
             }
         }
@@ -717,6 +804,13 @@ public sealed partial class ScreenManager : IScreenService, IScreenSceneBinding,
         {
             w.Dispose();
         }
+    }
+
+    private sealed class WorkerRecovery
+    {
+        public int Attempts { get; set; }
+        public long NotBefore { get; set; }
+        public long StartedAt { get; set; }
     }
 
     private async Task DiscoveryLoopAsync(CancellationToken ct)

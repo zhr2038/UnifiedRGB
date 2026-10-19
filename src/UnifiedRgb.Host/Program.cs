@@ -18,6 +18,8 @@ if (args.Length == 1 && args[0] is "--register-task" or "--unregister-task" or "
         case "--unregister-task":
             return ScheduledTaskInstaller.Unregister();
         default:
+            using (var ownership = new HardwareHostLease())
+            {
             var cfg = new ConfigurationBuilder().SetBasePath(AppContext.BaseDirectory).AddJsonFile("appsettings.json", optional: true).Build();
             var o = new UnifiedRgbOptions();
             cfg.GetSection(UnifiedRgbOptions.Section).Bind(o);
@@ -27,9 +29,15 @@ if (args.Length == 1 && args[0] is "--register-task" or "--unregister-task" or "
             }
 
             return 0;
+            }
     }
 }
 
+// A rejected duplicate must exit before configuration/DI can construct or start any device service.
+HardwareHostLease hardwareOwnership;
+try { hardwareOwnership = new HardwareHostLease(); }
+catch (InvalidOperationException ex) { Console.Error.WriteLine(ex.Message); return 2; }
+using var heldHardwareOwnership = hardwareOwnership;
 var builder = Host.CreateApplicationBuilder(args);
 builder.Configuration.SetBasePath(AppContext.BaseDirectory);
 builder.Configuration.AddJsonFile("appsettings.json", optional: true);

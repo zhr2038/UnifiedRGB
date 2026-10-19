@@ -364,7 +364,7 @@ public sealed class DeviceSettingsTests
 
         file = File.ReadAllBytes(path);
         scene = await rig.Manager.GetScreenSceneAsync();
-        Directory.CreateDirectory(path + ".tmp"); // the temporary file cannot be written
+        using var lockedSettings = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read); // block the real atomic target replacement
         await FluentActions.Awaiting(() => rig.Manager.SetScreenDeviceSettingsAsync(new ScreenDeviceSettingsUpdateDto(H2, 270)))
             .Should().ThrowAsync<InvalidOperationException>().WithMessage("*could not be saved*Nothing was changed.");
         File.ReadAllBytes(path).Should().Equal(file);

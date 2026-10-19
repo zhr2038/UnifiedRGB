@@ -17,7 +17,7 @@ namespace UnifiedRgb.Host.Ipc;
 /// </summary>
 public sealed partial class PipeServer(
     UnifiedRgbOptions options, IRgbService service, ILogger<PipeServer> logger, IScreenService? screens = null, IScenePackageService? packages = null,
-    IScreenDeviceSettingsService? deviceSettings = null)
+    IScreenDeviceSettingsService? deviceSettings = null, IScreenPerformanceService? performance = null)
     : BackgroundService
 {
     // [LoggerMessage] in .NET 8 needs a field; primary-constructor parameters are not seen by the generator.
@@ -34,6 +34,32 @@ public sealed partial class PipeServer(
     public Task Listening => _listening.Task;
 
     private readonly TaskCompletionSource _listening = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private NamedPipeServerStream? _reserved;
+
+    internal void ReserveEndpoint()
+    {
+        try { _reserved ??= CreatePipe(first: true); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { _listening.TrySetException(ex); throw; }
+    }
+
+    private NamedPipeServerStream CreatePipe(bool first) => NamedPipeServerStreamAcl.Create(
+        options.PipeName, PipeDirection.InOut, MaxClients, PipeTransmissionMode.Byte,
+        PipeOptions.Asynchronous | (first ? PipeOptions.FirstPipeInstance : PipeOptions.None), 0, 0, PipeAcl.Create());
+
+    public override async Task StartAsync(CancellationToken cancellationToken)
+    {
+        await base.StartAsync(cancellationToken).ConfigureAwait(false);
+#pragma warning disable VSTHRD003 // the readiness task belongs to this service's own ExecuteAsync
+        await Listening.WaitAsync(cancellationToken).ConfigureAwait(false);
+#pragma warning restore VSTHRD003
+    }
+
+    public override void Dispose()
+    {
+        Interlocked.Exchange(ref _reserved, null)?.Dispose();
+        _listening.TrySetCanceled();
+        base.Dispose();
+    }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -45,15 +71,7 @@ public sealed partial class PipeServer(
                 NamedPipeServerStream pipe;
                 try
                 {
-                    pipe = NamedPipeServerStreamAcl.Create(
-                        options.PipeName,
-                        PipeDirection.InOut,
-                        MaxClients,
-                        PipeTransmissionMode.Byte,
-                        PipeOptions.Asynchronous | (first ? PipeOptions.FirstPipeInstance : PipeOptions.None),
-                        0,
-                        0,
-                        PipeAcl.Create());
+                    pipe = (first ? Interlocked.Exchange(ref _reserved, null) : null) ?? CreatePipe(first);
                 }
                 catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
                 {
@@ -61,7 +79,7 @@ public sealed partial class PipeServer(
                     {
                         LogSquatted(options.PipeName, ex);
                         _listening.TrySetException(ex);
-                        return;
+                        throw;
                     }
 
                     // all instances busy: wait for a session to end
@@ -120,6 +138,7 @@ public sealed partial class PipeServer(
         {
             using var rpc = new JsonRpc(new HeaderDelimitedMessageHandler(pipe, pipe, CreateFormatter()));
             rpc.AddLocalRpcTarget<IRgbService>(scope?.Service ?? service, null);
+            if (performance is not null) rpc.AddLocalRpcTarget<IScreenPerformanceService>(performance, null);
             if (screens is not null)
             {
                 rpc.AddLocalRpcTarget<IScreenService>(screens, null);

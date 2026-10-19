@@ -89,6 +89,11 @@ internal static unsafe partial class ScreenUsbNative
     [LibraryImport("winusb.dll", SetLastError = true)]
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool WinUsb_QueryDeviceInformation(IntPtr interfaceHandle, uint informationType, ref uint length, byte* value);
+
+    [LibraryImport("winusb.dll", SetLastError = true)]
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [return: MarshalAs(UnmanagedType.Bool)]
     public static partial bool WinUsb_SetPipePolicy(IntPtr interfaceHandle, byte pipeId, uint policy, uint length, uint* value);
 
     [LibraryImport("winusb.dll", SetLastError = true)]

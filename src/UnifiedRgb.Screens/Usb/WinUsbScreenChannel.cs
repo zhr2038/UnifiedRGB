@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Diagnostics;
 using Microsoft.Win32.SafeHandles;
 
 namespace UnifiedRgb.Screens.Usb;
@@ -18,7 +19,7 @@ public sealed class WinUsbScreenOpener : IScreenUsbOpener
 /// source-proven endpoints when it has them (TL/H2: 0x01/0x81). Every transfer is bounded by PIPE_TRANSFER_TIMEOUT; transfers are
 /// synchronous on the worker thread and <see cref="Abort"/> (WinUsb_AbortPipe) cancels them from another thread.
 /// </summary>
-internal sealed unsafe class WinUsbScreenChannel : IScreenUsbChannel
+internal sealed unsafe class WinUsbScreenChannel : IScreenUsbChannel, IScreenUsbDiagnostics
 {
     private readonly object _gate = new();
     private readonly SafeFileHandle _file;
@@ -27,6 +28,18 @@ internal sealed unsafe class WinUsbScreenChannel : IScreenUsbChannel
     private uint _inTimeout;
     private bool _disposed;
     private readonly bool _drainReplies;
+    private ScreenReadCounts _lastRead;
+    public int? DeviceSpeedCode { get; private init; }
+    public ScreenReadCounts LastRead => _lastRead;
+    public int ReplyQuietMs { private get; set; } = ScreenReplyFlow.DrainTimeoutMs;
+    public bool? CorrelatedReplies { private get; set; }
+    private readonly ScreenReplyCapability _replyCapability = new();
+    private bool _expectsReply;
+    private byte _expectedCommand;
+    private uint _expectedTimestamp;
+
+    public void ExpectResponse(byte command, uint timestamp)
+    { _expectsReply = true; _expectedCommand = command; _expectedTimestamp = timestamp; }
 
     private WinUsbScreenChannel(SafeFileHandle file, IntPtr usb, byte outEp, byte inEp, ScreenFamily family)
     {
@@ -95,7 +108,9 @@ internal sealed unsafe class WinUsbScreenChannel : IScreenUsbChannel
                     $"{Hex(f.ExpectedOutEndpoint)} / {Hex(f.ExpectedInEndpoint)}");
             }
 
-            var channel = new WinUsbScreenChannel(file, usb, outEp.Value, inEp.Value, f.Family);
+            uint speedLength = 1; byte speed = 0;
+            var knownSpeed = ScreenUsbNative.WinUsb_QueryDeviceInformation(usb, 1, ref speedLength, &speed) && speedLength == 1;
+            var channel = new WinUsbScreenChannel(file, usb, outEp.Value, inEp.Value, f.Family) { DeviceSpeedCode = knownSpeed ? speed : null };
             // Recover queued replies from an earlier interrupted owner BEFORE sending a new image.
             if (channel._drainReplies) { ScreenReplyFlow.Drain(channel.ReadRaw, ScreenReplyFlow.OpenDrainLimit); }
             return channel;
@@ -128,24 +143,49 @@ internal sealed unsafe class WinUsbScreenChannel : IScreenUsbChannel
     }
 
     public int Read(Span<byte> buffer, int timeoutMs)
-        => _drainReplies ? ScreenReplyFlow.ReadAndDrain(ReadRaw, buffer, timeoutMs) : ReadRaw(buffer, timeoutMs).Length;
+    {
+        _lastRead = default;
+        if (!_drainReplies) return ReadRaw(buffer, timeoutMs).Length;
+        if (_expectsReply && (CorrelatedReplies ?? _replyCapability.Verified))
+        {
+            _lastRead = _lastRead with { Correlated = true };
+            return ScreenReplyFlow.ReadCorrelated(ReadRaw, buffer, timeoutMs);
+        }
+        var result = ScreenReplyFlow.ReadAndDrain(ReadRaw, buffer, timeoutMs, ReplyQuietMs);
+        _replyCapability.Observe(_expectsReply, _lastRead);
+        return result;
+    }
 
     private ScreenPipeRead ReadRaw(Span<byte> buffer, int timeoutMs)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
+        _lastRead = _lastRead with { Reads = _lastRead.Reads + 1 };
+        var started = Stopwatch.GetTimestamp();
         SetTimeout(InEndpoint, ref _inTimeout, timeoutMs);
         fixed (byte* p = buffer)
         {
             if (ScreenUsbNative.WinUsb_ReadPipe(_usb, InEndpoint, p, (uint)buffer.Length, out var n, IntPtr.Zero))
             {
-                return new ScreenPipeRead((int)n, TimedOut: false);
+                if (n == 0) _lastRead = _lastRead with { ZeroLength = _lastRead.ZeroLength + 1 };
+                var matched = _expectsReply && ScreenReplyFlow.MatchesImageReply(buffer[..(int)n], _expectedCommand, _expectedTimestamp);
+                if (matched) _lastRead = _lastRead with { Matched = _lastRead.Matched + 1 };
+                RecordReadTime(started);
+                return new ScreenPipeRead((int)n, TimedOut: false, MatchesRequest: matched);
             }
 
             var err = Marshal.GetLastPInvokeError();
+            if (err == ScreenUsbNative.ErrorSemTimeout) _lastRead = _lastRead with { Timeouts = _lastRead.Timeouts + 1 };
+            RecordReadTime(started);
             return err == ScreenUsbNative.ErrorSemTimeout
                 ? new ScreenPipeRead(0, TimedOut: true)
                 : throw new ScreenTransferException(ScreenTransferException.Classify(err), $"WinUsb_ReadPipe failed ({err})", err);
         }
+    }
+
+    private void RecordReadTime(long started)
+    {
+        var ms = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+        _lastRead = _lastRead.Reads == 1 ? _lastRead with { FirstMs = ms } : _lastRead with { DrainMs = _lastRead.DrainMs + ms };
     }
 
     public void Abort()

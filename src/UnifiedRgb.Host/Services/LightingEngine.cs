@@ -9,6 +9,7 @@ using UnifiedRgb.Core.Effects.Generators;
 using UnifiedRgb.Core.Engine;
 using UnifiedRgb.Devices;
 using UnifiedRgb.Devices.LianLi;
+using UnifiedRgb.Screens.Runtime;
 
 namespace UnifiedRgb.Host.Services;
 
@@ -78,6 +79,7 @@ public sealed partial class LightingEngine(
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
+        SceneStateFiles.Recover(options.ResolvedDataDirectory); // incomplete disk commits must be recovered before any adapter opens
         _uptime.Start();
         ApplyConfiguredCalibration();
         if (options.LianLi.UseDeviceClock)
@@ -162,14 +164,29 @@ public sealed partial class LightingEngine(
 
     /// <summary>Validates (every zone must exist) and swaps the scene atomically, then persists it to active.json.</summary>
     public void SetScene(Scene scene)
+        => ChangeScene(scene, CustomProfileName, allowMissing: false, null);
+
+    internal void ChangeScene(Scene scene, string name, bool allowMissing, IScreenSceneTransaction? screens, Action? beforeScreens = null, CancellationToken cancellationToken = default)
     {
         lock (_sceneGate)
         {
-            ValidateStrict(scene, nameof(scene));
-            _loop.SetScene(scene);
-            _startupBlocked = null;
-            _activeName = CustomProfileName;
-            PersistActive();
+            var prepared = screens as IPreparedScreenSceneTransaction;
+            void Commit()
+            {
+                ValidateStrict(scene, nameof(scene));
+                _loop.SetScene(scene, allowMissing, () =>
+                {
+                    cancellationToken.ThrowIfCancellationRequested(); // cancellation stops admission, never interrupts a durable commit halfway
+                    profiles.SaveActiveWith(new ProfileDto(name, DtoMapper.ToDto(scene)), prepared?.Files ?? []);
+                });
+                _startupBlocked = null;
+                _activeName = name;
+                beforeScreens?.Invoke();
+                if (prepared is not null) prepared.Publish();
+                else screens?.Commit();
+            }
+            if (prepared is not null) prepared.Coordinate(Commit);
+            else Commit();
         }
     }
 
@@ -190,10 +207,9 @@ public sealed partial class LightingEngine(
         {
             var merged = Merge(_loop.Scene, assignment);
             ValidateStrict(merged, nameof(assignment));
-            _loop.SetScene(merged, allowMissingZones: true);
+            _loop.SetScene(merged, allowMissingZones: true, () => profiles.SaveActiveWith(new ProfileDto(CustomProfileName, DtoMapper.ToDto(merged)), []));
             _startupBlocked = null;
             _activeName = CustomProfileName;
-            PersistActive();
         }
     }
 
@@ -202,14 +218,7 @@ public sealed partial class LightingEngine(
     {
         ArgumentNullException.ThrowIfNull(profile);
         var scene = DtoMapper.FromDto(profile.Scene);
-        lock (_sceneGate)
-        {
-            ValidateStrict(scene, nameof(profile));
-            _loop.SetScene(scene, allowMissingZones: true);
-            _startupBlocked = null;
-            _activeName = profile.Name;
-            PersistActive();
-        }
+        ChangeScene(scene, profile.Name, allowMissing: true, null);
     }
 
     public static Scene Merge(Scene scene, Assignment assignment)
@@ -745,18 +754,6 @@ public sealed partial class LightingEngine(
         lock (_sceneGate)
         {
             _loop.SetScene(DefaultScene());
-        }
-    }
-
-    private void PersistActive()
-    {
-        try
-        {
-            profiles.SaveActive(new ProfileDto(_activeName, DtoMapper.ToDto(_loop.Scene)));
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            LogActiveSaveFailed(ex);
         }
     }
 

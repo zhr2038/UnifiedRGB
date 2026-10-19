@@ -226,14 +226,16 @@ internal sealed class RecordingScreenWorkbench : IScreenService
     public Func<Task<ScreenRestartDto>> Restart { get; set; } = () => Task.FromResult(new ScreenRestartDto(true, true, 1, ["screen:tl-lcd:test"], "accepted"));
     public IReadOnlyList<ScreenAssetDto> AssetRows { get; set; } = [];
     public Func<Task<ScreenSceneDto>>? ReadScene { get; set; }
+    public Func<Task<IReadOnlyList<ScreenDeviceDto>>>? ReadScreens { get; set; }
+    public Func<Task<PcTelemetryDto>>? ReadTelemetry { get; set; }
     public Func<string, Task> Delete { get; set; } = _ => Task.CompletedTask;
     public Func<ScreenAssignmentDto, Task<ScreenPreviewDto>> Preview { get; set; } = _ => throw new NotSupportedException();
     public Task<IReadOnlyList<ScreenDeviceDto>> ListScreensAsync(CancellationToken ct = default)
     {
         Calls.Add("ListScreens");
-        return Task.FromResult(DeviceSnapshots);
+        return ReadScreens?.Invoke() ?? Task.FromResult(DeviceSnapshots);
     }
-    public Task<PcTelemetryDto> GetPcTelemetryAsync(CancellationToken ct = default) => Task.FromResult(new PcTelemetryDto(Time, 20, 1024, 4096, null, null, null, null, "test", null));
+    public Task<PcTelemetryDto> GetPcTelemetryAsync(CancellationToken ct = default) => ReadTelemetry?.Invoke() ?? Task.FromResult(new PcTelemetryDto(Time, 20, 1024, 4096, null, null, null, null, "test", null));
     public Task<IReadOnlyList<ScreenAssetDto>> ListScreenAssetsAsync(CancellationToken ct = default) => Task.FromResult(AssetRows);
     public Task<ScreenAssetDto> UploadScreenAssetAsync(ScreenAssetUploadDto asset, CancellationToken ct = default) => throw new NotSupportedException();
     public Task DeleteScreenAssetAsync(string assetId, CancellationToken ct = default) { Writes.Add("DeleteScreenAsset:" + assetId); return Delete(assetId); }

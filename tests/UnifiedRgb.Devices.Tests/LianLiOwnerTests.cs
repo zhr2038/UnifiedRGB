@@ -106,7 +106,10 @@ public class LianLiOwnerTests
             }
 
             RfMac.Read(Convert.FromBase64String(d.GetProperty("mac_addr").GetString()!)).Should().Be(RfMac.Parse(mac), "mac_addr is MacStr in wire order");
-            RfMac.Read(Convert.FromBase64String(d.GetProperty("master_mac_addr").GetString()!)).Should().Be(RfMac.Parse("02:00:00:00:00:05"));
+            // Keep the exact captured identity/byte-order assertion without publishing the local master's address.
+            var canonicalMaster = RfMac.Read(Convert.FromBase64String(d.GetProperty("master_mac_addr").GetString()!)).ToString();
+            Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(canonicalMaster)))
+                .Should().Be("687B2AB8F55E5502F5388343CCCE6C498134B8542902A9ABB0B1F3853BD552E6");
             (d.GetProperty("channel").GetInt32(), d.GetProperty("BindStatus").GetInt32()).Should().Be((8, 1));
         }
 

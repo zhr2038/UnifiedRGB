@@ -28,6 +28,9 @@ public enum ScreenTransferError
     ReplyBacklog,
 
     Failed,
+
+    /// <summary>A correlated image reply was incomplete or stale. Disable the fast path and reopen with conservative draining.</summary>
+    ResponseMismatch,
 }
 
 public sealed class ScreenTransferException : IOException
@@ -85,6 +88,18 @@ public interface IScreenUsbChannel : IDisposable
 
     /// <summary>Aborts any pending transfer (cancellation/stop). Idempotent; a no-op after dispose.</summary>
     void Abort();
+}
+
+internal readonly record struct ScreenReadCounts(int Reads, int Timeouts, int ZeroLength, double FirstMs = 0, double DrainMs = 0,
+    int Matched = 0, bool Correlated = false);
+
+internal interface IScreenUsbDiagnostics
+{
+    int? DeviceSpeedCode { get; }
+    ScreenReadCounts LastRead { get; }
+    int ReplyQuietMs { set; }
+    bool? CorrelatedReplies { set; }
+    void ExpectResponse(byte command, uint timestamp);
 }
 
 public interface IScreenUsbOpener

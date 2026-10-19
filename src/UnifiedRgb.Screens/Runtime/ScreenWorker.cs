@@ -47,6 +47,8 @@ internal sealed record ScreenWorkerContext(
 
     /// <summary>The frame encoder (the production <see cref="ScreenFrameEncoder"/>; a double in tests).</summary>
     public ScreenEncodeFunc Encode { get; init; } = static (f, c, r, q, i) => ScreenFrameEncoder.Encode(f, c, r, q, i);
+    public Func<string, ScreenRateTrial?> TrialOf { get; init; } = static _ => null;
+    public Action<string> AbortTrial { get; init; } = static _ => { };
 }
 
 internal sealed record WorkerCommand(ScreenAssignmentDto? Assignment, bool Paused, bool Stop = false);
@@ -79,6 +81,7 @@ internal sealed partial class ScreenWorker : IDisposable
     private readonly object _stateGate = new();
     private readonly object _channelGate = new();
     private readonly Queue<long> _writes = new();
+    private readonly ScreenPerformance _performance = new();
     private IScreenUsbChannel? _channel;
     private string _state = ScreenStates.Idle;
     private string? _blockedBy;
@@ -89,7 +92,7 @@ internal sealed partial class ScreenWorker : IDisposable
     private volatile bool _stopping;
     private int _disposed;
 
-    public ScreenWorker(ScreenDeviceInfo device, ScreenWorkerContext ctx, WorkerCommand initial)
+    public ScreenWorker(ScreenDeviceInfo device, ScreenWorkerContext ctx, WorkerCommand initial, ScreenDeviceDto? previous = null)
     {
         ArgumentNullException.ThrowIfNull(device);
         ArgumentNullException.ThrowIfNull(ctx);
@@ -101,6 +104,8 @@ internal sealed partial class ScreenWorker : IDisposable
 
         _device = device;
         _ctx = ctx;
+        _framesWritten = previous?.FramesWritten ?? 0;
+        _dropped = previous?.Dropped ?? 0;
         _backoff = new Backoff(ctx.Options.BackoffInitialMs, ctx.Options.BackoffMaxMs);
         _mailbox.Post(initial);
         _thread = new Thread(Run) { IsBackground = true, Name = "screen " + device.Id };
@@ -109,6 +114,8 @@ internal sealed partial class ScreenWorker : IDisposable
     }
 
     public ScreenDeviceInfo Device => _device;
+    internal bool HasExited => !_thread.IsAlive;
+    internal ScreenPerformanceDto Performance => _performance.Snapshot(Snapshot());
 
     /// <summary>
     /// The labelled source of the last timeline-driven frame ("device-clock", "upload-anchor: ...", "apply-epoch", "unavailable",
@@ -224,6 +231,12 @@ internal sealed partial class ScreenWorker : IDisposable
         var response = new byte[512];
         var clearLayer = false; // the open channel still owes its PNG-layer clear (H2)
         byte[]? transparentPng = null;
+        var pacing = new ScreenPacing();
+        string? lastTrial = null;
+        long previousStart = 0;
+        double waitedMs = 0;
+        var lastSlow = false;
+        var correlationDisabled = false;
         try
         {
             while (!_stopping)
@@ -244,6 +257,8 @@ internal sealed partial class ScreenWorker : IDisposable
 
                     assignment = cmd.Assignment;
                     paused = cmd.Paused;
+                    pacing.Reset();
+                    lastSlow = false;
                 }
 
                 if (paused || assignment is not { Enabled: true })
@@ -309,8 +324,26 @@ internal sealed partial class ScreenWorker : IDisposable
                     }
                 }
 
+                var trial = _ctx.TrialOf(_device.Id);
+                var targetFps = trial?.Info.Fps ?? assignment.Fps;
+                var period = 1000.0 / targetFps;
+                if (lastTrial != trial?.Info.TrialId) { pacing.Reset(); lastTrial = trial?.Info.TrialId; }
+                if (lastSlow || staticFrame is not null || !compositor.IsDynamic(assignment)) period = Math.Max(period, 1000);
+                if (trial?.Info.LegacyPacing != true)
+                {
+                    var wait = pacing.Remaining(_ctx.Time.GetTimestamp(), _ctx.Time.TimestampFrequency, period);
+                    if (wait > 0)
+                    {
+                        var waitStart = _ctx.Time.GetTimestamp();
+                        _mailbox.Wait(wait);
+                        waitedMs += _ctx.Time.GetElapsedTime(waitStart).TotalMilliseconds;
+                        continue; // recheck mailbox, output eligibility and current shared time AFTER waking
+                    }
+                }
                 var frameStart = _ctx.Time.GetTimestamp();
-                var period = 1000.0 / assignment.Fps;
+                var intervalMs = previousStart == 0 ? 0 : _ctx.Time.GetElapsedTime(previousStart, frameStart).TotalMilliseconds;
+                previousStart = frameStart;
+                double composeMs = 0, encodeMs = 0;
                 var bootstrapping = false;
                 try
                 {
@@ -329,12 +362,16 @@ internal sealed partial class ScreenWorker : IDisposable
                     else
                     {
                         var elapsed = ElapsedMs(assignment, animationStart, out var blocked);
+                        var composeStart = _ctx.Time.GetTimestamp();
                         var composed = blocked is null
                             ? compositor.Compose(family, assignment, elapsed, _ctx.Telemetry(), _ctx.Time.GetUtcNow())
                             : ScreenCompositor.ComposeBlocked(family, blocked);
                         warning = composed.Warning;
+                        composeMs = _ctx.Time.GetElapsedTime(composeStart).TotalMilliseconds;
                         var encoding = _ctx.EncodingOf(_device.Id);
+                        var encodeStart = _ctx.Time.GetTimestamp();
                         frame = _ctx.Encode(family, composed.Canvas, _ctx.Options.TurzxLandscapeRotation, encoding.Quality, encoding.Indexed8Verified);
+                        encodeMs = _ctx.Time.GetElapsedTime(encodeStart).TotalMilliseconds;
                         var still = !compositor.IsDynamic(assignment);
                         if (assignment.TimelineId is null)
                         {
@@ -352,10 +389,9 @@ internal sealed partial class ScreenWorker : IDisposable
                     }
 
                     // a static frame, a still strict frame or blocked strict content (black) needs no more than one frame a second
-                    if (staticFrame is not null || slow)
-                    {
-                        period = Math.Max(period, 1000);
-                    }
+                    lastSlow = staticFrame is not null || slow;
+                    period = lastSlow ? Math.Max(1000.0 / targetFps, 1000) : 1000.0 / targetFps;
+                    if (trial?.Info.LegacyPacing != true) _ = pacing.Remaining(frameStart, _ctx.Time.TimestampFrequency, period);
 
                     if (clearLayer)
                     {
@@ -378,15 +414,38 @@ internal sealed partial class ScreenWorker : IDisposable
                         }
                     }
 
-                    var packet = ScreenProtocol.BuildImagePacket(family.Family, frame.Command, frame.Image, stamp!.Next());
+                    var packetStart = _ctx.Time.GetTimestamp();
+                    var requestTimestamp = stamp!.Next();
+                    var packet = ScreenProtocol.BuildImagePacket(family.Family, frame.Command, frame.Image, requestTimestamp);
+                    (_channel as IScreenUsbDiagnostics)?.ExpectResponse(frame.Command, requestTimestamp);
+                    var packetMs = _ctx.Time.GetElapsedTime(packetStart).TotalMilliseconds;
+                    var writeStart = _ctx.Time.GetTimestamp();
                     _channel!.Write(packet, family.WriteTimeoutMs);
-                    var readError = ReadResponse(response, family.ReadTimeoutMs);
+                    var writeMs = _ctx.Time.GetElapsedTime(writeStart).TotalMilliseconds;
+                    var readStart = _ctx.Time.GetTimestamp();
+                    if (_channel is IScreenUsbDiagnostics configured)
+                    {
+                        configured.ReplyQuietMs = trial?.Info.ReplyQuietMs ?? 10;
+                        configured.CorrelatedReplies = correlationDisabled ? false : trial?.Info.CorrelatedReplies;
+                    }
+                    var readError = ReadResponse(response, family.Family == ScreenFamily.TlLcd ? trial?.Info.TlReadTimeoutMs ?? family.ReadTimeoutMs : family.ReadTimeoutMs);
+                    var readMs = _ctx.Time.GetElapsedTime(readStart).TotalMilliseconds;
                     _backoff.Reset();
                     retryAt = 0;
                     Wrote(warning ?? readError);
+                    var skipped = trial?.Info.LegacyPacing == true ? 0 : pacing.Completed(_ctx.Time.GetTimestamp(), _ctx.Time.TimestampFrequency);
+                    var facts = (_channel as IScreenUsbDiagnostics)?.LastRead;
+                    _performance.Add(new ScreenFrameWork(composeMs, encodeMs, packetMs, writeMs, readMs, waitedMs, intervalMs,
+                        _ctx.Time.GetElapsedTime(frameStart).TotalMilliseconds, frame.Image.Length, packet.Length,
+                        facts?.Reads ?? 0, facts?.Timeouts ?? 0, facts?.ZeroLength ?? 0, facts?.FirstMs ?? 0, facts?.DrainMs ?? 0,
+                        facts?.Matched ?? 0, facts?.Correlated ?? false), targetFps, trial?.Info.TrialId,
+                        (_channel as IScreenUsbDiagnostics)?.DeviceSpeedCode, skipped);
+                    waitedMs = 0;
                 }
                 catch (ScreenTransferException ex)
                 {
+                    if (ex.Kind == ScreenTransferError.ResponseMismatch) correlationDisabled = true;
+                    _ctx.AbortTrial(_device.Id);
                     CloseChannel();
                     if (_stopping)
                     {
@@ -403,6 +462,7 @@ internal sealed partial class ScreenWorker : IDisposable
                 catch (Exception ex)
 #pragma warning restore CA1031
                 {
+                    _ctx.AbortTrial(_device.Id);
                     staticFrame = null;
                     retryAt = 0;
                     lock (_stateGate)
@@ -418,9 +478,11 @@ internal sealed partial class ScreenWorker : IDisposable
                 }
 
                 var remaining = period - _ctx.Time.GetElapsedTime(frameStart).TotalMilliseconds;
-                if (remaining >= 1)
+                if (trial?.Info.LegacyPacing == true && remaining >= 1)
                 {
+                    var waitStart = _ctx.Time.GetTimestamp();
                     _mailbox.Wait((int)remaining);
+                    waitedMs += _ctx.Time.GetElapsedTime(waitStart).TotalMilliseconds;
                 }
             }
         }
@@ -449,7 +511,7 @@ internal sealed partial class ScreenWorker : IDisposable
             _channel!.Read(buffer, timeoutMs);
             return null;
         }
-        catch (ScreenTransferException ex) when (ex.Kind is not (ScreenTransferError.Disconnected or ScreenTransferError.Aborted or ScreenTransferError.ReplyBacklog))
+        catch (ScreenTransferException ex) when (ex.Kind is not (ScreenTransferError.Disconnected or ScreenTransferError.Aborted or ScreenTransferError.ReplyBacklog or ScreenTransferError.ResponseMismatch))
         {
             return "response read: " + ex.Message;
         }

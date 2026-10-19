@@ -155,6 +155,7 @@ public sealed partial class LianLiAdapter : ILoopUploadAdapter, IDeviceClockProv
     private bool _ownsEncoder;
     private DateTime? _lastSave;
     private Timer? _keepAlive;
+    private readonly object _senderLifecycleGate = new();
     private readonly Func<byte[]>? _receiverProbe;
     private readonly object _feedbackGate = new();
     private TimeSpan _lastReceiverQuery = -TimeSpan.FromDays(1);
@@ -930,6 +931,8 @@ public sealed partial class LianLiAdapter : ILoopUploadAdapter, IDeviceClockProv
 
     private RfSender AcquireSender(UsbDeviceInfo info)
     {
+        lock (_senderLifecycleGate)
+        {
         lock (_gate)
         {
             if (!_senders.TryGetValue(info.Path, out var r))
@@ -954,17 +957,21 @@ public sealed partial class LianLiAdapter : ILoopUploadAdapter, IDeviceClockProv
             r.RefCount++;
             return r;
         }
+        }
     }
 
     private void ReleaseSender(UsbDeviceInfo info)
     {
+        lock (_senderLifecycleGate)
+        {
         Timer? stop = null;
+        RfSender? retired = null;
         lock (_gate)
         {
             if (_senders.TryGetValue(info.Path, out var r) && --r.RefCount <= 0)
             {
                 _senders.Remove(info.Path);
-                r.Dispose();
+                retired = r;
                 if (_senders.Count == 0)
                 {
                     stop = _keepAlive;
@@ -974,6 +981,10 @@ public sealed partial class LianLiAdapter : ILoopUploadAdapter, IDeviceClockProv
         }
 
         stop?.Dispose();
+        // Never wait for an upload/read under the adapter gate: committed upload callbacks need that gate.
+        // The lifecycle gate prevents reopening the same physical sender before its previous handle has closed.
+        retired?.Dispose();
+        }
     }
 
     private void OnInterfaceChanged(DeviceInterfaceChange change, string path)

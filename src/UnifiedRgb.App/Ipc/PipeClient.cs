@@ -30,6 +30,7 @@ public sealed class PipeClient : IHostConnection, IAsyncDisposable
     private volatile IScreenService? _screens;
     private volatile IScenePackageService? _packages;
     private volatile IScreenDeviceSettingsService? _screenSettings;
+    private volatile IScreenPerformanceService? _screenPerformance;
     private ConnectionState _state = ConnectionState.Disconnected;
 
     public PipeClient(string pipeName, PipeTrust trust = PipeTrust.ElevatedOwner)
@@ -69,6 +70,7 @@ public sealed class PipeClient : IHostConnection, IAsyncDisposable
     public IRgbService Require() => _service ?? throw new InvalidOperationException("Host not connected.");
     public IScreenDeviceSettingsService RequireScreenSettings() => _screenSettings ?? throw new InvalidOperationException("后台未连接。");
     public IScreenService RequireScreens() => _screens ?? throw new InvalidOperationException("后台未连接。");
+    public IScreenPerformanceService RequireScreenPerformance() => _screenPerformance ?? throw new InvalidOperationException("后台未连接。");
     public IScenePackageService RequirePackages() => _packages ?? throw new InvalidOperationException("后台未连接。");
 
     public void Start() => _loop ??= Task.Run(() => RunAsync(_stop.Token));
@@ -121,6 +123,7 @@ public sealed class PipeClient : IHostConnection, IAsyncDisposable
                 var screens = rpc.Attach<IScreenService>();
                 var packages = rpc.Attach<IScenePackageService>();
                 var screenSettings = rpc.Attach<IScreenDeviceSettingsService>();
+                var screenPerformance = rpc.Attach<IScreenPerformanceService>();
                 proxy.ControllersChanged += (s, e) => ControllersChanged?.Invoke(this, e);
                 proxy.StatusChanged += (s, e) => StatusChanged?.Invoke(this, e);
                 proxy.TelemetryTick += (s, e) => TelemetryTick?.Invoke(this, e);
@@ -129,6 +132,7 @@ public sealed class PipeClient : IHostConnection, IAsyncDisposable
                 _screens = screens;
                 _packages = packages;
                 _screenSettings = screenSettings;
+                _screenPerformance = screenPerformance;
                 Connections++;
                 attempt = 0;
                 SetState(ConnectionState.Connected);
@@ -153,6 +157,7 @@ public sealed class PipeClient : IHostConnection, IAsyncDisposable
                 _screens = null;
                 _packages = null;
                 _screenSettings = null;
+                _screenPerformance = null;
                 await pipe.DisposeAsync().ConfigureAwait(false);
             }
 

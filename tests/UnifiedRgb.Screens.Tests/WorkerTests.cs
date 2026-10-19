@@ -11,15 +11,17 @@ public sealed class WorkerTests
 {
     private static readonly string Tl = Devices.Tl1.Id;
 
-    [Fact]
-    public async Task An_unsettled_reply_stream_closes_the_old_channel_before_writing_another_frame()
+    [Theory]
+    [InlineData(ScreenTransferError.ReplyBacklog)]
+    [InlineData(ScreenTransferError.ResponseMismatch)]
+    public async Task An_unsettled_reply_stream_closes_the_old_channel_before_writing_another_frame(ScreenTransferError error)
     {
         await using var rig = new Rig(Rig.AllOutput, Devices.Turzx);
         var configured = 0;
         rig.Opener.Configure = channel =>
         {
             if (Interlocked.Increment(ref configured) == 1)
-                channel.FailRead = () => new ScreenTransferException(ScreenTransferError.ReplyBacklog, "reply stream did not settle");
+                channel.FailRead = () => new ScreenTransferException(error, "reply stream did not settle");
         };
         await rig.Manager.SetScreenSceneAsync(Images.Scene(new ScreenAssignmentDto(Devices.Turzx.Id, Fps: 15)));
         rig.Manager.Start();

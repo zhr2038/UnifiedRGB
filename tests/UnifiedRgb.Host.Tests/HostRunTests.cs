@@ -107,9 +107,10 @@ public class HostRunTests(ITestOutputHelper output)
     public async Task Second_host_on_the_same_pipe_name_does_not_share_the_pipe()
     {
         await using var host = await TestHost.StartAsync();
-        var server = new Ipc.PipeServer(host.Options, host.Get<IRgbService>(), Microsoft.Extensions.Logging.Abstractions.NullLogger<Ipc.PipeServer>.Instance);
+        using var server = new Ipc.PipeServer(host.Options, host.Get<IRgbService>(), Microsoft.Extensions.Logging.Abstractions.NullLogger<Ipc.PipeServer>.Instance);
         using var cts = new CancellationTokenSource();
-        await server.StartAsync(cts.Token);
+        var start = () => server.StartAsync(cts.Token);
+        await start.Should().ThrowAsync<Exception>().Where(ex => ex is UnauthorizedAccessException || ex is IOException);
         var act = () => server.Listening.WaitAsync(TimeSpan.FromSeconds(5));
         await act.Should().ThrowAsync<Exception>();
         await cts.CancelAsync();

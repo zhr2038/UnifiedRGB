@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.ComponentModel;
 
 namespace UnifiedRgb.Screens.Runtime;
 
@@ -56,7 +57,11 @@ public sealed class VendorProcessProbe(TimeProvider time) : IScreenContentionPro
         {
             using (p)
             {
-                names.Add(p.ProcessName);
+                try { names.Add(p.ProcessName); }
+                catch (Exception ex) when (ex is InvalidOperationException || ex is Win32Exception { NativeErrorCode: 87 or 1168 })
+                {
+                    // A process may exit between enumeration and querying its name. Other names remain authoritative.
+                }
             }
         }
 

@@ -97,6 +97,11 @@ public static class HostComposition
             sp.GetRequiredService<FrameBus>(),
             sp.GetRequiredService<Func<IPreciseSleeper>>(),
             sp.GetRequiredService<ILogger<AdapterHost>>()));
+        if (enableIpc)
+        {
+            services.AddHostedService<PipeReservation>();
+        }
+
         services.AddSingleton<LightingEngine>();
         services.AddHostedService(sp => sp.GetRequiredService<LightingEngine>());
         services.AddSingleton<GuardMonitor>();
@@ -114,6 +119,7 @@ public static class HostComposition
         services.AddSingleton<IScreenSceneBinding>(sp => sp.GetRequiredService<ScreenManager>());
         services.AddSingleton<IScreenPackageMedia>(sp => sp.GetRequiredService<ScreenManager>());
         services.AddSingleton<IScreenDeviceSettingsService>(sp => sp.GetRequiredService<ScreenManager>());
+        services.AddSingleton<IScreenPerformanceService>(sp => sp.GetRequiredService<ScreenManager>());
 
         services.AddSingleton(sp =>
         {

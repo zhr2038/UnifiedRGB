@@ -72,6 +72,7 @@ public sealed class RgbService(
 
     public Task SetSceneAsync(SceneDto scene, CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
         ArgumentNullException.ThrowIfNull(scene);
         if (scene.Screens is not { } screenScene)
         {
@@ -84,6 +85,7 @@ public sealed class RgbService(
 
     public Task SetAssignmentAsync(AssignmentDto assignment, CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
         engine.SetAssignment(DtoMapper.FromDto(assignment));
         return Task.CompletedTask;
     }
@@ -105,10 +107,12 @@ public sealed class RgbService(
 
     public Task ApplyProfileAsync(string name, CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
         var profile = profiles.Load(name);
-        if (profile.Scene?.Screens is not { } screenScene)
+        ArgumentNullException.ThrowIfNull(profile.Scene);
+        if (profile.Scene.Screens is not { } screenScene)
         {
-            engine.ApplyProfile(profile); // RGB only: unchanged, never waits for the screen gate
+            engine.ChangeScene(DtoMapper.FromDto(profile.Scene), profile.Name, allowMissing: true, null, cancellationToken: ct);
             return Task.CompletedTask;
         }
 
@@ -216,16 +220,14 @@ public sealed class RgbService(
     private async Task SetSceneWithScreensAsync(SceneDto scene, ScreenSceneDto screenScene, CancellationToken ct)
     {
         using var transaction = await BeginScreensAsync(screenScene, ct).ConfigureAwait(false);
-        engine.SetScene(DtoMapper.FromDto(scene));
-        transaction.Commit();
+        engine.ChangeScene(DtoMapper.FromDto(scene), LightingEngine.CustomProfileName, allowMissing: false, transaction, cancellationToken: ct);
     }
 
     /// <inheritdoc cref="SetSceneWithScreensAsync"/>
     private async Task ApplyProfileWithScreensAsync(ProfileDto profile, ScreenSceneDto screenScene, CancellationToken ct)
     {
         using var transaction = await BeginScreensAsync(screenScene, ct).ConfigureAwait(false);
-        engine.ApplyProfile(profile);
-        transaction.Commit();
+        engine.ChangeScene(DtoMapper.FromDto(profile.Scene), profile.Name, allowMissing: true, transaction, cancellationToken: ct);
     }
 
     private Task<IScreenSceneTransaction> BeginScreensAsync(ScreenSceneDto scene, CancellationToken ct) =>

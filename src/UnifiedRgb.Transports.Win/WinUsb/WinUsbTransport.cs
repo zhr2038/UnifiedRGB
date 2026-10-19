@@ -135,6 +135,9 @@ public sealed unsafe class WinUsbTransport : ITransport, IDisposable
 
     public ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct)
     {
+        ct.ThrowIfCancellationRequested();
+        lock (_sendGate)
+        {
         if (_inPipe == 0)
         {
             return ValueTask.FromResult(0);
@@ -150,6 +153,7 @@ public sealed unsafe class WinUsbTransport : ITransport, IDisposable
             }
 
             return ValueTask.FromResult((int)n);
+        }
         }
     }
 

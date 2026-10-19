@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using UnifiedRgb.Contracts;
 using UnifiedRgb.Contracts.Dto;
+using UnifiedRgb.Screens.Runtime;
 
 namespace UnifiedRgb.Host.Services;
 
@@ -72,12 +73,35 @@ public sealed partial class ProfileStore
     }
 
     /// <summary>The scene to restore at start; null when there is none.</summary>
-    public ProfileDto? LoadActive() => Read(PathOf(ActiveName));
+    public ProfileDto? LoadActive()
+    {
+        if (new DirectoryInfo(Directory).Name.Equals("profiles", StringComparison.OrdinalIgnoreCase)) SceneStateFiles.Recover(StateRoot);
+        return Read(PathOf(ActiveName));
+    }
+
+    private string StateRoot => new DirectoryInfo(Directory).Parent!.FullName;
+
+    internal Action? BeforeActiveCommit { get; set; }
+
+    /// <summary>Commit the existing active.json and prepared screen files at one durable recovery point.</summary>
+    internal void SaveActiveWith(ProfileDto profile, IReadOnlyList<SceneStateFile> additional)
+    {
+        var bytes = Serialize(profile);
+        RequireSize(bytes);
+        BeforeActiveCommit?.Invoke();
+        if (!new DirectoryInfo(Directory).Name.Equals("profiles", StringComparison.OrdinalIgnoreCase))
+        {
+            if (additional.Count != 0) throw new InvalidOperationException("Joint scene state needs the standard profiles directory.");
+            Write(PathOf(ActiveName), profile);
+            return;
+        }
+        SceneStateFiles.Commit(StateRoot, [new SceneStateFile("profiles/active.json", bytes), .. additional]);
+    }
 
     public void SaveActive(ProfileDto profile)
     {
         ArgumentNullException.ThrowIfNull(profile);
-        Write(PathOf(ActiveName), profile);
+        SaveActiveWith(profile, []);
     }
 
     public static byte[] Serialize(ProfileDto profile) => JsonSerializer.SerializeToUtf8Bytes(profile, Json);
@@ -124,6 +148,7 @@ public sealed partial class ProfileStore
     private void Write(string path, ProfileDto profile)
     {
         var bytes = Serialize(profile);
+        RequireSize(bytes);
         lock (_gate)
         {
             System.IO.Directory.CreateDirectory(Directory);
@@ -146,6 +171,14 @@ public sealed partial class ProfileStore
                     File.Delete(tmp);
                 }
             }
+        }
+    }
+
+    internal static void RequireSize(byte[] bytes)
+    {
+        if (bytes.LongLength > MaxFileBytes)
+        {
+            throw new ArgumentException($"The serialized scene exceeds {MaxFileBytes} bytes; the previous file and running scene were kept.", nameof(bytes));
         }
     }
 

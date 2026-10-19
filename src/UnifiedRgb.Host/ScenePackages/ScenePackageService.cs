@@ -315,10 +315,11 @@ public sealed partial class ScenePackageService : IScenePackageService, IHostedS
                 transaction = await _screenScenes.BeginSceneAsync(screenScene, ct).ConfigureAwait(false);
             }
 
-            _engine.SetScene(scene); // strict whole-candidate gate: throws before anything changes
-            _timeline.Publish(timelineId, timelineFacts);
-            _timeline.RestartEpoch(timelineId);
-            transaction?.Commit();
+            _engine.ChangeScene(scene, LightingEngine.CustomProfileName, allowMissing: false, transaction, () =>
+            {
+                _timeline.Publish(timelineId, timelineFacts);
+                _timeline.RestartEpoch(timelineId);
+            }, ct);
         }
         catch (ArgumentException ex)
         {

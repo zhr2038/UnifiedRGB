@@ -33,6 +33,8 @@ public sealed class RfSender : IDisposable
     private readonly IDeviceState _state;
     private TimeSpan _lastKeepAlive = -KeepAlivePeriod; // due immediately; MinValue would overflow the subtraction. Written under UploadGate
     private uint _lastEffectIndex;
+    private int _closing;
+    private bool _disposed;
 
     /// <summary>The master counter of USB 17 replies: <c>time_tmos</c>, 0.625 ms per tick (<c>SysClock = time_tmos × 0.625</c>).</summary>
     public const double ClockTicksPerSecond = 1600;
@@ -109,6 +111,7 @@ public sealed class RfSender : IDisposable
     {
         lock (_gate)
         {
+            ObjectDisposedException.ThrowIf(_disposed, this);
             var sent = _timestamp();
             Send(UsbFrames.GetMac(_masterChannel));
             var reply = new byte[LianLiWire.ShortFrame];
@@ -217,13 +220,14 @@ public sealed class RfSender : IDisposable
     /// </remarks>
     public void Tick()
     {
-        if (_elapsed() - _lastKeepAlive < KeepAlivePeriod || !UploadGate.Wait(0))
+        if (Volatile.Read(ref _closing) != 0 || _elapsed() - _lastKeepAlive < KeepAlivePeriod || !UploadGate.Wait(0))
         {
             return;
         }
 
         try
         {
+            if (Volatile.Read(ref _closing) != 0) return;
             var now = _elapsed();
             if (now - _lastKeepAlive < KeepAlivePeriod)
             {
@@ -253,9 +257,20 @@ public sealed class RfSender : IDisposable
 
     public void Dispose()
     {
+        if (Interlocked.Exchange(ref _closing, 1) != 0) return;
         _clock.Close();
-        UploadGate.Dispose();
-        (_raw as IDisposable)?.Dispose();
+        UploadGate.Wait();
+        try
+        {
+            lock (_gate)
+            {
+                _disposed = true;
+                (_raw as IDisposable)?.Dispose();
+            }
+        }
+        finally { UploadGate.Release(); }
+        // Retired queued callers must be able to acquire/release and observe _disposed. No WaitHandle is allocated;
+        // disposing this managed semaphore while a queued upload/timer still references it is itself a race.
     }
 
     /// <summary>A sender's master counter: one immutable sample swapped atomically; closed for good on Dispose.</summary>
@@ -296,6 +311,7 @@ public sealed class RfSender : IDisposable
 
     private void Send(byte[] frame)
     {
+        ObjectDisposedException.ThrowIf(_disposed, this);
         var vt = _chain.SendAsync(frame, CancellationToken.None);
         if (!vt.IsCompletedSuccessfully)
         {
