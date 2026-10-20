@@ -1,6 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <OutputType>Exe</OutputType>
+    <!-- The hardware host is a background process. A GUI-subsystem apphost avoids a console
+         for both scheduled logon starts and direct launches; diagnostics stay in rolling log files. -->
+    <OutputType>WinExe</OutputType>
     <AssemblyName>UnifiedRgb.Host</AssemblyName>
   </PropertyGroup>
   <ItemGroup>

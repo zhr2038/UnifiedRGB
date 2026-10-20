@@ -48,8 +48,9 @@ if ($PSCmdlet.ShouldProcess($data, 'Create data directory with restricted ACL'))
 
 $installedHost = Join-Path $InstallDir 'UnifiedRgb.Host.exe'
 if ($PSCmdlet.ShouldProcess('UnifiedRgb Host', 'Register scheduled task')) {
-    & $installedHost --register-task
-    if ($LASTEXITCODE -ne 0) { throw "Task registration failed ($LASTEXITCODE)" }
+    # The Host uses the Windows GUI subsystem. Always wait explicitly for maintenance verbs and read their own exit code.
+    $registration = Start-Process -FilePath $installedHost -ArgumentList '--register-task' -WindowStyle Hidden -Wait -PassThru
+    if ($registration.ExitCode -ne 0) { throw "Task registration failed ($($registration.ExitCode))" }
 }
 
 $app = Join-Path $InstallDir 'UnifiedRgb.App.exe'

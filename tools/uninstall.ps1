@@ -27,8 +27,8 @@ if ($task -and $PSCmdlet.ShouldProcess('UnifiedRgb Host', 'Stop task')) {
 
 $restoreOk = $true
 if ((Test-Path -LiteralPath $hostExe) -and $PSCmdlet.ShouldProcess('vendor services', 'Restore services stopped by Takeover')) {
-    & $hostExe --restore-services
-    if ($LASTEXITCODE -ne 0) { $restoreOk = $false; Write-Warning 'Some services could not be restored; see takeover.json.' }
+    $restoration = Start-Process -FilePath $hostExe -ArgumentList '--restore-services' -WindowStyle Hidden -Wait -PassThru
+    if ($restoration.ExitCode -ne 0) { $restoreOk = $false; Write-Warning 'Some services could not be restored; see takeover.json.' }
 }
 
 if ($task -and $PSCmdlet.ShouldProcess('UnifiedRgb Host', 'Unregister task')) {
