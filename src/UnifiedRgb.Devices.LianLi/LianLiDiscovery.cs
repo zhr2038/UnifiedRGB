@@ -117,7 +117,7 @@ public sealed class LianLiAdapterFactory : IDeviceAdapterFactory
             d => WinUsbTransport.Open(d.Path, OpcodeLayout.LianLi, LianLiWire.OutEndpoint, LianLiWire.InEndpoint),
             hotplug,
             logger,
-            encoderFactory: () => TinyuzEncoder.Open(options.YuzDllPath),
+            encoderFactory: () => RgbAnimationEncoders.Create(options),
             receiverProbe: () =>
             {
                 if (!Guid.TryParse(options.ReceiverInterfaceGuid, out var guid) || Senders().Count != 1)

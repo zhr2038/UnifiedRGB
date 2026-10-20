@@ -54,6 +54,8 @@ public sealed class LianLiLoopOptions
     public int MaxFrames { get; set; } = 200;
 }
 
+public enum LianLiCompressionCodec { Managed, VendorYuz }
+
 public sealed class LianLiOptions
 {
     /// <summary>
@@ -64,10 +66,12 @@ public sealed class LianLiOptions
     public bool WireFormatVerified { get; set; }
 
     /// <summary>
-    /// Full path of L-Connect's <c>yuz.dll</c>. Empty → the Host resolves the L-Connect 3 install directory. The dll is
-    /// loaded in place, never copied.
+    /// Optional explicit vendor codec path, used ONLY when Codec=VendorYuz. Never searched for, copied or redistributed.
     /// </summary>
     public string YuzDllPath { get; set; } = string.Empty;
+
+    /// <summary>Managed is independent and redistributable. VendorYuz is an explicit local comparison/rollback option.</summary>
+    public LianLiCompressionCodec Codec { get; set; } = LianLiCompressionCodec.Managed;
 
     public LianLiLoopOptions Loop { get; set; } = new();
 
@@ -117,7 +121,7 @@ public sealed class LianLiOptions
 /// <summary>
 /// Lian Li wireless (RF) devices through the USB sender dongle, UploadedLoop delivery (ARCHITECTURE-D2). The IL has no
 /// per-frame colour path: a device plays an uploaded, compressed loop (RF 32, <c>SyncRgbData</c>). One RfDevice = one chain =
-/// one zone. <see cref="UploadLoopAsync"/> compresses the engine's <see cref="LoopFrames"/> with yuz.dll (halving frames
+/// one zone. <see cref="UploadLoopAsync"/> compresses the engine's <see cref="LoopFrames"/> with the configured codec (halving frames
 /// while over 12288 bytes, then a static frame), checks the loop header, and relays it in 240-byte packets (four USB 16
 /// chunks each) under the sender's packet budget, through OpcodeFirewall → FrameValidator (and the firewall again inside
 /// the physical transport). Uploads are serialised per sender. <see cref="WriteFrame"/> is not supported. RF 16 (bind + fan

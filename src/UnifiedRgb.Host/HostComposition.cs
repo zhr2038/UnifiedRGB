@@ -81,7 +81,6 @@ public static class HostComposition
 
         if (options.EnableLianLi)
         {
-            options.LianLi.YuzDllPath = YuzPathResolver.Resolve(options.LianLi.YuzDllPath);
             services.AddSingleton(options.LianLi);
             services.AddSingleton<IDeviceAdapterFactory, LianLiAdapterFactory>();
         }

@@ -42,7 +42,7 @@ public sealed unsafe class YuzNative : IDisposable
     {
         if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
         {
-            throw new DeviceBlockedException($"yuz.dll missing ({(string.IsNullOrWhiteSpace(path) ? "LianLi:YuzDllPath not set and L-Connect 3 not found" : path)})");
+            throw new DeviceBlockedException($"yuz.dll missing ({(string.IsNullOrWhiteSpace(path) ? "VendorYuz requires an explicit LianLi:YuzDllPath" : path)})");
         }
 
         var full = System.IO.Path.GetFullPath(path);

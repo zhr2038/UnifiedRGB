@@ -3,4 +3,7 @@
     <ProjectReference Include="../UnifiedRgb.Devices.Abstractions/UnifiedRgb.Devices.Abstractions.csproj" />
     <ProjectReference Include="../UnifiedRgb.Transports.Win/UnifiedRgb.Transports.Win.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <Content Include="Codec/tinyuz-LICENSE.txt" Link="Licenses/tinyuz-LICENSE.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>

@@ -28,9 +28,11 @@ PawnIO 系统驱动和 PawnIOLib.dll 是独立安装的依赖，不在本仓库�
 
 ## 联力压缩组件与协议研究材料
 
-现有联力循环压缩适配器支持加载外部 x64 `yuz.dll`。这份 DLL 及厂商程序集、安装包、原始反编译文档和实机配置不包含在公开仓库中。代码中保留协议事实与既有固定参考数据的来源说明，不应据此认定取得厂商软件的再分发授权。
+默认路径是 `ManagedTinyuzEncoder`：独立托管 C# 匹配搜索、贪心/延迟双路径选择和上传前无损自检。线格式、变长整数和受检解码逻辑参考/移植自 [sisong/tinyuz](https://github.com/sisong/tinyuz) **v1.1.1**，固定 commit `1d74ffa4d453796df352df470733f45dfa099bb1`，MIT。参考源为 `compress/tuz_enc_private/tuz_enc_code.cpp`、`decompress/tuz_dec.c`、`decompress/tuz_types_private.h`；源文件版权为 HouSisong / housisong，2012–2025，仓库 LICENSE 原文为2012–2022。
 
-相关私有资源的存在不会作为公开构建前提；需要它们的本机测试明确跳过。新的可再分发压缩实现尚未作为已完成替代品发布。
+完整许可见 `src/UnifiedRgb.Devices.LianLi/Codec/tinyuz-LICENSE.txt`，构建/发布自动复制为 `Licenses/tinyuz-LICENSE.txt`。托管运行路径不需要 HDiffPatch、C/C++工具链、厂商二进制或运行时下载。不得将上游算法/解码逻辑认作本项目完全自行发明。
+
+可选 `VendorYuz` 仅在明确配置时加载外部 x64 `yuz.dll`，没有目录或注册表自动发现。这份 DLL 及厂商程序集、安装包、原始反编译文档和实机配置不包含在公开仓库中，不据此认定取得厂商软件的再分发授权。额外原厂对照及历史实机资料测试缺少私有资源时明确跳过；默认压缩器和通用预算回归始终执行。
 
 ## 图形与场景素材
 

@@ -3,12 +3,14 @@ using UnifiedRgb.Contracts.Dto;
 using UnifiedRgb.Core.Clock;
 using UnifiedRgb.Core.Engine;
 using UnifiedRgb.Devices;
+using UnifiedRgb.Devices.LianLi;
+using UnifiedRgb.Devices.LianLi.Codec;
 using UnifiedRgb.Host.Services;
 using UnifiedRgb.Transports.Process;
 
 namespace UnifiedRgb.Host.Tests;
 
-/// <summary>ARCHITECTURE-D2 §3/§9 host wiring: codec Blocked(reason), loop writers, yuz.dll path resolution.</summary>
+/// <summary>ARCHITECTURE-D2 §3/§9 host wiring: codec Blocked(reason), loop writers, explicit independent/vendor selection.</summary>
 public class LoopHostTests
 {
     private static WriterGuard ClearGuard() => new(new ProcessScanner(new EmptySnapshot()));
@@ -51,20 +53,16 @@ public class LoopHostTests
     }
 
     [Fact]
-    public void Yuz_path_prefers_the_configured_value_then_the_install_directory_then_the_registry()
+    public void Managed_is_the_default_even_with_a_stale_vendor_path_and_vendor_is_explicit()
     {
-        YuzPathResolver.Resolve(@"E:\x\yuz.dll", _ => false, () => []).Should().Be(@"E:\x\yuz.dll", "configured wins, even if absent (→ Blocked)");
-        Environment.SetEnvironmentVariable("URGB_TEST_YUZ", @"F:\lc3");
-        YuzPathResolver.Resolve(@"%URGB_TEST_YUZ%\yuz.dll", _ => false, () => []).Should().Be(@"F:\lc3\yuz.dll");
-
-        var candidates = YuzPathResolver.Candidates(() => [@"G:\Apps\L-Connect 3"]).ToArray();
-        candidates.Should().Contain(@"D:\Program Files\Lian-Li\L-Connect 3\yuz.dll");
-        candidates[^1].Should().Be(@"G:\Apps\L-Connect 3\yuz.dll");
-        candidates.Should().OnlyContain(p => p.EndsWith(@"\yuz.dll", StringComparison.OrdinalIgnoreCase));
-
-        YuzPathResolver.Resolve(null, p => p.StartsWith(@"G:\", StringComparison.Ordinal), () => [@"G:\Apps\L-Connect 3"]).Should().Be(@"G:\Apps\L-Connect 3\yuz.dll");
-        YuzPathResolver.Resolve("", _ => false, () => [@"G:\Apps\L-Connect 3"]).Should().BeEmpty("nothing found → empty → Blocked(yuz.dll missing)");
-        YuzPathResolver.Resolve(" ", p => p == candidates[0], () => []).Should().Be(candidates[0]);
+        var options = new LianLiOptions { YuzDllPath = @"C:\missing\yuz.dll" };
+        RgbAnimationEncoders.Create(options).Should().BeOfType<ManagedTinyuzEncoder>();
+        options.Codec = LianLiCompressionCodec.VendorYuz;
+        var missing = () => RgbAnimationEncoders.Create(options);
+        missing.Should().Throw<DeviceBlockedException>().Which.Reason.Should().Contain(options.YuzDllPath);
+        options.Codec = (LianLiCompressionCodec)99;
+        var invalid = () => RgbAnimationEncoders.Create(options);
+        invalid.Should().Throw<DeviceBlockedException>().WithMessage("Unknown*codec*");
     }
 
     private sealed class EmptySnapshot : ISystemSnapshot
