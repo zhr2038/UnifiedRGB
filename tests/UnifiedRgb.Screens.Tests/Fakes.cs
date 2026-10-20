@@ -33,6 +33,7 @@ internal sealed class FakeEnumerator : IScreenDeviceEnumerator
     public FakeEnumerator(params ScreenDeviceInfo[] devices) => _devices = [.. devices];
 
     public int Calls { get; private set; }
+    public Action<int>? AfterSnapshot { get; set; }
 
     public void Set(params ScreenDeviceInfo[] devices)
     {
@@ -44,11 +45,15 @@ internal sealed class FakeEnumerator : IScreenDeviceEnumerator
 
     public IReadOnlyList<ScreenDeviceInfo> Enumerate()
     {
+        ScreenDeviceInfo[] snapshot;
+        int call;
         lock (_gate)
         {
-            Calls++;
-            return [.. _devices];
+            call = ++Calls;
+            snapshot = [.. _devices];
         }
+        AfterSnapshot?.Invoke(call);
+        return snapshot;
     }
 }
 
@@ -68,6 +73,7 @@ internal sealed class FakeChannel : IScreenUsbChannel
     public int Reads;
     public int Aborts;
     public volatile bool Disposed;
+    public Action? BeforeDispose { get; set; }
 
     public byte OutEndpoint => 0x01;
 
@@ -123,6 +129,7 @@ internal sealed class FakeChannel : IScreenUsbChannel
 
     public void Dispose()
     {
+        BeforeDispose?.Invoke();
         Disposed = true;
         _aborted.Set();
     }

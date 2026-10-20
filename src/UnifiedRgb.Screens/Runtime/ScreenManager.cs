@@ -117,6 +117,7 @@ public sealed partial class ScreenManager : IScreenService, IScreenSceneBinding,
     private readonly object _stopGate = new();
     private SceneTransaction? _sceneTransaction;
     private readonly Dictionary<string, ScreenWorker> _workers = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, ScreenWorker> _retiringWorkers = new(StringComparer.Ordinal);
     private readonly Dictionary<string, WorkerRecovery> _workerRecovery = new(StringComparer.Ordinal);
     private int _mutationWaiters;
     private ScreenCompositor? _previewCompositor;
@@ -125,6 +126,7 @@ public sealed partial class ScreenManager : IScreenService, IScreenSceneBinding,
     private IReadOnlyList<ScreenDeviceInfo> _present = [];
     private long _presentAt;
     private bool _enumerated;
+    private long _nextEnumeration, _publishedEnumeration;
     private Task? _discoveryLoop;
     private Task? _telemetryLoop;
     private bool _disposed;
@@ -511,8 +513,9 @@ public sealed partial class ScreenManager : IScreenService, IScreenSceneBinding,
                 _stopped = true;
                 _sceneTransaction?.Dispose(); // cancel an uncommitted lease; do not wait forever for an abandoned transaction
                 loops = [_discoveryLoop, _telemetryLoop];
-                workers = [.. _workers.Values];
+                workers = [.. _workers.Values.Concat(_retiringWorkers.Values).Distinct()];
                 _workers.Clear();
+                _retiringWorkers.Clear();
             }
         }
         await _cts.CancelAsync().ConfigureAwait(false);
@@ -712,20 +715,22 @@ public sealed partial class ScreenManager : IScreenService, IScreenSceneBinding,
         _scene = NormalizeHeld(persisted);
     }
 
-    private IReadOnlyList<ScreenDeviceInfo> Present(TimeSpan maxAge)
+    internal IReadOnlyList<ScreenDeviceInfo> Present(TimeSpan maxAge)
     {
+        long generation;
         lock (_gate)
         {
             if (_enumerated && _platform.Time.GetElapsedTime(_presentAt) <= maxAge)
             {
                 return _present;
             }
+            generation = ++_nextEnumeration;
         }
 
         IReadOnlyList<ScreenDeviceInfo> found;
         try
         {
-            found = _platform.Enumerator.Enumerate();
+            found = [.. _platform.Enumerator.Enumerate()];
         }
 #pragma warning disable CA1031 // discovery failure only empties the list; it must never fail an RPC or the Host
         catch (Exception ex)
@@ -737,7 +742,9 @@ public sealed partial class ScreenManager : IScreenService, IScreenSceneBinding,
 
         lock (_gate)
         {
+            if (generation < _publishedEnumeration) return _present;
             _present = found;
+            _publishedEnumeration = generation;
             _presentAt = _platform.Time.GetTimestamp();
             _enumerated = true;
         }
@@ -746,7 +753,7 @@ public sealed partial class ScreenManager : IScreenService, IScreenSceneBinding,
     }
 
     /// <summary>Creates workers for present displays whose gate is open and removes those that disappeared.</summary>
-    private void Reconcile(IReadOnlyList<ScreenDeviceInfo> present)
+    internal void Reconcile(IReadOnlyList<ScreenDeviceInfo> present)
     {
         var gone = new List<ScreenWorker>();
         lock (_gate)
@@ -756,9 +763,18 @@ public sealed partial class ScreenManager : IScreenService, IScreenSceneBinding,
                 return;
             }
 
+            // A caller may have read its list before a newer discovery published a detach.
+            if (_enumerated && !ReferenceEquals(present, _present)) present = _present;
+            foreach (var id in _retiringWorkers.Where(p => p.Value.HasExited).Select(p => p.Key).ToArray()) _retiringWorkers.Remove(id);
             EnsureScene();
             foreach (var d in present)
             {
+                // Dispose has a bounded join. Even after it returns, a stuck worker owns its handle until it exits.
+                if (_retiringWorkers.TryGetValue(d.Id, out var retiring))
+                {
+                    if (!retiring.HasExited) continue;
+                    _retiringWorkers.Remove(d.Id);
+                }
                 if (_workers.TryGetValue(d.Id, out var existing) && existing.HasExited && !_paused
                     && _options.OutputAllowed(d.Family.Family) && _quiesced?.Contains(d.Id) != true)
                 {
@@ -796,6 +812,7 @@ public sealed partial class ScreenManager : IScreenService, IScreenSceneBinding,
             foreach (var id in _workers.Keys.Where(id => present.All(d => d.Id != id)).ToList())
             {
                 gone.Add(_workers[id]);
+                _retiringWorkers[id] = _workers[id];
                 _workers.Remove(id);
                 _workerRecovery.Remove(id);
                 LogDetached(_log, id);
@@ -805,8 +822,16 @@ public sealed partial class ScreenManager : IScreenService, IScreenSceneBinding,
         foreach (var w in gone)
         {
             w.Dispose();
+            lock (_gate)
+            {
+                if (w.HasExited && _retiringWorkers.TryGetValue(w.Device.Id, out var retiring) && ReferenceEquals(w, retiring))
+                    _retiringWorkers.Remove(w.Device.Id);
+            }
         }
     }
+
+    /// <summary>Worker ownership also includes a worker that has not entered its native open yet.</summary>
+    internal IReadOnlyList<string> WorkerIds { get { lock (_gate) return _workers.Keys.ToArray(); } }
 
     private sealed class WorkerRecovery
     {
