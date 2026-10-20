@@ -1018,7 +1018,7 @@ public sealed partial class LianLiAdapter : ILoopUploadAdapter, IDeviceClockProv
     [LoggerMessage(EventId = 5003, Level = LogLevel.Warning, Message = "RF bind of {Mac} requested by {User} (refused: bind also sets fan PWM)")]
     private partial void LogBind(string mac, string user);
 
-    [LoggerMessage(EventId = 5004, Level = LogLevel.Information, Message = "Lian Li codec loaded and self-checked (SHA-256 {Hash})")]
+    [LoggerMessage(EventId = 5004, Level = LogLevel.Information, Message = "Lian Li codec selected (identity {Hash}); managed payloads are verified before upload")]
     private partial void LogCodec(string hash);
 
     [LoggerMessage(EventId = 5005, Level = LogLevel.Warning, Message = "Lian Li loop for {Id} ({Frames} frames) stays over the upload limit after halving; uploading frame 0 as a static loop ({Bytes} bytes)")]

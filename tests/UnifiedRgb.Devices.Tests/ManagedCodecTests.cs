@@ -111,6 +111,8 @@ public class ManagedCodecTests
             foreach (var bytes in new[] { noise, new byte[size], Enumerable.Range(0, size).Select(i => (byte)(i % 3)).ToArray(), TinyuzEncoder.SampleAnimation(size) })
             {
                 var packed = codec.Encode(bytes);
+                System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(packed).Should().BeLessThanOrEqualTo(4096,
+                    "the desktop decoder accepting a larger window does not prove firmware SRAM capacity");
                 ManagedTinyuzEncoder.Decode(packed, size).Should().Equal(bytes);
                 codec.Encode(bytes).Should().Equal(packed);
                 packed.Length.Should().BeLessThanOrEqualTo(size + ((size + 7) / 8) + 16);

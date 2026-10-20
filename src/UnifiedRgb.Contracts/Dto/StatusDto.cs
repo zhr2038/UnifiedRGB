@@ -28,7 +28,8 @@ public sealed record DeviceStatusDto(
 
 /// <summary>
 /// The last loop upload of an UploadedLoop controller (Lian Li, ARCHITECTURE-D2 §7/§8): size, packet count, duration and the
-/// codec's SHA-256. For these controllers <c>Written</c> counts uploads and <c>Superseded</c> coalesced loops.
+/// codec's identity (managed version, or the optional vendor DLL's SHA-256; legacy field name retained). For these
+/// controllers <c>Written</c> counts uploads and <c>Superseded</c> coalesced loops.
 /// </summary>
 public sealed record LoopUploadDto(
     DateTimeOffset At,

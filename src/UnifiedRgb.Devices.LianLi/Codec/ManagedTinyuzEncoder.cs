@@ -10,10 +10,12 @@ namespace UnifiedRgb.Devices.LianLi.Codec;
 /// </summary>
 public sealed class ManagedTinyuzEncoder : IRgbAnimationEncoder
 {
-    public const string Identity = "unifiedrgb-tinyuz-managed-v1";
+    public const string Identity = "unifiedrgb-tinyuz-managed-v2-4k";
     // Complete RF header domain (65535 frames, 255 RGB LEDs). Reject before allocating beyond it.
     public const int MaxInputBytes = ushort.MaxValue * byte.MaxValue * 3;
-    public const int DictionaryLimit = 65535;
+    // The observed vendor streams cap the decoder dictionary at 4096 bytes. Desktop TuzDec can decode much larger
+    // streams, but that does not establish receiver SRAM capacity (TL rejected v1's larger dictionaries).
+    public const int DictionaryLimit = 4096;
     private const int BigPosition = 2687;
     private const int MaxMatch = 65535;
 
@@ -28,6 +30,8 @@ public sealed class ManagedTinyuzEncoder : IRgbAnimationEncoder
         var first = EncodePass(rgbData, lazy: false);
         var second = EncodePass(rgbData, lazy: true);
         var packed = second.Length < first.Length ? second : first;
+        if (BinaryPrimitives.ReadUInt32LittleEndian(packed) > DictionaryLimit)
+        { throw new InvalidDataException("Tinyuz dictionary exceeds the receiver-compatible 4 KiB limit; upload refused."); }
         // The independent checked reader is also a production integrity gate, before any upload is possible.
         if (!Decode(packed, rgbData.Length).AsSpan().SequenceEqual(rgbData))
         { throw new InvalidDataException("Managed tinyuz round-trip mismatch; upload refused."); }
@@ -37,7 +41,7 @@ public sealed class ManagedTinyuzEncoder : IRgbAnimationEncoder
     private static byte[] EncodePass(ReadOnlySpan<byte> data, bool lazy)
     {
         var heads = new int[65536];
-        var previous = new int[DictionaryLimit + 1];
+        var previous = new int[DictionaryLimit];
         Array.Fill(heads, -1);
         Array.Fill(previous, -1);
         var writer = new CodeWriter();
@@ -60,7 +64,7 @@ public sealed class ManagedTinyuzEncoder : IRgbAnimationEncoder
 
             writer.Match(match.Length, match.Distance);
             position += match.Length;
-            // A 64 KiB rolling chain bounds auxiliary memory independently of loop length.
+            // Match the receiver-compatible 4 KiB window; auxiliary memory is independent of loop length.
             for (; inserted < position; inserted++)
             { Insert(data, inserted, heads, previous); }
         }
@@ -71,7 +75,7 @@ public sealed class ManagedTinyuzEncoder : IRgbAnimationEncoder
     {
         if (position + 1 >= data.Length) { return; }
         var hash = Hash(data, position);
-        previous[position & DictionaryLimit] = heads[hash];
+        previous[position & (DictionaryLimit - 1)] = heads[hash];
         heads[hash] = position;
     }
 
@@ -90,7 +94,7 @@ public sealed class ManagedTinyuzEncoder : IRgbAnimationEncoder
             if (bestLength > 0 && data[candidate + bestLength] != data[position + bestLength])
             {
                 work--;
-                var skip = previous[candidate & DictionaryLimit];
+                var skip = previous[candidate & (DictionaryLimit - 1)];
                 if (skip >= candidate) { break; }
                 candidate = skip; continue;
             }
@@ -103,7 +107,7 @@ public sealed class ManagedTinyuzEncoder : IRgbAnimationEncoder
             if (saving > bestSaving)
             { (bestLength, bestDistance, bestSaving) = (length, distance, saving); }
             if (length == limit) { break; }
-            var next = previous[candidate & DictionaryLimit];
+            var next = previous[candidate & (DictionaryLimit - 1)];
             if (next >= candidate) { break; }
             candidate = next;
         }
