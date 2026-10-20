@@ -5,6 +5,7 @@
     <!-- NotifyIcon only; WinForms namespaces are not imported globally to avoid clashes with WPF types. -->
     <UseWindowsForms>true</UseWindowsForms>
     <AssemblyName>UnifiedRgb.App</AssemblyName>
+    <ApplicationIcon>Assets/Brand/guangyu.ico</ApplicationIcon>
     <!-- WPF data binding requires real cultures (XmlLanguage.GetSpecificCulture); the solution-wide
          InvariantGlobalization crashes the GUI with "Cannot find non-neutral culture related to 'en-us'". -->
     <InvariantGlobalization>false</InvariantGlobalization>
@@ -22,6 +23,13 @@
   </ItemGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="UnifiedRgb.Host.Tests" />
+  </ItemGroup>
+  <ItemGroup>
+    <Resource Include="Assets/Brand/guangyu.ico" />
+    <EmbeddedResource Include="Assets/Brand/tray-*.ico" LogicalName="UnifiedRgb.App.Brand.%(Filename)%(Extension)" />
+    <Content Include="Assets/Brand/guangyu.ico" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="Assets/Brand/*.svg" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="Assets/Brand/*.png" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
   <ItemGroup>
     <Content Include="../../design/SCENE-PACKAGE-DEVELOPER-GUIDE.zh-CN.md" Link="Docs/ScenePackages/场景包开发规范.md" CopyToOutputDirectory="PreserveNewest" />

@@ -1,6 +1,9 @@
 <ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
                     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
                     xmlns:w="clr-namespace:UnifiedRgb.App.Workbench">
+    <ResourceDictionary.MergedDictionaries>
+        <ResourceDictionary Source="/UnifiedRgb.App;component/Assets/Brand/Brand.xaml"/>
+    </ResourceDictionary.MergedDictionaries>
     <SolidColorBrush x:Key="CanvasBrush" Color="#10141B"/>
     <SolidColorBrush x:Key="SurfaceBrush" Color="#171D26"/>
     <SolidColorBrush x:Key="RaisedBrush" Color="#202834"/>

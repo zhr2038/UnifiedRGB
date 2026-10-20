@@ -1,4 +1,4 @@
-using System.Runtime.InteropServices;
+using UnifiedRgb.App.Branding;
 using UnifiedRgb.App.ViewModels;
 using Drawing = System.Drawing;
 using Forms = System.Windows.Forms;
@@ -7,9 +7,9 @@ namespace UnifiedRgb.App.Tray;
 
 /// <summary>
 /// Notification-area icon (ARCHITECTURE §9): grey = Host not connected, green = all controllers active, amber = something is
-/// blocked/contended/offline. Menu: Open, Rescan, Exit. Icons are drawn at startup and released with DestroyIcon.
+/// blocked/contended/offline. Menu: Open, Rescan, Exit. The shared brand has a small grey/green/amber state badge.
 /// </summary>
-public sealed partial class TrayIcon : IDisposable
+public sealed class TrayIcon : IDisposable
 {
     private readonly Forms.NotifyIcon _icon;
     private readonly Dictionary<TrayState, Drawing.Icon> _icons;
@@ -19,9 +19,9 @@ public sealed partial class TrayIcon : IDisposable
         ArgumentNullException.ThrowIfNull(open);
         _icons = new()
         {
-            [TrayState.Disconnected] = Draw(Drawing.Color.Gray),
-            [TrayState.Ok] = Draw(Drawing.Color.LimeGreen),
-            [TrayState.Attention] = Draw(Drawing.Color.Orange),
+            [TrayState.Disconnected] = BrandAssets.LoadTrayIcon(TrayState.Disconnected),
+            [TrayState.Ok] = BrandAssets.LoadTrayIcon(TrayState.Ok),
+            [TrayState.Attention] = BrandAssets.LoadTrayIcon(TrayState.Attention),
         };
         var menu = new Forms.ContextMenuStrip();
         menu.Items.Add("打开光域", null, (_, _) => open());
@@ -53,27 +53,8 @@ public sealed partial class TrayIcon : IDisposable
         _icon.Dispose();
         foreach (var i in _icons.Values)
         {
-            var h = i.Handle;
             i.Dispose();
-            _ = DestroyIcon(h);
         }
     }
 
-    private static Drawing.Icon Draw(Drawing.Color color)
-    {
-        using var bmp = new Drawing.Bitmap(16, 16);
-        using (var g = Drawing.Graphics.FromImage(bmp))
-        using (var b = new Drawing.SolidBrush(color))
-        {
-            g.SmoothingMode = Drawing.Drawing2D.SmoothingMode.AntiAlias;
-            g.Clear(Drawing.Color.Transparent);
-            g.FillEllipse(b, 1, 1, 14, 14);
-        }
-
-        return Drawing.Icon.FromHandle(bmp.GetHicon());
-    }
-
-    [LibraryImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool DestroyIcon(IntPtr hIcon);
 }

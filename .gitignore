@@ -33,6 +33,7 @@
 !/tools/pawnio/
 !/tools/openrgb/
 !/tools/windows/
+!/tools/branding/
 !/tools/env.sh
 !/tools/soak.ps1
 !/tools/install.ps1
