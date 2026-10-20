@@ -19,7 +19,7 @@ namespace UnifiedRgb.Host.ScenePackages;
 /// binding snapshot, live targets, strict loops' exact interval and actual wire budget, screen scene and its media) before
 /// anything changes, then activates RGB and screens together on one timeline. Calls are serialized.
 /// </summary>
-public sealed partial class ScenePackageService : IScenePackageService, IHostedService, IDisposable
+public sealed partial class ScenePackageService : IScenePackageService, ISceneLibraryService, IHostedService, IDisposable
 {
     public const string KindLighting = "lighting";
     public const string KindScreen = "screen";
@@ -38,9 +38,11 @@ public sealed partial class ScenePackageService : IScenePackageService, IHostedS
     private readonly IScreenSceneBinding? _screenScenes;
     private readonly ILogger _log;
     private readonly SemaphoreSlim _gate = new(1, 1);
+    private readonly CancellationTokenSource _hydrationStop = new();
+    private int _disposed;
 
     public ScenePackageService(ScenePackageFrameSource source, ScenePackageTimeline timeline, LightingEngine engine, ILogger<ScenePackageService> log,
-        IScreenPackageMedia? media = null, IScreenService? screens = null, IScreenSceneBinding? screenScenes = null)
+        IScreenPackageMedia? media = null, IScreenService? screens = null, IScreenSceneBinding? screenScenes = null, ProfileStore? profiles = null)
     {
         _source = source ?? throw new ArgumentNullException(nameof(source));
         _timeline = timeline ?? throw new ArgumentNullException(nameof(timeline));
@@ -49,11 +51,17 @@ public sealed partial class ScenePackageService : IScenePackageService, IHostedS
         _media = media;
         _screens = screens;
         _screenScenes = screenScenes;
+        _profiles = profiles;
         if (_media is not null)
         {
             // package media stays protected from generic deletion, and package screens read the shared timeline
-            _media.AssetPinned = _source.Packages.PinsAsset;
+            _media.AssetPinned = id => _source.Packages.PinsAsset(id) || (_profiles is not null && ProfileReferencesAsset(id));
             _media.Timeline = _timeline;
+        }
+        if (_profiles is not null)
+        {
+            _profiles.BeforeReferenceCommit = ValidateProfileReferences;
+            _referenceRegistration = SceneStateFiles.RegisterValidation(Store.DataRoot, ValidateStateReferences);
         }
     }
 
@@ -89,10 +97,12 @@ public sealed partial class ScenePackageService : IScenePackageService, IHostedS
 
         foreach (var id in ids)
         {
+            _hydrating.TryAdd(id, 0);
             _timeline.Block(id, StartupPreparing); // before any screen worker can compose a frame of it
         }
 
-        Hydration = Task.Run(() => HydrateAsync(ids), CancellationToken.None);
+        var hydrationToken = _hydrationStop.Token; // capture before queuing; Dispose may run before a queued task starts
+        Hydration = Task.Run(() => HydrateAsync(ids, hydrationToken), CancellationToken.None);
         var finished = await Task.WhenAny(Hydration, Task.Delay(StartupHydrationWait, cancellationToken)).ConfigureAwait(false);
         if (finished != Hydration)
         {
@@ -100,9 +110,23 @@ public sealed partial class ScenePackageService : IScenePackageService, IHostedS
         }
     }
 
-    public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+    public async Task StopAsync(CancellationToken cancellationToken)
+    {
+        await _hydrationStop.CancelAsync().ConfigureAwait(false);
+#pragma warning disable VSTHRD003 // This service owns and cancels its one startup hydration task.
+        await Hydration.WaitAsync(cancellationToken).ConfigureAwait(false);
+#pragma warning restore VSTHRD003
+    }
 
-    public void Dispose() => _gate.Dispose();
+    public void Dispose()
+    {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+        _hydrationStop.Cancel();
+        _hydrationStop.Dispose();
+        _referenceRegistration?.Dispose();
+        if (_profiles?.BeforeReferenceCommit == ValidateProfileReferences) _profiles.BeforeReferenceCommit = null;
+        _gate.Dispose();
+    }
 
     public async Task<IReadOnlyList<ScenePackageInfoDto>> ListScenePackagesAsync(CancellationToken ct = default)
     {
@@ -150,6 +174,7 @@ public sealed partial class ScenePackageService : IScenePackageService, IHostedS
             }
 
             var (installed, created) = await Task.Run(() => Store.Install(content, zip, media), ct).ConfigureAwait(false);
+            _source.Restore(installed.ContentId);
             await Task.Run(() => _timeline.Retry(installed.ContentId), ct).ConfigureAwait(false); // cached resolution failures only
             LogImported(installed.ContentId, installed.Manifest.Id, installed.Manifest.Revision, created);
             return DetailsOf(installed);
@@ -245,7 +270,17 @@ public sealed partial class ScenePackageService : IScenePackageService, IHostedS
         }
     }
 
-    private async Task<ScenePackageApplyDto> ApplyLockedAsync(string contentId, CancellationToken ct)
+    public async Task<ScenePackageApplyDto> ApplyScenePackageCheckedAsync(ScenePackageApplyRequestDto request, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        if (!ScenePackageFormat.IsSha256Hex(request.ContentId) || !ScenePackageFormat.IsSha256Hex(request.ExpectedBindingId))
+            throw new ArgumentException("A checked apply requires exact package and binding SHA-256 ids.", nameof(request));
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
+        try { return await ApplyLockedAsync(request.ContentId, ct, request.ExpectedBindingId).ConfigureAwait(false); }
+        finally { _gate.Release(); }
+    }
+
+    private async Task<ScenePackageApplyDto> ApplyLockedAsync(string contentId, CancellationToken ct, string? expectedBindingId = null)
     {
         if (!Store.TryGet(contentId, out var package, out var problem))
         {
@@ -257,6 +292,9 @@ public sealed partial class ScenePackageService : IScenePackageService, IHostedS
         {
             return new ScenePackageApplyDto(false, package.ContentId, null, pointerProblem ?? "No binding has been saved for this package.");
         }
+
+        if (expectedBindingId is not null && !string.Equals(snapshot.BindingId, expectedBindingId, StringComparison.Ordinal))
+            return new ScenePackageApplyDto(false, package.ContentId, snapshot.BindingId, "Not applied: device bindings changed after review. Refresh and review the saved binding before applying.");
 
         var live = await EvaluateAsync(package, snapshot.Bindings, requireActive: true, ct).ConfigureAwait(false);
         if (live.Count > 0)
@@ -582,11 +620,11 @@ public sealed partial class ScenePackageService : IScenePackageService, IHostedS
     /// SetScreenScene; in each case the family's ControlVerified owner flag must be set. Refused: Disabled output (never enabled
     /// here), Blocked (another owner), Error, Disconnected, Unsupported, Stopped by a fan-LCD restart, or control not verified.
     /// </summary>
-    private string? ScreenUnavailable(ScreenDeviceDto device)
+    internal string? ScreenUnavailable(ScreenDeviceDto device)
     {
         var state = device.State switch
         {
-            ScreenStates.Idle or ScreenStates.Running => null,
+            ScreenStates.Idle or ScreenStates.Running or ScreenStates.Sleeping => null,
             ScreenStates.Stopped when _media?.RestartHolds(device.Id) == true => "is Stopped by a fan-LCD restart in progress",
             ScreenStates.Stopped => null, // a StopScreens pause: the apply resumes it (no output gate is changed)
             _ => $"is {device.State}{(device.BlockedBy is { } by ? " (" + by + ")" : "")}, not ready for output",
@@ -621,12 +659,13 @@ public sealed partial class ScenePackageService : IScenePackageService, IHostedS
     }
 
     /// <summary>Re-verifies each active timeline and re-installs its screen media (idempotent by content), then warms it.</summary>
-    private async Task HydrateAsync(IReadOnlyCollection<string> ids)
+    private async Task HydrateAsync(IReadOnlyCollection<string> ids, CancellationToken ct)
     {
         foreach (var id in ids)
         {
             try
             {
+                ct.ThrowIfCancellationRequested();
                 if (!_source.TryResolve(id, out var package, out _, out var problem))
                 {
                     Block(id, problem ?? "the package content cannot be resolved");
@@ -635,20 +674,23 @@ public sealed partial class ScenePackageService : IScenePackageService, IHostedS
 
                 foreach (var s in package.Manifest.Screens)
                 {
-                    await InstallMediaAsync(package, s, CancellationToken.None).ConfigureAwait(false);
+                    await InstallMediaAsync(package, s, ct).ConfigureAwait(false);
                 }
 
+                ct.ThrowIfCancellationRequested();
                 if (_timeline.Warm(id) is { } unresolved)
                 {
                     LogActiveBlocked(id, unresolved);
                 }
             }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { return; }
 #pragma warning disable CA1031 // a hydration failure (corrupt original, importer/store refusal) blocks that timeline, labelled; startup continues
             catch (Exception ex)
 #pragma warning restore CA1031
             {
                 Block(id, $"package media could not be re-installed from its immutable original ({ex.Message})");
             }
+            finally { _hydrating.TryRemove(id, out _); }
         }
 
         void Block(string id, string why)

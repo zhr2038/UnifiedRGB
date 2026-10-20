@@ -45,8 +45,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         Scene = new SceneViewModel(client, ui, ReportError);
         Packages = new ScenePackagesViewModel(client.RequirePackages,
             () => client.Require().ListControllersAsync(), () => client.RequireScreens().ListScreensAsync(),
-            choosePackageFile ?? (() => null), ReportError, confirm);
-        Profiles = new ProfilesViewModel(client, ui, ReportError, Packages);
+            choosePackageFile ?? (() => null), ReportError, confirm, client.RequireLibrary);
+        Profiles = new ProfilesViewModel(client, ui, ReportError, Packages, confirm);
         Profiles.Applied += (_, _) => { _ = Studio.ReadCommand.ExecuteAsync(); _ = Screens.RefreshOptionalAsync(); };
         Packages.Applied += (_, _) => { _ = Studio.ReadCommand.ExecuteAsync(); _ = Screens.RefreshOptionalAsync(); };
         Bringup = new NativeBringupViewModel(client, ui, ReportError);

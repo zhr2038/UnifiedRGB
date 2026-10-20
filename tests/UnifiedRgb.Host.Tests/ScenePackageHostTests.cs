@@ -349,7 +349,7 @@ public sealed partial class ScenePackageHostTests
         state.Ready.Should().BeTrue(string.Join("; ", state.Problems));
         var timeline = ScenePackageIds.TimelineIdOf(cid, state.BindingId!);
 
-        var applied = await packages.ApplyScenePackageAsync(cid);
+        var applied = await packages.ApplyScenePackageCheckedAsync(new(cid, state.BindingId!));
         applied.Applied.Should().BeTrue(applied.Detail);
         var scene = await rgb.GetSceneAsync();
         scene.Package.Should().Be(new ScenePackageRefDto(cid, state.BindingId!, Pkg.Contract));

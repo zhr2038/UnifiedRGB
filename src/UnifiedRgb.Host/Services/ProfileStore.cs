@@ -38,6 +38,7 @@ public sealed partial class ProfileStore
 
     /// <summary>Test seam: runs after the temp file is written and flushed, before the rename (simulates a crash when it throws).</summary>
     internal Action<string>? BeforeCommit { get; set; }
+    internal Action<ProfileDto>? BeforeReferenceCommit { get; set; }
 
     public static bool IsValidName(string? name) =>
         name is not null && NamePattern().IsMatch(name) && !name.EndsWith('.') && !name.EndsWith(' ')
@@ -58,6 +59,23 @@ public sealed partial class ProfileStore
             .ToArray();
     }
 
+    // Reference inspection must stop before materializing an arbitrarily large file-name list.
+    internal List<string> ReferenceNames()
+    {
+        OwnedLibraryPaths.CheckAncestors(Directory);
+        var names = new List<string>();
+        if (!System.IO.Directory.Exists(Directory)) return names;
+        var entries = 0;
+        foreach (var file in new DirectoryInfo(Directory).EnumerateFiles("*.json"))
+        {
+            if (++entries > 1025) throw new InvalidOperationException("Saved-scene reference inspection exceeded1024 scenes; nothing was removed.");
+            if ((file.Attributes & FileAttributes.ReparsePoint) != 0) throw new InvalidDataException("Saved-scene references contain a link; nothing was removed.");
+            var name = Path.GetFileNameWithoutExtension(file.Name);
+            if (IsValidName(name)) names.Add(name);
+        }
+        return names;
+    }
+
     /// <summary>Throws KeyNotFoundException when absent, ArgumentException for a bad name, InvalidDataException when unreadable.</summary>
     public ProfileDto Load(string name)
     {
@@ -71,6 +89,22 @@ public sealed partial class ProfileStore
         RequireName(profile.Name);
         Write(PathOf(profile.Name), profile);
     }
+
+    public bool Delete(string name)
+    {
+        RequireName(name);
+        return SceneStateFiles.Coordinate(StateRoot, () =>
+        {
+            OwnedLibraryPaths.CheckAncestors(Directory);
+            var path = PathOf(name);
+            if (!File.Exists(path)) return false;
+            OwnedLibraryPaths.CheckAncestors(path);
+            File.Delete(path);
+            return true;
+        });
+    }
+
+    internal ProfileDto? ReadActiveForReferences() => Read(PathOf(ActiveName));
 
     /// <summary>The scene to restore at start; null when there is none.</summary>
     public ProfileDto? LoadActive()
@@ -149,8 +183,11 @@ public sealed partial class ProfileStore
     {
         var bytes = Serialize(profile);
         RequireSize(bytes);
-        lock (_gate)
+        SceneStateFiles.Coordinate(StateRoot, () =>
         {
+          lock (_gate)
+          {
+            BeforeReferenceCommit?.Invoke(profile);
             System.IO.Directory.CreateDirectory(Directory);
             var tmp = $"{path}.{Guid.NewGuid():N}.tmp";
             try
@@ -171,7 +208,9 @@ public sealed partial class ProfileStore
                     File.Delete(tmp);
                 }
             }
-        }
+          }
+          return 0;
+        });
     }
 
     internal static void RequireSize(byte[] bytes)

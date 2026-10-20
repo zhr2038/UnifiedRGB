@@ -278,10 +278,16 @@ public sealed class ScenePackageStoreTests : IDisposable
         Directory.Exists(Path.Combine(store.Root, content.ContentId)).Should().BeFalse();
         Directory.GetDirectories(store.Root, "~stage-*").Should().BeEmpty();
 
-        Directory.CreateDirectory(Path.Combine(store.Root, "~stage-debris"));
+        var stage = Path.Combine(store.Root, "~stage-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(stage);
+        File.WriteAllText(Path.Combine(stage, "package.zip"), "partial upload");
+        var unknown = Path.Combine(store.Root, "~stage-debris");
+        Directory.CreateDirectory(unknown);
+        File.WriteAllText(Path.Combine(unknown, "owner-note.txt"), "keep me");
         var fresh = new ScenePackageStore(_dir);
         fresh.TryGet(content.ContentId, out _, out _).Should().BeFalse();
-        Directory.GetDirectories(fresh.Root, "~stage-*").Should().BeEmpty();
+        Directory.Exists(stage).Should().BeFalse("only an owned staging name and known files may be swept");
+        File.ReadAllText(Path.Combine(unknown, "owner-note.txt")).Should().Be("keep me");
     }
 
     [Fact]

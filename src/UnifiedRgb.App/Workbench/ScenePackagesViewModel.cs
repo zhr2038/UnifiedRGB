@@ -49,6 +49,11 @@ public sealed class ScenePackagesViewModel : ObservableObject
     private readonly Func<Task<IReadOnlyList<ScreenDeviceDto>>> _screens;
     private readonly Func<string?> _chooseFile;
     private readonly Func<string, bool> _confirm;
+    private readonly Func<ISceneLibraryService>? _library;
+    private bool _cleanRelatedMedia;
+    private bool _checkedApplySupported = true;
+    private bool _librarySupported;
+    private string _usage = "";
     private readonly Action<Exception> _error;
     private PackageChoice? _selected;
     private ScenePackageDetailsDto? _details;
@@ -61,14 +66,16 @@ public sealed class ScenePackagesViewModel : ObservableObject
 
     public ScenePackagesViewModel(Func<IScenePackageService> service,
         Func<Task<IReadOnlyList<ControllerDto>>> controllers, Func<Task<IReadOnlyList<ScreenDeviceDto>>> screens,
-        Func<string?> chooseFile, Action<Exception> onError, Func<string, bool>? confirm = null)
+        Func<string?> chooseFile, Action<Exception> onError, Func<string, bool>? confirm = null, Func<ISceneLibraryService>? library = null)
     {
         _service = service; _controllers = controllers; _screens = screens; _chooseFile = chooseFile; _error = onError;
         _confirm = confirm ?? (_ => true);
+        _library = library;
         RefreshCommand = new AsyncCommand(_ => RefreshAsync(), Report, _ => !Busy);
         ImportCommand = new AsyncCommand(_ => ImportAsync(), Report, _ => !Busy && Available);
         SaveBindingsCommand = new AsyncCommand(_ => SaveBindingsAsync(), Report, _ => CanEdit && Roles.Count > 0);
         ApplyCommand = new AsyncCommand(_ => ApplyAsync(), Report, _ => CanApply);
+        RemoveCommand = new AsyncCommand(_ => RemoveAsync(), Report, _ => CanEdit && !Dirty && MaintenanceAvailable);
         OpenDeveloperDocsCommand = new RelayCommand(() =>
         {
             try
@@ -86,6 +93,10 @@ public sealed class ScenePackagesViewModel : ObservableObject
     public AsyncCommand ImportCommand { get; }
     public AsyncCommand SaveBindingsCommand { get; }
     public AsyncCommand ApplyCommand { get; }
+    public AsyncCommand RemoveCommand { get; }
+    public bool CleanRelatedMedia { get => _cleanRelatedMedia; set => SetProperty(ref _cleanRelatedMedia, value); }
+    public string Usage { get => _usage; private set => SetProperty(ref _usage, value); }
+    public bool MaintenanceAvailable => Available && _librarySupported;
     public RelayCommand OpenDeveloperDocsCommand { get; }
     public event EventHandler? Applied;
     public bool Available { get => _available; private set { if (SetProperty(ref _available, value)) NotifyState(); } }
@@ -94,7 +105,7 @@ public sealed class ScenePackagesViewModel : ObservableObject
     public bool HasDetails => _details is not null;
     public bool CanSelect => !Busy;
     public bool CanEdit => Available && !Busy && HasDetails;
-    public bool CanApply => CanEdit && !Dirty && _binding is { Ready: true, BindingId: not null };
+    public bool CanApply => CanEdit && _checkedApplySupported && !Dirty && _binding is { Ready: true, BindingId: not null };
     public string Title => _details?.Info.Name ?? "外部场景包";
     public string Detail => _details is { Info: var p } ? $"修订 {p.Revision} · {p.DurationMs / 1000:0.##} 秒循环 · {p.LightingRoles} 个灯光角色 · {p.ScreenRoles} 个屏幕角色" : "场景内容独立保存，设备绑定留在本机。";
     public string Provenance => _details is { Info: var p } ? $"内容 {p.ContentId[..Math.Min(12, p.ContentId.Length)]} · {p.PlaybackContract}" : "";
@@ -128,7 +139,18 @@ public sealed class ScenePackagesViewModel : ObservableObject
         var list = await _service().ListScenePackagesAsync().ConfigureAwait(true);
         var controllers = await _controllers().ConfigureAwait(true);
         var screens = await _screens().ConfigureAwait(true);
+        SceneLibraryUsageDto? usage = null;
+        if (_library is not null)
+        {
+            try { usage = await _library().GetSceneLibraryUsageAsync().ConfigureAwait(true); }
+            catch (StreamJsonRpc.RemoteMethodNotFoundException) { /* older Host: content remains readable */ }
+        }
         if (request != Volatile.Read(ref _refreshRequest)) return;
+        _librarySupported = usage is not null;
+        _checkedApplySupported = true;
+        NotifyState();
+        Usage = usage is null ? (_library is null ? "" : "当前后台尚不支持场景库维护，请更新后台后刷新。") : $"{usage.Packages} / {usage.MaxPackages} 个包 · {usage.Bytes / 1048576.0:0.0} / {usage.MaxBytes / 1048576.0:0} MiB"
+            + (usage.PendingCleanupBytes > 0 ? $"\n待清理 {usage.PendingCleanupBytes / 1048576.0:0.0} MiB（下次启动重试）" : "");
         Available = true; _inventory = controllers; _displays = screens;
         var id = _selected?.Id;
         _updatingList = true;
@@ -260,11 +282,48 @@ public sealed class ScenePackagesViewModel : ObservableObject
             {
                 _binding = current; Dirty = true; Message = "设备绑定已变化或设备暂不可用。请刷新、检查并重新保存后应用。"; return;
             }
-            var result = await service.ApplyScenePackageAsync(id).ConfigureAwait(true);
+            var result = await service.ApplyScenePackageCheckedAsync(new(id, bindingId!)).ConfigureAwait(true);
+            if (!result.Applied && result.BindingId != bindingId) Dirty = true;
             Message = result.Applied ? "场景包已应用，请查看实际灯光与屏幕效果。" : "应用未完成，原场景保留。\n" + result.Detail;
             if (result.Applied) Applied?.Invoke(this, EventArgs.Empty);
         }
+        catch (StreamJsonRpc.RemoteMethodNotFoundException)
+        {
+            _checkedApplySupported = false;
+            Message = "当前后台版本不支持绑定版本校验。请更新或重启后台，再刷新场景库后重试。原场景保持不变。";
+            NotifyState();
+        }
         finally { Busy = false; }
+    }
+
+    private async Task RemoveAsync()
+    {
+        if (!CanEdit || Dirty || !MaintenanceAvailable || Selected is null || _library is null) return;
+        var id = Selected.Id; var clean = CleanRelatedMedia; var removed = false;
+        Busy = true;
+        try
+        {
+            var service = _library();
+            var plan = await service.InspectScenePackageRemovalAsync(id).ConfigureAwait(true);
+            if (plan.References.Count > 0)
+            {
+                Message = "此包仍被引用，未删除：\n" + string.Join("\n", plan.References); return;
+            }
+            if (!_confirm($"删除场景包“{plan.Name}”？\n当前播放不会切换，本机绑定历史会保留。"
+                + (clean ? "\n同时清理未被引用的同源屏幕素材（包括以相同文件单独上传的素材）。" : "\n屏幕素材缓存保留。"))) return;
+            var result = await service.RemoveScenePackageAsync(new(id, clean)).ConfigureAwait(true);
+            removed = result.Removed;
+            Message = result.Removed ? $"场景包已删除，已回收 {result.ReclaimedBytes / 1048576.0:0.0} MiB。"
+                + (result.CleanupPending ? "部分文件仍被占用或含未知内容；已保留，后台重启时重试。" : "")
+                : "此包仍被引用，未删除：\n" + string.Join("\n", result.References);
+        }
+        finally { Busy = false; }
+        if (removed)
+        {
+            var message = Message;
+            await RefreshAsync().ConfigureAwait(true);
+            Message = message;
+        }
     }
 
     private void ClearDetails() { _details = null; _binding = null; Roles.Clear(); Dirty = false; NotifyDetails(); }
@@ -273,7 +332,9 @@ public sealed class ScenePackagesViewModel : ObservableObject
     {
         OnPropertyChanged(nameof(CanEdit)); OnPropertyChanged(nameof(CanApply)); OnPropertyChanged(nameof(BindingStatus));
         OnPropertyChanged(nameof(CanSelect));
+        OnPropertyChanged(nameof(MaintenanceAvailable));
         RefreshCommand.RaiseCanExecuteChanged(); ImportCommand.RaiseCanExecuteChanged(); SaveBindingsCommand.RaiseCanExecuteChanged(); ApplyCommand.RaiseCanExecuteChanged();
+        RemoveCommand.RaiseCanExecuteChanged();
     }
     private static string Problems(IReadOnlyList<string> problems) => problems.Count == 0 ? "为每个内容角色选择设备，然后保存绑定。" : "绑定尚未就绪：\n" + string.Join("\n", problems.Select(p => p == "No binding has been saved for this package." ? "此场景包尚未保存设备绑定。" : p));
     private void Report(Exception ex) { Message = "操作未完成：" + ex.Message; _error(ex); }

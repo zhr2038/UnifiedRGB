@@ -63,9 +63,8 @@ public class LayeringTests
 
     private static string[] References(string assembly)
     {
-        var path = Directory.EnumerateDirectories(Path.Combine(ForbiddenIdentifierScanTests.RepoRoot(), "src"))
-            .Where(d => Directory.Exists(Path.Combine(d, "bin")))
-            .SelectMany(d => Directory.EnumerateFiles(Path.Combine(d, "bin"), assembly + ".dll", SearchOption.AllDirectories))
+        var path = ForbiddenIdentifierScanTests.ProductBinFolders()
+            .SelectMany(d => Directory.EnumerateFiles(d, assembly + ".dll", SearchOption.AllDirectories))
             .OrderByDescending(File.GetLastWriteTimeUtc)
             .FirstOrDefault() ?? throw new FileNotFoundException(assembly);
         using var pe = new PEReader(File.OpenRead(path));

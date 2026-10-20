@@ -41,6 +41,9 @@ public interface IScreenSceneBinding
     /// <summary>The current screen scene for GetScene: null when it has no assignment (so the RGB JSON stays byte-identical).</summary>
     ScreenSceneDto? CurrentForScene();
 
+    /// <summary>Immutable, already loaded snapshot for reference protection; production does not acquire scene/publication locks.</summary>
+    ScreenSceneDto? CurrentReferences() => CurrentForScene();
+
     /// <summary>
     /// Whole-candidate validation, assets included; throws ArgumentException and changes nothing. Not serialized: it is for
     /// SaveProfile, whose inactive profile may later reference a deleted asset (it then fails validation on apply).
@@ -292,21 +295,18 @@ public sealed partial class ScreenManager : IScreenService, IScreenSceneBinding,
                 }
             }
 
-            if (AssetPinned?.Invoke(assetId) == true)
-            {
-                // OPUS-GENERIC-SCENE-PACKAGES: package media must stay available (saved package profiles, restart)
-                throw new InvalidOperationException($"Asset {assetId} belongs to an installed scene package; it cannot be deleted separately.");
-            }
-
             if (BeforeAssetDeleteForTest is { } barrier)
             {
                 await barrier(ct).ConfigureAwait(false);
             }
 
-            if (!_assets.Delete(assetId)) // file I/O outside _gate; the scene cannot change while the mutation gate is held
+            SceneStateFiles.Coordinate(_stateRoot, () =>
             {
-                throw new ArgumentException($"Asset {assetId} does not exist.", nameof(assetId));
-            }
+                if (AssetPinned?.Invoke(assetId) == true)
+                    throw new InvalidOperationException($"Asset {assetId} is referenced by an installed scene package or saved scene; remove that reference first.");
+                if (!_assets.Delete(assetId)) throw new ArgumentException($"Asset {assetId} does not exist.", nameof(assetId));
+                return 0;
+            });
         }
         finally
         {

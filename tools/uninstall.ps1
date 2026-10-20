@@ -3,9 +3,21 @@
   Removes Unified RGB Controller. Run elevated.
 
 .DESCRIPTION
-  Stops the task, restores any vendor services Takeover stopped (from %ProgramData%\UnifiedRgb\takeover.json via
-  `UnifiedRgb.Host.exe --restore-services`), unregisters the task, removes the HKCU Run entry and the program files.
-  Profiles and logs are kept unless -Purge is given (takeover.json is kept if a restore failed).
+  The work is done by tools/installation/UnifiedRgb.Installation.psm1 (audit F6):
+  - Only a manifest-owned installation under %ProgramFiles% is accepted; anything else is refused unchanged.
+  - Refuses while the GUI is open or while a Host the installation does not own is running; refuses (nothing
+    changed) when the installed Host is missing or modified, because it is needed to restore vendor services.
+  - Stops only the installed task "UnifiedRgb Host" and waits until the Host has really exited. Nothing is ever
+    killed: a timeout aborts before vendor services are restored or any file is deleted.
+  - Restores vendor services stopped by Takeover (`UnifiedRgb.Host.exe --restore-services`, hidden and waited). If
+    that fails, the task is removed but every program file is kept so the uninstall can be re-run.
+  - Unregisters the task, removes the HKCU Run entry if it points at this installation, then deletes only the files
+    listed in the installation manifest that are still unchanged. Modified or unknown files and carried-over
+    configuration are kept and listed; directories are only removed when empty.
+  - %ProgramData%\UnifiedRgb (profiles, scenes, calibration, logs) is always kept.
+
+  -Purge is kept for compatibility but refused: deleting %ProgramData%\UnifiedRgb recursively cannot be limited to
+  files this installer owns. Remove that directory yourself after checking it, if you really want to.
 #>
 [CmdletBinding(SupportsShouldProcess)]
 param(
@@ -14,40 +26,27 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 
-$principal = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
-if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'Run this script elevated.' }
-
-$hostExe = Join-Path $InstallDir 'UnifiedRgb.Host.exe'
-$task = Get-ScheduledTask -TaskName 'UnifiedRgb Host' -ErrorAction SilentlyContinue
-if ($task -and $PSCmdlet.ShouldProcess('UnifiedRgb Host', 'Stop task')) {
-    Stop-ScheduledTask -TaskName 'UnifiedRgb Host'
-    $deadline = (Get-Date).AddSeconds(15)
-    while ((Get-Process -Name 'UnifiedRgb.Host' -ErrorAction SilentlyContinue) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 250 }
+if ($Purge) {
+    throw "Refused: -Purge (recursive deletion of '$(Join-Path $env:ProgramData 'UnifiedRgb')') is no longer supported because that directory holds user profiles, scenes and calibration that the installer does not own. Run uninstall.ps1 without -Purge; delete the data directory yourself after checking it. Nothing was changed."
 }
 
-$restoreOk = $true
-if ((Test-Path -LiteralPath $hostExe) -and $PSCmdlet.ShouldProcess('vendor services', 'Restore services stopped by Takeover')) {
-    $restoration = Start-Process -FilePath $hostExe -ArgumentList '--restore-services' -WindowStyle Hidden -Wait -PassThru
-    if ($restoration.ExitCode -ne 0) { $restoreOk = $false; Write-Warning 'Some services could not be restored; see takeover.json.' }
-}
+Import-Module (Join-Path $PSScriptRoot 'installation\UnifiedRgb.Installation.psm1') -Force
+$platform = New-UrgbWindowsPlatform
+if (-not (& $platform.IsAdministrator)) { throw 'Run this script elevated.' }
 
-if ($task -and $PSCmdlet.ShouldProcess('UnifiedRgb Host', 'Unregister task')) {
-    Unregister-ScheduledTask -TaskName 'UnifiedRgb Host' -Confirm:$false
+$arguments = @{
+    InstallDir = $InstallDir
+    AllowedParent = $env:ProgramFiles
+    DataDir = (Join-Path $env:ProgramData 'UnifiedRgb')
+    Platform = $platform
+    Reporter = { param([string]$Line) Write-Host $Line }
+    WhatIf = $WhatIfPreference
 }
-
-if ($PSCmdlet.ShouldProcess('HKCU Run', 'Remove UnifiedRgb entry')) {
-    Remove-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'UnifiedRgb' -ErrorAction SilentlyContinue
+if ($PSBoundParameters.ContainsKey('Confirm')) { $arguments.Confirm = $PSBoundParameters['Confirm'] }
+$result = Invoke-UrgbUninstall @arguments
+switch ($result.Outcome) {
+    'WhatIf' { return }
+    'NotInstalled' { Write-Host "No UnifiedRgb installation in $($result.InstallRoot); nothing was changed." }
+    'RestoreFailed' { throw "Failed: vendor services could not be fully restored. The task was removed but all program files and takeover.json were kept; fix the cause and run uninstall.ps1 again." }
+    default { Write-Host 'Uninstalled.' }
 }
-
-if (-not $restoreOk) {
-    Write-Warning "Keeping $InstallDir so '$hostExe --restore-services' can be re-run."
-}
-elseif ((Test-Path -LiteralPath $InstallDir) -and $PSCmdlet.ShouldProcess($InstallDir, 'Remove program files')) {
-    Remove-Item -LiteralPath $InstallDir -Recurse -Force
-}
-
-$data = Join-Path $env:ProgramData 'UnifiedRgb'
-if ($Purge -and $restoreOk -and (Test-Path -LiteralPath $data) -and $PSCmdlet.ShouldProcess($data, 'Remove profiles and logs')) {
-    Remove-Item -LiteralPath $data -Recurse -Force
-}
-Write-Host 'Uninstalled.'

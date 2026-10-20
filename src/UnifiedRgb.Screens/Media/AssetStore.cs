@@ -4,6 +4,7 @@ using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using Microsoft.Extensions.Logging;
 using UnifiedRgb.Contracts.Dto;
+using UnifiedRgb.Screens.Runtime;
 
 namespace UnifiedRgb.Screens.Media;
 
@@ -205,24 +206,32 @@ internal sealed partial class AssetStore
     /// Removes an asset; false when it does not exist. The directory is renamed away before the index forgets it, so a rename
     /// that fails (a reader still has a frame open) throws and changes nothing.
     /// </summary>
-    public bool Delete(string id)
+    public bool Delete(string id) => DeleteDetailed(id).Removed;
+
+    public ScreenAssetCleanupResult DeleteDetailed(string id)
     {
         string trash;
+        HashSet<string> owned;
+        long bytes;
         lock (_gate)
         {
             EnsureLoaded();
-            if (!IsValidId(id) || !_assets.ContainsKey(id))
+            if (!IsValidId(id) || !_assets.TryGetValue(id, out var asset))
             {
-                return false;
+                return new(false, false, 0);
             }
+
+            owned = Enumerable.Range(0, asset.FrameCount).Select(FrameFile).Append("meta.json").ToHashSet(StringComparer.OrdinalIgnoreCase);
+            _ = OwnedLibraryPaths.Inventory(_root, Path.Combine(_root, id), owned);
+            bytes = owned.Sum(f => new FileInfo(Path.Combine(_root, id, f)).Length);
 
             trash = Path.Combine(_root, "~del-" + Guid.NewGuid().ToString("N"));
             Directory.Move(Path.Combine(_root, id), trash);
             _assets.Remove(id);
         }
 
-        TryDeleteDirectory(trash);
-        return true;
+        var purged = OwnedLibraryPaths.Purge(_root, trash, owned);
+        return new(true, !purged, purged ? bytes : 0);
     }
 
     /// <summary>The stored PNG of one frame (bounded read).</summary>
@@ -305,9 +314,12 @@ internal sealed partial class AssetStore
     {
         try
         {
-            if (Directory.Exists(path))
+            var name = Path.GetFileName(path);
+            if (Directory.Exists(path) && (name.StartsWith("~tmp-", StringComparison.Ordinal) || name.StartsWith("~del-", StringComparison.Ordinal))
+                && Guid.TryParseExact(name[5..], "N", out _))
             {
-                Directory.Delete(path, recursive: true);
+                var owned = Enumerable.Range(0, 300).Select(FrameFile).Append("meta.json").ToHashSet(StringComparer.OrdinalIgnoreCase);
+                if (!OwnedLibraryPaths.Purge(_root, path, owned)) LogCleanupFailed(_log, path, "Unknown or locked files kept for inspection.");
             }
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)

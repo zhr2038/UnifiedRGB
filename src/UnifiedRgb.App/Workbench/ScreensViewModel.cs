@@ -341,11 +341,15 @@ public sealed class ScreensViewModel : ObservableObject
         if (Selected is null) throw new InvalidOperationException("请先选择屏幕。");
         if (!double.IsFinite(Brightness) || Brightness is < 0 or > 100 || Fps is < 1 or > 15) throw new InvalidOperationException("亮度范围为 0～100%，刷新帧率范围为 1～15。");
         var overlay = Overlay?.Id ?? "none";
-        var region = overlay == "dashboard"
-            ? _baseline.Assignments.FirstOrDefault(a => a.ScreenId == Selected.Id)?.OverlayLayout
-            : null;
-        return new(Selected.Id, Asset?.Dto?.Id, Background, overlay, _deviceSettings is null ? Rotation : _savedRotation, Brightness / 100, Fps, Enabled, Accent, Fit?.Id ?? "cover", OverlayLayout: region);
+        var saved = SavedAssignment();
+        var region = overlay == "dashboard" ? saved?.OverlayLayout : null;
+        // A shared timeline clocks its authored media: presentation edits keep it; different media never inherits it.
+        var timeline = LeavesTimeline(saved) ? null : saved?.TimelineId;
+        return new(Selected.Id, Asset?.Dto?.Id, Background, overlay, _deviceSettings is null ? Rotation : _savedRotation, Brightness / 100, Fps, Enabled, Accent, Fit?.Id ?? "cover", TimelineId: timeline, OverlayLayout: region);
     }
+    private ScreenAssignmentDto? SavedAssignment() => _baseline.Assignments.FirstOrDefault(a => a.ScreenId == Selected?.Id);
+    private bool LeavesTimeline(ScreenAssignmentDto? saved) =>
+        saved?.TimelineId is not null && !string.Equals(Asset?.Dto?.Id, saved.BackgroundAssetId, StringComparison.Ordinal);
     private void LoadSelected()
     {
         var loading = _loading; _loading = true;
@@ -409,12 +413,16 @@ public sealed class ScreensViewModel : ObservableObject
         if (version != _draftVersion) { PreviewNote = "草稿已修改，请重新生成预览。"; return; }
         var image = new BitmapImage();
         using (var stream = new MemoryStream(Convert.FromBase64String(preview.PngBase64))) { image.BeginInit(); image.CacheOption = BitmapCacheOption.OnLoad; image.StreamSource = stream; image.EndInit(); image.Freeze(); }
-        Preview = image; PreviewNote = (DeviceSettingsDirty ? "本机设置尚未保存；预览使用已保存的方向与质量。\n" : "") + $"{preview.Width} × {preview.Height} · 实际编码预览，未发送\n{preview.Note}";
+        Preview = image; PreviewNote = (DeviceSettingsDirty ? "本机设置尚未保存；预览使用已保存的方向与质量。\n" : "")
+            + (LeavesTimeline(SavedAssignment()) ? "已更换素材：应用后此屏幕将脱离场景包同步时间线，独立播放。\n" : "")
+            + $"{preview.Width} × {preview.Height} · 实际编码预览，未发送\n{preview.Note}";
     }
     private async Task ApplyAsync()
     {
         var epoch = Volatile.Read(ref _connectionEpoch);
         var a = Build(); var service = _service(); var version = _draftVersion;
+        var detaches = LeavesTimeline(SavedAssignment());
+        if (detaches && !_confirm("更换素材后，此屏幕将脱离场景包同步时间线，按本机时钟独立播放。继续应用？")) { Message = "未应用，此屏幕保持原同步内容，草稿保留。"; return; }
         var current = await service.GetScreenSceneAsync().ConfigureAwait(true);
         if (!CurrentConnection(epoch)) return;
         var baseline = _baseline.Assignments.FirstOrDefault(s => s.ScreenId == a.ScreenId);
@@ -423,7 +431,8 @@ public sealed class ScreensViewModel : ObservableObject
         if (!CurrentConnection(epoch)) return;
         _baseline = new(current.Assignments.Where(s => s.ScreenId != a.ScreenId).Append(a).ToArray());
         if (version == _draftVersion) Dirty = false;
-        Message = version == _draftVersion ? "屏幕内容已保存；实际发送取决于输出门槛与设备状态。" : "已保存点击应用时的内容，后续修改仍留在草稿中。";
+        Message = (version == _draftVersion ? "屏幕内容已保存；实际发送取决于输出门槛与设备状态。" : "已保存点击应用时的内容，后续修改仍留在草稿中。")
+            + (detaches ? "\n此屏幕已脱离场景包同步时间线，独立播放。" : "");
         await PollAsync().ConfigureAwait(true);
     }
     private async Task DeleteAssetAsync()

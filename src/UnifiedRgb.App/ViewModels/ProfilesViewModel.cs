@@ -10,6 +10,7 @@ public sealed class ProfilesViewModel : ObservableObject
 {
     private readonly PipeClient _client;
     private readonly IUiDispatcher _ui;
+    private readonly Func<string, bool> _confirm;
     private string _newName = string.Empty;
     private ProfileInfoDto? _selected;
     private string _summary = string.Empty;
@@ -22,16 +23,20 @@ public sealed class ProfilesViewModel : ObservableObject
     public string SelectedColor { get => _color; private set => SetProperty(ref _color, value); }
     public string Details { get => _details; private set => SetProperty(ref _details, value); }
 
-    public ProfilesViewModel(PipeClient client, IUiDispatcher ui, Action<Exception> onError, ScenePackagesViewModel? packages = null)
+    public ProfilesViewModel(PipeClient client, IUiDispatcher ui, Action<Exception> onError, ScenePackagesViewModel? packages = null, Func<string, bool>? confirm = null)
     {
         _client = client ?? throw new ArgumentNullException(nameof(client));
         _ui = ui ?? throw new ArgumentNullException(nameof(ui));
         Packages = packages;
+        _confirm = confirm ?? (_ => true);
         ShowSavedCommand = new RelayCommand(() => LibraryPage = 0);
         ShowPackagesCommand = new RelayCommand(() => LibraryPage = 1);
         SaveCommand = new AsyncCommand(SaveAsync, onError);
         ApplyCommand = new AsyncCommand(_ => ApplyAsync(), onError, _ => Selected is not null);
         RefreshCommand = new AsyncCommand(RefreshAsync, onError);
+        DeleteCommand = new AsyncCommand(_ => DeleteAsync(), onError, _ => Selected is not null && Packages?.MaintenanceAvailable == true
+            && !string.Equals(Selected.Name, StudioViewModel.BeforeLightsOffProfile, StringComparison.OrdinalIgnoreCase));
+        if (packages is not null) packages.PropertyChanged += (_, e) => { if (e.PropertyName == nameof(ScenePackagesViewModel.MaintenanceAvailable)) DeleteCommand.RaiseCanExecuteChanged(); };
     }
 
     public ObservableCollection<ProfileInfoDto> Profiles { get; } = [];
@@ -45,6 +50,7 @@ public sealed class ProfilesViewModel : ObservableObject
     public AsyncCommand ApplyCommand { get; }
 
     public AsyncCommand RefreshCommand { get; }
+    public AsyncCommand DeleteCommand { get; }
 
     public string NewName
     {
@@ -68,6 +74,7 @@ public sealed class ProfilesViewModel : ObservableObject
                 OnPropertyChanged(nameof(SelectedTitle));
                 OnPropertyChanged(nameof(SelectedModified));
                 ApplyCommand.RaiseCanExecuteChanged();
+                DeleteCommand.RaiseCanExecuteChanged();
                 if (value is not null) _ = ShowAsync(value.Name);
                 else { Summary = ""; Details = "选择一个场景查看内容。"; SelectedColor = "#5DDAC8"; }
             }
@@ -101,6 +108,20 @@ public sealed class ProfilesViewModel : ObservableObject
         var name = _selected?.Name ?? throw new InvalidOperationException("Select a profile.");
         await _client.Require().ApplyProfileAsync(name).ConfigureAwait(true);
         Applied?.Invoke(this, EventArgs.Empty);
+    }
+
+    private async Task DeleteAsync()
+    {
+        var name = Selected?.Name;
+        if (name is null || Packages?.MaintenanceAvailable != true || !_confirm($"删除已保存场景“{DisplayNames.Scene(name)}”？\n当前播放和场景包原文件将保留。")) return;
+        var result = await _client.RequireLibrary().RemoveSavedSceneAsync(name).ConfigureAwait(true);
+        if (result.Removed)
+        {
+            if (Selected?.Name == name) Selected = null;
+            await RefreshAsync().ConfigureAwait(true);
+            Summary = "已删除保存记录，当前播放未改变。";
+        }
+        else Summary = result.Detail;
     }
 
     private async Task ShowAsync(string name)

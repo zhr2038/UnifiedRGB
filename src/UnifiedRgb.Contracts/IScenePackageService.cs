@@ -22,4 +22,7 @@ public interface IScenePackageService
 
     /// <summary>Applies the package with its current valid binding snapshot as one transaction; on failure Applied is false and nothing changed.</summary>
     Task<ScenePackageApplyDto> ApplyScenePackageAsync(string contentId, CancellationToken ct = default);
+
+    /// <summary>Compares the expected binding and applies it under the same service gate. A stale binding is refused without publication.</summary>
+    Task<ScenePackageApplyDto> ApplyScenePackageCheckedAsync(ScenePackageApplyRequestDto request, CancellationToken ct = default);
 }

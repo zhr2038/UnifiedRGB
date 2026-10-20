@@ -63,6 +63,9 @@ public sealed record ScenePackageBindingStateDto(
 
 public sealed record ScenePackageApplyDto(bool Applied, string ContentId, string? BindingId, string Detail);
 
+/// <summary>Apply exactly the binding snapshot reviewed by the caller; never silently use a later rebinding.</summary>
+public sealed record ScenePackageApplyRequestDto(string ContentId, string ExpectedBindingId);
+
 /// <summary>
 /// Package provenance on a scene (optional on <see cref="SceneDto"/>; not written when null, so legacy scenes and profiles
 /// serialize byte for byte as before). It pins the immutable content, the immutable binding snapshot and the playback contract;

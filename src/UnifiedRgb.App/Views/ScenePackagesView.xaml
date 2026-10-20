@@ -10,6 +10,7 @@
                 <WrapPanel><Button Content="导入场景包" Command="{Binding ImportCommand}" Style="{StaticResource PrimaryButton}" Margin="0,0,8,8"/>
                     <Button Content="刷新" Command="{Binding RefreshCommand}" Style="{StaticResource QuietButton}" Margin="0,0,0,8"/></WrapPanel>
                 <TextBlock Text="选择 ZIP 文件，内容会独立保存在本机。" Style="{StaticResource Caption}"/>
+                <TextBlock Text="{Binding Usage}" Style="{StaticResource Caption}" Margin="0,8,0,0"/>
             </StackPanel>
             <StackPanel DockPanel.Dock="Bottom" Margin="0,18,0,0"><Button Content="开发规范与示例" Command="{Binding OpenDeveloperDocsCommand}" Style="{StaticResource QuietButton}" HorizontalAlignment="Left" Margin="0,0,0,12"/><TextBlock Text="导入和预览不会切换当前灯光或屏幕。" Style="{StaticResource Caption}"/></StackPanel>
             <ListBox ItemsSource="{Binding Packages}" SelectedItem="{Binding Selected}" IsEnabled="{Binding CanSelect}" AutomationProperties.Name="已安装场景包">
@@ -29,6 +30,10 @@
                     <WrapPanel>
                         <Button Content="保存设备绑定" Command="{Binding SaveBindingsCommand}" Style="{StaticResource QuietButton}" Margin="0,0,10,6"/>
                         <Button Content="应用场景包" Command="{Binding ApplyCommand}" Style="{StaticResource PrimaryButton}" Margin="0,0,0,6"/>
+                    </WrapPanel>
+                    <WrapPanel Margin="0,8,0,0">
+                        <Button Content="删除此包…" Command="{Binding RemoveCommand}" Style="{StaticResource QuietButton}" Margin="0,0,12,6"/>
+                        <CheckBox Content="清理无引用素材" IsChecked="{Binding CleanRelatedMedia}" VerticalAlignment="Center" IsEnabled="{Binding CanEdit}" ToolTip="同时清理同源且未被当前播放、其他包或保存场景引用的屏幕素材；包含相同文件单独上传的缓存。外部原文件保持不变。"/>
                     </WrapPanel>
                 </StackPanel>
                 <ScrollViewer>

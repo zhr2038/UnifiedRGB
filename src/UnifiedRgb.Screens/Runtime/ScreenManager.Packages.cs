@@ -1,4 +1,5 @@
 using UnifiedRgb.Screens.Media;
+using UnifiedRgb.Contracts.Dto;
 
 namespace UnifiedRgb.Screens.Runtime;
 
@@ -6,6 +7,7 @@ namespace UnifiedRgb.Screens.Runtime;
 /// <param name="DurationMs">Normalized loop duration (sum of the played GIF delays); 0 for a still image.</param>
 /// <param name="ThumbnailPng">The first frame fitted into a <see cref="ScreenManager.ThumbnailBox"/>-pixel box.</param>
 public sealed record ScreenMediaInfo(string Format, int Width, int Height, int Frames, int DurationMs, byte[] ThumbnailPng);
+public sealed record ScreenAssetCleanupResult(bool Removed, bool CleanupPending, long ReclaimedBytes);
 
 /// <summary>
 /// The screen side of external scene packages (OPUS-GENERIC-SCENE-PACKAGES): media validation with the existing importer and
@@ -31,12 +33,38 @@ public interface IScreenPackageMedia
     /// hold, which an apply must not override, from a StopScreens pause, which an explicit scene apply resumes.
     /// </summary>
     bool RestartHolds(string screenId);
+
+    bool ContainsAsset(string assetId);
+
+    /// <summary>Explicitly requested related-media cleanup. All live, installed-package and caller-supplied profile references protect it.</summary>
+    Task<ScreenAssetCleanupResult> DeleteUnusedPackageAssetAsync(string assetId, Func<string, bool> profileReference, CancellationToken ct = default);
 }
 
 public sealed partial class ScreenManager : IScreenPackageMedia
 {
     /// <summary>Largest side of a package role thumbnail.</summary>
     public const int ThumbnailBox = 160;
+
+    public ScreenSceneDto? CurrentReferences() => Volatile.Read(ref _scene);
+
+    public bool ContainsAsset(string assetId) => _assets.Find(assetId) is not null;
+
+    public async Task<ScreenAssetCleanupResult> DeleteUnusedPackageAssetAsync(string assetId, Func<string, bool> profileReference, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(profileReference);
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        await EnterMutationAsync(ct).ConfigureAwait(false);
+        try
+        {
+            return SceneStateFiles.Coordinate(_stateRoot, () =>
+            {
+                if ((_scene?.Assignments.Any(a => a.BackgroundAssetId == assetId) ?? false)
+                    || AssetPinned?.Invoke(assetId) == true || profileReference(assetId)) return new ScreenAssetCleanupResult(false, false, 0);
+                return _assets.DeleteDetailed(assetId);
+            });
+        }
+        finally { _mutation.Release(); }
+    }
 
     private IScreenTimeline? _timeline;
 

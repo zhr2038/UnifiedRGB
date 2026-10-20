@@ -14,10 +14,18 @@ namespace UnifiedRgb.Host.ScenePackages;
 public sealed class ScenePackageFrameSource(ScenePackageStore packages, ScenePackageBindingStore bindings) : IFrameSetSource
 {
     private readonly ConcurrentDictionary<string, (FrameSet Set, IReadOnlyList<ZoneRef> Targets)> _built = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, byte> _removed = new(StringComparer.Ordinal);
+    internal void Restore(string contentId) => _removed.TryRemove(contentId, out _);
 
     public ScenePackageStore Packages => packages;
 
     public ScenePackageBindingStore Bindings => bindings;
+
+    internal void Forget(string contentId)
+    {
+        _removed[contentId] = 0;
+        foreach (var id in _built.Keys.Where(id => ScenePackageIds.TryParse(id, out var c, out _) && c == contentId)) _built.TryRemove(id, out _);
+    }
 
     public bool Claims(string id) => ScenePackageIds.IsTimelineId(id);
 
@@ -48,6 +56,8 @@ public sealed class ScenePackageFrameSource(ScenePackageStore packages, ScenePac
             problem = $"'{ScenePackageFormat.Printable(id)}' is not a package timeline id";
             return false;
         }
+
+        if (_removed.ContainsKey(contentId)) { problem = "The package was removed."; return false; }
 
         if (!packages.TryGet(contentId, out package, out problem))
         {
@@ -91,6 +101,9 @@ public sealed class ScenePackageFrameSource(ScenePackageStore packages, ScenePac
 
     private bool Resolve(string id, out (FrameSet Set, IReadOnlyList<ZoneRef> Targets) built, out string? problem)
     {
+        built = default;
+        if (ScenePackageIds.TryParse(id, out var cid, out _) && _removed.ContainsKey(cid))
+        { problem = "The package was removed."; return false; }
         if (_built.TryGetValue(id, out built))
         {
             problem = null;
@@ -123,6 +136,7 @@ public sealed class ScenePackageFrameSource(ScenePackageStore packages, ScenePac
 
         built = (set, snapshot.LightingTargets(m));
         _built[id] = built;
+        if (_removed.ContainsKey(package.ContentId)) { _built.TryRemove(id, out _); problem = "The package was removed."; return false; }
         problem = null;
         return true;
     }
@@ -150,6 +164,16 @@ public sealed class ScenePackageTimeline : IScreenTimeline
     private readonly ConcurrentDictionary<string, TimelineFacts> _facts = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, long> _epochs = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, byte> _warming = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, byte> _removed = new(StringComparer.Ordinal);
+
+    internal void Forget(string contentId)
+    {
+        _removed[contentId] = 0;
+        foreach (var id in _facts.Keys.Where(id => ScenePackageIds.TryParse(id, out var c, out _) && c == contentId))
+        {
+            _facts[id] = new TimelineFacts(0, false, "the scene package was removed"); _epochs.TryRemove(id, out _);
+        }
+    }
 
     public ScenePackageTimeline(ScenePackageFrameSource source, Func<string, TimelinePosition?> loopTimeline)
         : this(id => FactsOf(source, id), loopTimeline)
@@ -192,6 +216,7 @@ public sealed class ScenePackageTimeline : IScreenTimeline
     /// </summary>
     public void Retry(string contentId)
     {
+        _removed.TryRemove(contentId, out _);
         foreach (var (id, facts) in _facts)
         {
             if (facts is { Problem: not null, Pinned: false } && ScenePackageIds.TryParse(id, out var c, out _)
@@ -207,6 +232,8 @@ public sealed class ScenePackageTimeline : IScreenTimeline
 
     public ScreenTimelineSample? Position(string timelineId)
     {
+        if (ScenePackageIds.TryParse(timelineId, out var contentId, out _) && _removed.ContainsKey(contentId))
+            return new ScreenTimelineSample(0, TimelineSources.Blocked, "the scene package was removed");
         if (!_facts.TryGetValue(timelineId, out var facts))
         {
             ScheduleWarm(timelineId);

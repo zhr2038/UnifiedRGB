@@ -133,8 +133,9 @@ public static class HostComposition
             sp.GetRequiredService<ILogger<ScenePackageService>>(),
             sp.GetService<IScreenPackageMedia>(),
             sp.GetService<IScreenService>(),
-            sp.GetService<IScreenSceneBinding>()));
+            sp.GetService<IScreenSceneBinding>(), sp.GetRequiredService<ProfileStore>()));
         services.AddSingleton<IScenePackageService>(sp => sp.GetRequiredService<ScenePackageService>());
+        services.AddSingleton<ISceneLibraryService>(sp => sp.GetRequiredService<ScenePackageService>());
         // ORDER: after the engine restored its scene, BEFORE the screen workers start: active package media is re-verified and
         // re-installed (bounded wait) so no package screen sends a frame before its immutable media and timeline are ready
         services.AddHostedService(sp => sp.GetRequiredService<ScenePackageService>());

@@ -5,7 +5,7 @@ using UnifiedRgb.Contracts.Dto;
 namespace UnifiedRgb.Host.Tests;
 
 #pragma warning disable VSTHRD003 // Deferred fake RPCs deliberately exercise selection and draft races.
-public sealed class ScenePackageWorkbenchTests
+public sealed partial class ScenePackageWorkbenchTests
 {
     [Fact]
     public async Task Reading_and_binding_drafts_do_not_apply_or_automap_hardware()
@@ -102,6 +102,16 @@ public sealed class ScenePackageWorkbenchTests
     }
 
     [Fact]
+    public async Task A_binding_change_between_UI_precheck_and_apply_is_rejected_by_the_checked_call()
+    {
+        var service = new Packages(); var vm = New(service); await SelectAsync(vm); Bind(vm); await vm.SaveBindingsCommand.ExecuteAsync();
+        service.ChangeAtCheckedApply = true;
+        await vm.ApplyCommand.ExecuteAsync();
+        service.CheckedExpected.Should().Be("saved"); service.UncheckedCalls.Should().Be(0);
+        vm.Dirty.Should().BeTrue(); vm.CanApply.Should().BeFalse(); vm.Message.Should().Contain("原场景保留");
+    }
+
+    [Fact]
     public async Task Disconnect_blocks_apply_and_preserves_binding_draft()
     {
         var service = new Packages(); var vm = New(service); await SelectAsync(vm); Bind(vm); vm.MarkDisconnected();
@@ -134,6 +144,10 @@ public sealed class ScenePackageWorkbenchTests
         public Func<string, Task<ScenePackageDetailsDto>>? Read { get; set; }
         public Func<ScenePackageBindingsDto, Task<ScenePackageBindingStateDto>>? Save { get; set; }
         public ScenePackageApplyDto ApplyResult { get; set; } = new(true, "a", "saved", "applied");
+        public bool ChangeAtCheckedApply { get; set; }
+        public bool MissingCheckedApply { get; set; }
+        public string? CheckedExpected { get; private set; }
+        public int UncheckedCalls { get; private set; }
         private static ScenePackageInfoDto Info(string id) => new(id, id, "Package " + id, 1, "rgb24-hold-physical-ms-v1", 12000, 1, 1);
         public static ScenePackageDetailsDto Detail(string id) => new(Info(id), [new("light", "Lighting", "lighting", 2, 0, 0, 200, 12000, ["#FF0000", "#00FF00"]), new("display", "Screen", "screen", 0, 20, 20, 1, 12000, [])]);
         public Task<IReadOnlyList<ScenePackageInfoDto>> ListScenePackagesAsync(CancellationToken ct = default) { Calls.Add("List"); return Task.FromResult<IReadOnlyList<ScenePackageInfoDto>>([Info("a"), Info("b")]); }
@@ -146,6 +160,15 @@ public sealed class ScenePackageWorkbenchTests
             if (bindings.Bindings.Any(b => b.Zone is null && b.ScreenId is null)) return Task.FromResult(new ScenePackageBindingStateDto(bindings.ContentId, null, bindings.Bindings, false, ["unbound role"]));
             State = new(bindings.ContentId, "saved", bindings.Bindings, true, []); return Task.FromResult(State);
         }
-        public Task<ScenePackageApplyDto> ApplyScenePackageAsync(string contentId, CancellationToken ct = default) { Writes.Add("Apply"); return Task.FromResult(ApplyResult); }
+        public Task<ScenePackageApplyDto> ApplyScenePackageAsync(string contentId, CancellationToken ct = default) { UncheckedCalls++; Writes.Add("Apply"); return Task.FromResult(ApplyResult); }
+        public Task<ScenePackageApplyDto> ApplyScenePackageCheckedAsync(ScenePackageApplyRequestDto request, CancellationToken ct = default)
+        {
+            CheckedExpected = request.ExpectedBindingId; Writes.Add("Apply");
+            if (MissingCheckedApply)
+                // StreamJsonRpc creates this exception internally when the peer lacks the method.
+                return Task.FromException<ScenePackageApplyDto>((StreamJsonRpc.RemoteMethodNotFoundException)
+                    System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(StreamJsonRpc.RemoteMethodNotFoundException)));
+            return Task.FromResult(ChangeAtCheckedApply ? new ScenePackageApplyDto(false, request.ContentId, "new binding", "binding changed") : ApplyResult);
+        }
     }
 }

@@ -18,6 +18,42 @@ public static class SceneStateFiles
     public const string JournalName = ".scene-state-transaction.json";
     private const int MaxJournalBytes = 4 * 1024 * 1024;
     private static readonly ConcurrentDictionary<string, object> Gates = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly ConcurrentDictionary<string, Action<IReadOnlyList<SceneStateFile>>> Validations = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Coordinate library reference checks with the durable scene commit point, never the render thread.</summary>
+    public static T Coordinate<T>(string root, Func<T> action)
+    {
+        ArgumentNullException.ThrowIfNull(action);
+        root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(root));
+        lock (Gates.GetOrAdd(root, static _ => new object())) return action();
+    }
+
+    /// <summary>One Host-local validation hook. Recovery intentionally does not validate availability of old package content.</summary>
+    public static IDisposable RegisterValidation(string root, Action<IReadOnlyList<SceneStateFile>> validation)
+    {
+        ArgumentNullException.ThrowIfNull(validation);
+        root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(root));
+        Coordinate(root, () =>
+        {
+            if (!Validations.TryAdd(root, validation)) throw new InvalidOperationException("Scene reference validation already registered for this data root.");
+            return 0;
+        });
+        return new ValidationRegistration(root, validation);
+    }
+
+    private sealed class ValidationRegistration(string root, Action<IReadOnlyList<SceneStateFile>> validation) : IDisposable
+    {
+        private int _disposed;
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+            Coordinate(root, () =>
+            {
+                if (Validations.TryGetValue(root, out var current) && ReferenceEquals(current, validation)) Validations.TryRemove(root, out _);
+                return 0;
+            });
+        }
+    }
 
     public static void Recover(string root)
     {
@@ -43,6 +79,7 @@ public static class SceneStateFiles
                 var before = File.Exists(path) ? ReadBounded(path, Limit(f.RelativePath)) : null;
                 return new SceneStateChange(f.RelativePath, before, f.Bytes, Hash(before), Hash(f.Bytes));
             }).ToArray();
+            if (Validations.TryGetValue(root, out var validate)) validate(files);
             var record = new SceneStateRecord(1, false, changes);
             var journal = Path.Combine(root, JournalName);
             WriteRecord(journal, record); // no target changed until the complete recovery record is durable

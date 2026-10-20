@@ -20,3 +20,5 @@ dotnet build tools/windows/ui-qa/UnifiedRgb.UiQa.csproj --artifacts-path .artifa
 - 真实桌面截图：另由 Windows 捕获工具取得，必须核对窗口身份和画面，拒收黑屏、旧帧及其他窗口。
 
 `LegacyScreenWorkspaceView` 是本轮试点之前的页面快照，只在 `--baseline=true` 时使用。主程序不依赖它。软件渲染与无显示器渲染开关也仅限此工具，不改变主程序渲染配置。
+
+场景包维护页使用 `--library=true`。`--state=normal` 显示容量、角色和删除入口，`--state=blocked` 模拟当前播放与保存记录的引用保护。两个模式都只使用内存服务；任何删除、应用或保存写入都会令工具失败。记录中的 `PageDip` 是去掉外边距后的页面尺寸，原生客户区 DIP 未测时明确记录 `not measured`。高 DPI 下最小窗口可能使请求的 1280×800 实际变大，必须以实际物理尺寸为准。

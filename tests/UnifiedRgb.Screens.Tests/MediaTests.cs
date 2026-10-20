@@ -132,11 +132,13 @@ public sealed class MediaTests
             var a = store.Commit(id, "grey", import);
             store.Commit(id, "other name", import).Should().BeSameAs(a, "identical content maps to the existing asset");
             a.ToDto().Should().Be(new ScreenAssetDto(id, "grey", 8, 8, 1, 0, "image"));
-            Directory.CreateDirectory(Path.Combine(root, "~tmp-interrupted"));
+            var debris = Path.Combine(root, "~tmp-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(debris);
+            File.WriteAllText(Path.Combine(debris, "f000.png"), "interrupted upload");
 
             var reloaded = new AssetStore(root, 1 << 20, 4, NullLogger.Instance);
             reloaded.List().Should().ContainSingle().Which.Should().BeEquivalentTo(a);
-            Directory.Exists(Path.Combine(root, "~tmp-interrupted")).Should().BeFalse("debris is removed on load");
+            Directory.Exists(debris).Should().BeFalse("only owned debris with recognized files is removed on load");
             reloaded.ReadFrame(reloaded.Find(id)!, 0).Should().Equal(import.FramePngs[0]);
 
             reloaded.Delete(id).Should().BeTrue();

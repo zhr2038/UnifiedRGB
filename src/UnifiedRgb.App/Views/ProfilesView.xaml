@@ -11,7 +11,7 @@
         </DockPanel>
         <Border Grid.Column="1" Background="{StaticResource SurfaceBrush}" CornerRadius="10" Padding="30"><DockPanel>
             <StackPanel DockPanel.Dock="Top"><Border Height="4" Background="{Binding SelectedColor, Converter={StaticResource HexBrush}}" CornerRadius="2" Margin="0,0,0,28"/><TextBlock Text="{Binding SelectedTitle}" FontSize="25" FontWeight="SemiBold" TextWrapping="Wrap"/><TextBlock Text="{Binding SelectedModified}" Style="{StaticResource Caption}" Margin="0,12,0,0"/><TextBlock Text="{Binding Details}" Foreground="{StaticResource AccentBrush}" Margin="0,22,0,24"/></StackPanel>
-            <StackPanel DockPanel.Dock="Bottom" Margin="0,24,0,0"><TextBlock Text="应用场景会替换对应灯效；含屏幕内容的场景会同时切换屏幕。" Style="{StaticResource Caption}" Margin="0,0,0,14"/><Button Content="应用此场景" Command="{Binding ApplyCommand}" Style="{StaticResource PrimaryButton}" HorizontalAlignment="Left" Padding="28,10"/></StackPanel>
+            <StackPanel DockPanel.Dock="Bottom" Margin="0,24,0,0"><TextBlock Text="应用场景会替换对应灯效；含屏幕内容的场景会同时切换屏幕。" Style="{StaticResource Caption}" Margin="0,0,0,14"/><WrapPanel><Button Content="应用此场景" Command="{Binding ApplyCommand}" Style="{StaticResource PrimaryButton}" Padding="28,10" Margin="0,0,12,6"/><Button Content="删除保存记录…" Command="{Binding DeleteCommand}" Style="{StaticResource QuietButton}" Margin="0,0,0,6"/></WrapPanel></StackPanel>
             <ScrollViewer><TextBlock Text="{Binding Summary}" TextWrapping="Wrap" LineHeight="25" Foreground="{StaticResource MutedBrush}"/></ScrollViewer>
         </DockPanel></Border>
     </Grid>

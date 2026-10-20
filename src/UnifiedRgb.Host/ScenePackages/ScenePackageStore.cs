@@ -272,9 +272,12 @@ public sealed partial class ScenePackageStore
         {
             try
             {
+                var path = Path.Combine(Root, id, ScenePackageFormat.ManifestName);
+                UnifiedRgb.Screens.Runtime.OwnedLibraryPaths.CheckAncestors(path);
+                if (new FileInfo(path).Length > ScenePackageFormat.MaxManifestBytes) return true;
                 var manifest = _verified.TryGetValue(id, out var p)
                     ? p.Manifest
-                    : ScenePackageFormat.ParseManifest(File.ReadAllBytes(Path.Combine(Root, id, ScenePackageFormat.ManifestName)));
+                    : ScenePackageFormat.ParseManifest(File.ReadAllBytes(path));
                 if (manifest.Screens.Any(s => manifest.Files[s.File].StartsWith(assetId, StringComparison.Ordinal)))
                 {
                     return true;
@@ -282,7 +285,7 @@ public sealed partial class ScenePackageStore
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
             {
-                // an unreadable entry pins nothing it cannot name
+                return true; // unreadable references refuse cache reclamation instead of guessing that no package needs it
             }
         }
 
@@ -356,21 +359,8 @@ public sealed partial class ScenePackageStore
 
     private (int Count, long Bytes) Usage()
     {
-        var ids = EntryIds().ToArray();
-        long bytes = 0;
-        foreach (var id in ids)
-        {
-            try
-            {
-                bytes += new DirectoryInfo(Path.Combine(Root, id)).EnumerateFiles("*", SearchOption.AllDirectories).Sum(f => f.Length);
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-            {
-                bytes += 0;
-            }
-        }
-
-        return (ids.Length, bytes);
+        var usage = LibraryUsage();
+        return (usage.Count, usage.Bytes);
     }
 
     /// <summary>Once per process: removes staging debris of an interrupted install (never a committed or corrupt entry).</summary>
@@ -387,7 +377,8 @@ public sealed partial class ScenePackageStore
             return;
         }
 
-        foreach (var debris in Directory.EnumerateDirectories(Root, "~stage-*"))
+        foreach (var debris in Directory.EnumerateDirectories(Root).Where(p => Path.GetFileName(p).StartsWith("~stage-", StringComparison.Ordinal)
+                     || Path.GetFileName(p).StartsWith("~remove-", StringComparison.Ordinal)))
         {
             TryDelete(debris);
         }
@@ -406,10 +397,25 @@ public sealed partial class ScenePackageStore
         {
             if (Directory.Exists(dir))
             {
-                Directory.Delete(dir, recursive: true);
+                var name = Path.GetFileName(dir);
+                if (!(name.StartsWith("~stage-", StringComparison.Ordinal) && Guid.TryParseExact(name[7..], "N", out _))
+                    && !(name.Length == 105 && name.StartsWith("~remove-", StringComparison.Ordinal)
+                        && ScenePackageFormat.IsSha256Hex(name.Substring(8, 64)) && name[72] == '-'
+                        && Guid.TryParseExact(name[73..], "N", out _))) return;
+                UnifiedRgb.Screens.Runtime.OwnedLibraryPaths.CheckAncestors(dir);
+                var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { ZipName, RecordName, ScenePackageFormat.ManifestName, FilesDir + "/", ThumbsDir + "/" };
+                var manifestPath = Path.Combine(dir, ScenePackageFormat.ManifestName);
+                if (File.Exists(manifestPath))
+                {
+                    if (new FileInfo(manifestPath).Length > ScenePackageFormat.MaxManifestBytes) return;
+                    var manifest = ScenePackageFormat.ParseManifest(File.ReadAllBytes(manifestPath));
+                    foreach (var file in manifest.Files.Keys) names.Add(FilesDir + "/" + file);
+                    foreach (var screen in manifest.Screens) names.Add(ThumbsDir + "/" + screen.Role + ".png");
+                }
+                if (!UnifiedRgb.Screens.Runtime.OwnedLibraryPaths.Purge(Root, dir, names, ScenePackageFormat.ManifestName)) LogDebris(dir, "Unknown or locked files kept for inspection.");
             }
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or JsonException)
         {
             LogDebris(dir, ex.Message);
         }
