@@ -42,6 +42,7 @@ public partial class App : Application
     private TrayIcon? _tray;
     private MainWindow? _window;
     private bool _exiting;
+    private readonly CancellationTokenSource _startupStop = new();
 
     public static string HostDataDirectory => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "UnifiedRgb");
 
@@ -54,7 +55,7 @@ public partial class App : Application
         _single = new Mutex(true, @"Local\UnifiedRgb.App", out var first);
         if (!first)
         {
-            Shutdown(0);
+            _ = EnsureHostForExistingAppAsync();
             return;
         }
 
@@ -104,6 +105,7 @@ public partial class App : Application
             }
         };
         _client.Start();
+        _ = EnsureHostAsync();
         if (!e.Args.Contains("--minimized", StringComparer.OrdinalIgnoreCase))
         {
             ShowWindow();
@@ -112,10 +114,52 @@ public partial class App : Application
 
     protected override void OnExit(ExitEventArgs e)
     {
+        _exiting = true;
+        _startupStop.Cancel();
+        _startupStop.Dispose();
         _tray?.Dispose();
         _single?.Dispose();
         Log.CloseAndFlush();
         base.OnExit(e);
+    }
+
+    private async Task EnsureHostForExistingAppAsync()
+    {
+        // Reopening the desktop entry can also recover a stopped backend while the original GUI stays in the tray.
+        var exitCode = 0;
+        try
+        {
+            await using var connection = new PipeClient(PipeNames.Default);
+            connection.Start();
+            await HostStartup.EnsureAsync(connection.WaitConnectedAsync, () => HostStartup.StartTaskAsync(_startupStop.Token), _startupStop.Token).ConfigureAwait(true);
+        }
+        catch (OperationCanceledException) when (_exiting) { }
+#pragma warning disable CA1031 // this secondary instance has no view model; show a useful startup error instead of exiting silently
+        catch (Exception ex)
+#pragma warning restore CA1031
+        {
+            exitCode = 1;
+            MessageBox.Show(ex.Message, "光域 · 后台启动", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        Shutdown(exitCode);
+    }
+
+    private async Task EnsureHostAsync()
+    {
+        if (_client is null) return;
+        try
+        {
+            if (await HostStartup.EnsureAsync(_client.WaitConnectedAsync, () => HostStartup.StartTaskAsync(_startupStop.Token), _startupStop.Token).ConfigureAwait(true))
+                Log.Information("Requested existing Host task at app startup; waiting for trusted IPC");
+        }
+        catch (OperationCanceledException) when (_exiting) { }
+#pragma warning disable CA1031 // startup failure is visible in the GUI and log, never an unobserved UI task
+        catch (Exception ex)
+#pragma warning restore CA1031
+        {
+            Log.Warning(ex, "Could not request Host startup");
+            if (!_exiting && _client.State != ConnectionState.Connected) _vm?.ReportError(ex);
+        }
     }
 
     private void ShowWindow()
@@ -146,6 +190,7 @@ public partial class App : Application
     private async Task ExitAsync()
     {
         _exiting = true;
+        await _startupStop.CancelAsync().ConfigureAwait(true);
         _window?.Close();
         _vm?.Dispose(); // stops the bring-up heartbeat; closing the pipe below ends this connection's sessions in the Host
         if (_client is not null)
