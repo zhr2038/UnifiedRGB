@@ -157,6 +157,8 @@ flowchart LR
 
 ## 后续交付
 
+屏幕性能与原生视频的最新研究见 [五屏画质与 MP4 研究](design/SCREEN-QUALITY-AND-VIDEO-20261021.zh-CN.md)。现有图片链路增加了有界编码帧复用；MP4 导入及设备 H.264 播放尚未开放，固件兼容性和实际可见帧率仍需独立验证。
+
 1. 自带运行环境的 Windows 安装程序，以及升级、卸载、开始菜单与启动项验证。
 2. 针对当前电脑的首次设备检测、依赖准备与可理解的控制验证流程。
 3. 按 [Windows 应用交付方案](design/WINDOWS-APPLICATION.md) 和 [设计系统](DESIGN_SYSTEM.md) 推广已实现的屏幕页试点，并完成剩余 DPI 与无障碍验收；保留 WPF 与现有业务接口。

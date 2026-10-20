@@ -223,11 +223,13 @@ internal sealed partial class ScreenWorker : IDisposable
     {
         var family = _device.Family;
         var compositor = new ScreenCompositor(_ctx.Assets, FrameCacheBytes);
+        var animationCache = new ScreenAnimationCache(family.Family == ScreenFamily.Turzx ? 48L * 1024 * 1024 : 16L * 1024 * 1024);
+        ScreenEncodingSelection? cachedEncoding = null;
         ScreenAssignmentDto? assignment = null;
         var paused = false;
         string? unsupported = null; // the endpoint-mismatch reason once seen: never opened again by this worker
         var animationStart = _ctx.Time.GetTimestamp();
-        EncodedFrame? staticFrame = null;
+        ScreenImage? staticFrame = null;
         ScreenEncodingSelection? staticEncoding = null; // the policy staticFrame was encoded with
         ScreenTimestamp? stamp = null;
         var retryAt = 0L;
@@ -260,6 +262,7 @@ internal sealed partial class ScreenWorker : IDisposable
                     if (!Equals(cmd.Assignment, assignment))
                     {
                         compositor.ClearCache();
+                        animationCache.Clear();
                         staticFrame = null;
                         animationStart = _ctx.Time.GetTimestamp();
                     }
@@ -383,7 +386,7 @@ internal sealed partial class ScreenWorker : IDisposable
                 var powerChanging = false;
                 try
                 {
-                    EncodedFrame frame;
+                    ScreenImage frame;
                     string? warning = null;
                     var slow = false;
                     if (staticFrame is not null && _ctx.EncodingOf(_device.Id) != staticEncoding)
@@ -398,16 +401,30 @@ internal sealed partial class ScreenWorker : IDisposable
                     else
                     {
                         var elapsed = ElapsedMs(assignment, animationStart, out var blocked);
-                        var composeStart = _ctx.Time.GetTimestamp();
-                        var composed = blocked is null
-                            ? compositor.Compose(family, assignment, elapsed, _ctx.Telemetry(), _ctx.Time.GetUtcNow())
-                            : ScreenCompositor.ComposeBlocked(family, blocked);
-                        warning = composed.Warning;
-                        composeMs = _ctx.Time.GetElapsedTime(composeStart).TotalMilliseconds;
                         var encoding = _ctx.EncodingOf(_device.Id);
-                        var encodeStart = _ctx.Time.GetTimestamp();
-                        frame = _ctx.Encode(family, composed.Canvas, _ctx.Options.TurzxLandscapeRotation, encoding.Quality, encoding.Indexed8Verified);
-                        encodeMs = _ctx.Time.GetElapsedTime(encodeStart).TotalMilliseconds;
+                        if (cachedEncoding != encoding) { animationCache.Clear(); cachedEncoding = encoding; }
+                        // A cache hit NEVER bypasses a blocked/missing timeline, missing media or live telemetry.
+                        var cacheAsset = blocked is null && assignment.Overlay == "none" && assignment.OverlayLayout is null
+                            && assignment.BackgroundAssetId is { } id ? _ctx.Assets.Find(id) : null;
+                        var frameIndex = cacheAsset?.FrameAt(elapsed) ?? 0;
+                        if (cacheAsset is not null && animationCache.Find(cacheAsset.Id, frameIndex) is { } hit)
+                        {
+                            frame = hit;
+                        }
+                        else
+                        {
+                            var composeStart = _ctx.Time.GetTimestamp();
+                            var composed = blocked is null
+                                ? compositor.Compose(family, assignment, elapsed, _ctx.Telemetry(), _ctx.Time.GetUtcNow())
+                                : ScreenCompositor.ComposeBlocked(family, blocked);
+                            warning = composed.Warning;
+                            composeMs = _ctx.Time.GetElapsedTime(composeStart).TotalMilliseconds;
+                            var encodeStart = _ctx.Time.GetTimestamp();
+                            frame = ScreenImage.Of(_ctx.Encode(family, composed.Canvas, _ctx.Options.TurzxLandscapeRotation, encoding.Quality, encoding.Indexed8Verified));
+                            encodeMs = _ctx.Time.GetElapsedTime(encodeStart).TotalMilliseconds;
+                            if (cacheAsset is not null && warning is null && animationCache.Add(cacheAsset.Id, frameIndex, frame))
+                                compositor.ClearCache(); // encoded bytes replace decoded rasters, rather than retaining both caches
+                        }
                         var still = !compositor.IsDynamic(assignment);
                         if (assignment.TimelineId is null)
                         {
@@ -419,7 +436,7 @@ internal sealed partial class ScreenWorker : IDisposable
                         }
                         else
                         {
-                            // strict content is never cached: its timeline can block, so it is re-checked every period
+                            // Strict eligibility is re-checked every period, even when the immutable image bytes are cached.
                             slow = still || blocked is not null || warning?.StartsWith(ScreenCompositor.BlockedPrefix, StringComparison.Ordinal) == true;
                         }
                     }

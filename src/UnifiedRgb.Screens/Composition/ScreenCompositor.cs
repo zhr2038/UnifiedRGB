@@ -19,7 +19,8 @@ internal sealed record ComposeResult(PixelFrame Canvas, string? Warning);
 /// </summary>
 internal sealed class ScreenCompositor(AssetStore assets, long cacheBytes, OverlayRenderer? overlay = null)
 {
-    private readonly Dictionary<(string Asset, int Frame, int W, int H, string Fit), PixelFrame> _cache = [];
+    private sealed record FittedFrame(PixelFrame Pixels, bool Opaque);
+    private readonly Dictionary<(string Asset, int Frame, int W, int H, string Fit), FittedFrame> _cache = [];
     private readonly OverlayRenderer _overlay = overlay ?? new();
     private long _cachedBytes;
 
@@ -59,7 +60,7 @@ internal sealed class ScreenCompositor(AssetStore assets, long cacheBytes, Overl
         var cw = swap ? family.Height : family.Width;
         var ch = swap ? family.Width : family.Height;
         var (r, g, b) = ScreenColor.Parse(a.BackgroundColor);
-        var content = PixelFrame.Solid(cw, ch, r, g, b);
+        PixelFrame? content = null;
         string? warning = null;
 
         if (a.BackgroundAssetId is { } assetId)
@@ -67,7 +68,16 @@ internal sealed class ScreenCompositor(AssetStore assets, long cacheBytes, Overl
             if (assets.Find(assetId) is { } asset)
             {
                 var fitted = Fitted(asset, asset.FrameAt(elapsedMs), cw, ch, a.Fit);
-                PixelOps.BlendOver(content, fitted, (cw - fitted.Width) / 2, (ch - fitted.Height) / 2);
+                var pixels = fitted.Pixels;
+                if (fitted.Opaque && pixels.Width == cw && pixels.Height == ch)
+                {
+                    content = pixels.Clone(); // exact full-canvas replacement; no solid fill or per-pixel alpha blend
+                }
+                else
+                {
+                    content = PixelFrame.Solid(cw, ch, r, g, b);
+                    PixelOps.BlendOver(content, pixels, (cw - pixels.Width) / 2, (ch - pixels.Height) / 2);
+                }
             }
             else if (a.TimelineId is not null)
             {
@@ -80,6 +90,7 @@ internal sealed class ScreenCompositor(AssetStore assets, long cacheBytes, Overl
             }
         }
 
+        content ??= PixelFrame.Solid(cw, ch, r, g, b);
         var shape = OverlayRenderer.ShapeOf(family.Family);
         if (a.OverlayLayout is not null && (shape != OverlayShape.Rectangle || a.Overlay != OverlayLayouts.RegionOverlay))
         {
@@ -108,7 +119,7 @@ internal sealed class ScreenCompositor(AssetStore assets, long cacheBytes, Overl
         return new ComposeResult(canvas, warning);
     }
 
-    private PixelFrame Fitted(StoredAsset asset, int frame, int cw, int ch, string fit)
+    private FittedFrame Fitted(StoredAsset asset, int frame, int cw, int ch, string fit)
     {
         var key = (asset.Id, frame, cw, ch, fit);
         if (_cache.TryGetValue(key, out var hit))
@@ -133,13 +144,19 @@ internal sealed class ScreenCompositor(AssetStore assets, long cacheBytes, Overl
             fitted = PixelOps.Resize(src, w, h);
         }
 
+        var opaque = true;
+        for (var i = 3; i < fitted.Pixels.Length; i += 4)
+        {
+            if (fitted.Pixels[i] != 255) { opaque = false; break; }
+        }
+        var result = new FittedFrame(fitted, opaque);
         if (_cachedBytes + fitted.ByteCount <= cacheBytes)
         {
-            _cache[key] = fitted;
+            _cache[key] = result;
             _cachedBytes += fitted.ByteCount;
         }
 
-        return fitted;
+        return result;
     }
 
     private static string Join(string? first, string next) => first is null ? next : first + "; " + next;
