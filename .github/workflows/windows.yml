@@ -38,10 +38,10 @@ jobs:
         run: python -m unittest discover -s tools/scene-packages -p "test_*.py"
       - name: Installation lifecycle (Windows PowerShell 5.1, fake platform)
         shell: powershell
-        run: ./tools/windows/installation-qa/Invoke-InstallationQa.ps1 -WorkRoot "$env:RUNNER_TEMP/urgb-installation-qa-ps51"
+        run: ./tools/windows/installation-qa/Invoke-InstallationQa.ps1 -WorkRoot (Join-Path ([IO.Path]::GetTempPath()) 'urgb-installation-qa-ps51')
       - name: Installation lifecycle (PowerShell 7, fake platform)
         shell: pwsh
-        run: ./tools/windows/installation-qa/Invoke-InstallationQa.ps1 -WorkRoot "$env:RUNNER_TEMP/urgb-installation-qa-ps7"
+        run: ./tools/windows/installation-qa/Invoke-InstallationQa.ps1 -WorkRoot (Join-Path ([IO.Path]::GetTempPath()) 'urgb-installation-qa-ps7')
       - name: Report test counts
         if: always()
         shell: pwsh
