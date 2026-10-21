@@ -13,6 +13,17 @@ namespace UnifiedRgb.Devices.Tests;
 public class AsusAuraAdapterTests
 {
     private const string Firmware = "AULA3-AR32-0207";
+
+    [Fact]
+    public async Task Direct_mode_refusal_is_classified_as_blocked_with_no_following_colour_report()
+    {
+        var (adapter, descriptor) = await Session(new AsusAuraOptions { ControlVerified = true }, onboard: 2, addressable: 0);
+        _hid.FailWritesFrom = 1;
+        var open = () => adapter.OpenAsync(descriptor.Id, default);
+        await open.Should().ThrowAsync<DeviceBlockedException>().WithMessage("*direct mode select*");
+        _hid.Writes.Should().BeEmpty();
+        await adapter.DisposeAsync();
+    }
     private readonly FakeHid _hid = new();
     private long _now;
 

@@ -301,4 +301,42 @@ public class RfDeliveryTests
         adapter.LastUpload(id)!.EffectIndex.Should().Be(200);
         adapter.LastUpload(id)!.ReceiverDelivery!.Retries.Should().Be(0);
     }
+
+    [Fact]
+    public async Task Multiple_senders_expose_unknown_pairing_without_queries_retries_or_delivery_claims()
+    {
+        var usb = new FakeUsb();
+        usb.Present.Add(UsbDeviceInfo.FromPath(@"\\?\usb#vid_0416&pid_8040#6&zz&0&7#{" + FakeUsb.Guid + "}")!);
+        var wires = new Dictionary<string, RecordingTransport>(StringComparer.OrdinalIgnoreCase);
+        var options = new LianLiOptions { WireFormatVerified = true, ReceiverInterfaceGuid = FakeUsb.Guid, ReceiverFeedbackEnabled = true, ReceiverRetriesEnabled = true };
+        options.Devices.Add(new() { Mac = Mac.ToString(), Family = "H2", Leds = 24, Channel = 8, Rx = 3, Sender = 0 });
+        options.Devices.Add(new() { Mac = "AA-BB-CC-DD-EE-02", Family = "H2", Leds = 24, Channel = 8, Rx = 4, Sender = 1 });
+        var queries = 0;
+        var now = Rf.Now;
+        await using var adapter = new LianLiAdapter(options, usb, info =>
+        {
+            var wire = new RecordingTransport(); wire.EnqueueRead(Rf.MasterReply()); wires[info.Path] = wire; return wire;
+        }, encoder: new IdentityEncoder(), sleep: _ => { }, now: () => now,
+            receiverProbe: () => { queries++; return Report(100, 1600); }, startKeepAliveTimer: false, feedbackElapsed: () => now - Rf.Now);
+        var found = await adapter.DiscoverAsync(default);
+        found.Should().HaveCount(2);
+        foreach (var device in found)
+        {
+            await adapter.OpenAsync(device.Id, default);
+            adapter.SetRecoveryAllowed(device.Id, true);
+            await adapter.UploadLoopAsync(device.Id, LianLiAdapter.ChainZone, new LoopFrames(1, 24, 20, 100, new byte[72]), default);
+        }
+        var before = wires.Values.Sum(w => w.SentFrames.Count);
+        now = now.AddSeconds(2);
+        adapter.ObserveReceiverFeedback();
+        queries.Should().Be(0);
+        wires.Values.Sum(w => w.SentFrames.Count).Should().Be(before);
+        foreach (var device in found)
+        {
+            var delivery = adapter.LastUpload(device.Id)!.ReceiverDelivery!;
+            delivery.State.Should().Be("Unknown");
+            delivery.Detail.Should().Contain("multiple RF senders");
+            delivery.Retries.Should().Be(0);
+        }
+    }
 }

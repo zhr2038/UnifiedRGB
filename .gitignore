@@ -19,6 +19,7 @@
 !/design/NATIVE-VIDEO-IMPLEMENTATION-20261021.zh-CN.md
 !/design/FIVE-SCREEN-MP4-AND-H2-NATIVE-20261021.zh-CN.md
 !/design/TL-SCREEN-60FPS-AND-DETAIL-20261021.zh-CN.md
+!/design/AUDIT-REMEDIATION-20261021.zh-CN.md
 !/design/WINDOWS-APPLICATION.md
 !/design/ITERATION-I2-RESULTS-20261020.zh-CN.md
 !/design/MANAGED-RF-CODEC-20261020.zh-CN.md
@@ -27,6 +28,8 @@
 !/docs/ui/
 /docs/ui/*
 !/docs/ui/screens-before.png
+!/docs/ui/audit-fault-dark-layout.png
+!/docs/ui/audit-fault-light-layout.png
 !/docs/ui/screens-dark.png
 !/docs/ui/screens-light.png
 /assets/*
@@ -40,6 +43,10 @@
 !/tools/windows/
 !/tools/branding/
 !/tools/installation/
+!/tools/codegen/
+/tools/codegen/*
+!/tools/codegen/gen_effects.py
+!/tools/codegen/README.md
 !/tools/env.sh
 !/tools/soak.ps1
 !/tools/install.ps1

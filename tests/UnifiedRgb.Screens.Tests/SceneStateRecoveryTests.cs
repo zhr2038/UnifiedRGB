@@ -102,4 +102,30 @@ public sealed class SceneStateRecoveryTests : IDisposable
     }
 
     public void Dispose() { if (Directory.Exists(_root)) Directory.Delete(_root, true); }
+
+    [Fact]
+    public void Corrupt_transaction_is_quarantined_without_rewriting_any_scene_or_local_setting()
+    {
+        Seed("profiles/active.json", "uncertain rgb bytes");
+        Seed("screens/scene.json", "uncertain screen bytes");
+        Seed("screens/device-settings.json", "local rotation bytes");
+        Seed(SceneStateFiles.JournalName, "{ truncated journal");
+        SceneStateFiles.PrepareStartup(_root).Should().Be(SceneStateFiles.RecoveryWarning);
+        File.ReadAllText(At("profiles/active.json")).Should().Be("uncertain rgb bytes");
+        File.ReadAllText(At("screens/scene.json")).Should().Be("uncertain screen bytes");
+        File.ReadAllText(At("screens/device-settings.json")).Should().Be("local rotation bytes");
+        File.Exists(At(SceneStateFiles.RecoveryRequiredName)).Should().BeTrue();
+        File.Exists(At(SceneStateFiles.JournalName)).Should().BeFalse();
+        var evidence = Directory.GetDirectories(At("state-recovery")).Single();
+        File.ReadAllText(Path.Combine(evidence, SceneStateFiles.JournalName)).Should().Be("{ truncated journal");
+        File.ReadAllText(Path.Combine(evidence, "screens", "device-settings.json")).Should().Be("local rotation bytes");
+        SceneStateFiles.PrepareStartup(_root).Should().Be(SceneStateFiles.RecoveryWarning, "restart cannot silently resume uncertain state");
+        Directory.GetDirectories(At("state-recovery")).Should().ContainSingle();
+        var partial = () => SceneStateFiles.Commit(_root, [new("profiles/active.json", B("only rgb"))]);
+        partial.Should().Throw<InvalidOperationException>();
+        SceneStateFiles.Commit(_root, [new("profiles/active.json", B("chosen rgb")), new("screens/scene.json", B("chosen screens"))]);
+        SceneStateFiles.PrepareStartup(_root).Should().BeNull();
+        File.ReadAllText(At("screens/device-settings.json")).Should().Be("local rotation bytes");
+        Directory.GetDirectories(At("state-recovery")).Should().ContainSingle("evidence is retained after explicit repair");
+    }
 }

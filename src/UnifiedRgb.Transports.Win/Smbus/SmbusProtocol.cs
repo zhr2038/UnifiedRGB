@@ -210,6 +210,7 @@ public interface ISmbusPort
 
     /// <summary>Compounds dropped whole because the global mutex was not acquired within the bound.</summary>
     long MutexTimeouts { get; }
+    long AbandonedMutexAcquisitions => 0;
 }
 
 /// <summary>An opened PawnIO SMBus port: identity established (1022:790B), port selected once; disposing closes its handle.</summary>

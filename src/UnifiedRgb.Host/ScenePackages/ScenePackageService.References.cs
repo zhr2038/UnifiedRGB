@@ -23,7 +23,7 @@ public sealed partial class ScenePackageService
         foreach (var name in names)
         {
             bytes += new FileInfo(Path.Combine(_profiles.Directory, name + ".json")).Length;
-            if (bytes > 64L * 1024 * 1024) throw new InvalidOperationException("Saved-scene reference inspection exceeded64MiB; nothing was removed.");
+            if (bytes > 64L * 1024 * 1024) throw new InvalidOperationException("Saved-scene reference inspection exceeded 64 MiB; nothing was removed.");
             var profile = _profiles.Load(name);
             RequireReferenceShape(profile.Scene);
             list.Add(profile); // unreadable/oversized profiles refuse cleanup, never disappear from the reference check
@@ -33,7 +33,7 @@ public sealed partial class ScenePackageService
 
     private bool ProfileReferencesAsset(string assetId)
     {
-        if (File.Exists(Path.Combine(Store.DataRoot, SceneStateFiles.JournalName))) return true;
+        if (File.Exists(Path.Combine(Store.DataRoot, SceneStateFiles.JournalName)) || File.Exists(Path.Combine(Store.DataRoot, SceneStateFiles.RecoveryRequiredName))) return true;
         if (_profiles?.ReadActiveForReferences() is { } active)
         {
             RequireReferenceShape(active.Scene);
@@ -65,6 +65,7 @@ public sealed partial class ScenePackageService
     {
         var references = new List<string>();
         if (File.Exists(Path.Combine(Store.DataRoot, SceneStateFiles.JournalName))) references.Add("场景事务等待恢复：请先重启后台完成恢复。");
+        if (File.Exists(Path.Combine(Store.DataRoot, SceneStateFiles.RecoveryRequiredName))) references.Add("场景事务损坏，硬件输出已暂停：恢复完整场景并重启后台前，禁止删除场景素材。");
         void Scene(SceneDto scene, string label)
         {
             RequireReferenceShape(scene);

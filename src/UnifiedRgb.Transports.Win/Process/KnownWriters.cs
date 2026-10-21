@@ -25,12 +25,40 @@ public sealed record KnownWriter(string Name, WriterKind Kind, IReadOnlyList<Dev
 /// </summary>
 public sealed record WriterCandidate(string Name, IReadOnlyList<DeviceClass> Affects, string Reason);
 
+/// <summary>A locally configured process-only blocker. It grants no service-control or process-termination permission.</summary>
+public sealed class ExternalProcessWriterOptions
+{
+    public string Name { get; set; } = string.Empty;
+    public DeviceClass[] Affects { get; set; } = [];
+}
+
 /// <summary>
 /// ARCHITECTURE §7.1 + NATIVE design §8: the confirmed writers WriterGuard checks before any OpenAsync. A row blocks the
 /// classes it affects until stopped/closed. Rows are confirmed writers only; suspicion goes to <see cref="Candidates"/>.
 /// </summary>
 public static class KnownWriters
 {
+    public static IReadOnlyList<KnownWriter> WithExternalProcesses(IReadOnlyList<ExternalProcessWriterOptions> additional)
+    {
+        ArgumentNullException.ThrowIfNull(additional);
+        if (additional.Count > 64) throw new ArgumentException("At most 64 external lighting writer processes can be configured.", nameof(additional));
+        var result = All.ToList();
+        foreach (var rule in additional)
+        {
+            if (rule is null || string.IsNullOrWhiteSpace(rule.Name) || rule.Name.Length > 128
+                || rule.Name.Contains(" --", StringComparison.Ordinal)
+                || rule.Name.Any(c => char.IsControl(c) || "/\\:*?\"<>|".Contains(c, StringComparison.Ordinal)))
+                throw new ArgumentException("An external writer needs a printable process name, never a path or command.", nameof(additional));
+            var name = rule.Name.Trim();
+            if (name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)) name = name[..^4];
+            if (name is "" or "." or ".." || rule.Affects is not { Length: >= 1 and <= 5 }
+                || rule.Affects.Any(c => !Enum.IsDefined(c) || c == DeviceClass.Virtual))
+                throw new ArgumentException("An external writer needs a process name and one to five hardware device classes.", nameof(additional));
+            // Existing vendor/compatibility rules cannot be removed or narrowed by configuration.
+            result.Add(new KnownWriter(name, WriterKind.Process, rule.Affects.Distinct().ToArray()));
+        }
+        return result;
+    }
     private static readonly DeviceClass[] LianLiAndThirdParty = [DeviceClass.LianLi, DeviceClass.OpenRgb];
 
     /// <summary>MSI rows affect the GPU and, through LEDKeeper2's <c>DRAM_SetRGB</c> path (G.Skill over SMBus), the DRAM.</summary>

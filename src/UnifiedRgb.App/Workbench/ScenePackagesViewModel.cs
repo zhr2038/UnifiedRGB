@@ -241,16 +241,82 @@ public sealed class ScenePackagesViewModel : ObservableObject
         {
             var file = new FileInfo(path);
             if (!file.Exists || file.Length > 64L * 1024 * 1024) throw new ArgumentException("场景包必须是 64 MiB 以内的 ZIP 文件。");
-            var bytes = await File.ReadAllBytesAsync(path).ConfigureAwait(true);
-            if (bytes.Length > 64L * 1024 * 1024) throw new ArgumentException("场景包超过 64 MiB。");
-            Message = "正在校验并安装场景包…";
-            imported = await _service().ImportScenePackageAsync(new(file.Name, Convert.ToBase64String(bytes))).ConfigureAwait(true);
+            imported = await UploadPackageAsync(_service(), file).ConfigureAwait(true);
         }
         finally { Busy = false; }
         var hadDraft = Dirty;
         await RefreshAsync().ConfigureAwait(true);
         if (!hadDraft && !Dirty && previousSelection == Selected?.Id && revision == _draftVersion) { Selected = Packages.FirstOrDefault(p => p.Id == imported.Info.ContentId); await ReadSelectionAsync().ConfigureAwait(true); }
         Message = $"已安装“{imported.Info.Name}”。" + (hadDraft ? "当前设备绑定草稿已保留。" : "请检查设备绑定后应用。");
+    }
+
+    private const long MaxPackageBytes = 64L * 1024 * 1024;
+    private const int MaxChunkBytes = 1024 * 1024;
+
+    /// <summary>
+    /// Streams the ZIP to the Host in bounded chunks, so neither side holds the whole file plus its Base64 text. The legacy single
+    /// Base64 call is used ONLY when the Host does not offer chunked import at all (older Host: missing method, or NotSupported from
+    /// Begin), i.e. before any upload session exists. Once a session was opened, every failure aborts it and is reported; Finish is
+    /// never retried through the legacy method.
+    /// </summary>
+    private async Task<ScenePackageDetailsDto> UploadPackageAsync(IScenePackageService service, FileInfo file)
+    {
+        long length; string sha;
+        await using (var hashing = new FileStream(file.FullName, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, FileOptions.Asynchronous | FileOptions.SequentialScan))
+        {
+            length = hashing.Length;
+            if (length <= 0 || length > MaxPackageBytes) throw new ArgumentException("场景包必须是 64 MiB 以内的 ZIP 文件。");
+            Message = "正在计算场景包校验值…";
+            sha = Convert.ToHexString(await System.Security.Cryptography.SHA256.HashDataAsync(hashing).ConfigureAwait(true)).ToLowerInvariant();
+        }
+        ScenePackageUploadSessionDto session;
+        try { session = await service.BeginScenePackageUploadAsync(new(file.Name, length, sha)).ConfigureAwait(true); }
+        catch (Exception ex) when (ChunkedImportUnsupported(ex)) { return await LegacyImportAsync(service, file).ConfigureAwait(true); }
+        var buffer = new byte[Math.Clamp(session.MaxChunkBytes, 1, MaxChunkBytes)];
+        try
+        {
+            using var check = System.Security.Cryptography.IncrementalHash.CreateHash(System.Security.Cryptography.HashAlgorithmName.SHA256);
+            await using var stream = new FileStream(file.FullName, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, FileOptions.Asynchronous | FileOptions.SequentialScan);
+            if (stream.Length != length) throw new IOException("场景包文件在上传期间发生变化，已取消。");
+            long offset = 0;
+            while (offset < length)
+            {
+                var read = await stream.ReadAsync(buffer.AsMemory(0, (int)Math.Min(buffer.Length, length - offset))).ConfigureAwait(true);
+                if (read == 0) throw new IOException("场景包文件在上传期间发生变化，已取消。");
+                check.AppendData(buffer, 0, read);
+                var progress = await service.UploadScenePackageChunkAsync(new(session.Token, offset, Convert.ToBase64String(buffer, 0, read))).ConfigureAwait(true);
+                offset += read;
+                if (progress.Received != offset) throw new InvalidDataException("后台确认的上传进度不一致，已取消。");
+                Message = $"正在上传场景包… {offset * 100 / length}%";
+            }
+            if (await stream.ReadAsync(buffer.AsMemory(0, 1)).ConfigureAwait(true) != 0 || !string.Equals(Convert.ToHexString(check.GetHashAndReset()), sha, StringComparison.OrdinalIgnoreCase))
+                throw new IOException("场景包文件在上传期间发生变化，已取消。");
+        }
+        catch
+        {
+            await AbortQuietlyAsync(service, session.Token).ConfigureAwait(true);
+            throw;
+        }
+        Message = "正在校验并安装场景包…";
+        return await service.FinishScenePackageUploadAsync(new(session.Token)).ConfigureAwait(true); // ends the session; never retried via legacy
+    }
+
+    private async Task<ScenePackageDetailsDto> LegacyImportAsync(IScenePackageService service, FileInfo file)
+    {
+        var bytes = await File.ReadAllBytesAsync(file.FullName).ConfigureAwait(true);
+        if (bytes.Length > MaxPackageBytes) throw new ArgumentException("场景包超过 64 MiB。");
+        Message = "正在校验并安装场景包…";
+        return await service.ImportScenePackageAsync(new(file.Name, Convert.ToBase64String(bytes))).ConfigureAwait(true);
+    }
+
+    /// <summary>True only for "this Host has no chunked import": a missing RPC method, or NotSupported (local or reported by the Host).</summary>
+    internal static bool ChunkedImportUnsupported(Exception ex) => ex is StreamJsonRpc.RemoteMethodNotFoundException or NotSupportedException
+        || (ex is StreamJsonRpc.RemoteInvocationException { DeserializedErrorData: StreamJsonRpc.Protocol.CommonErrorData { TypeName: "System.NotSupportedException" } });
+
+    private static async Task AbortQuietlyAsync(IScenePackageService service, string token)
+    {
+        try { await service.AbortScenePackageUploadAsync(new(token)).ConfigureAwait(true); }
+        catch (Exception) { } // best effort: the Host also ends an idle session by itself after a short timeout
     }
 
     private async Task SaveBindingsAsync()

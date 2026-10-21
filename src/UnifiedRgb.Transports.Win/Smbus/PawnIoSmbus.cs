@@ -32,6 +32,7 @@ public interface IPawnIoLibrary
 /// <summary>The global SMBus mutex (<see cref="SmbusConstants.GlobalMutexName"/>), abstracted for tests.</summary>
 public interface ISmbusMutex : IDisposable
 {
+    long AbandonedAcquisitions => 0;
     /// <summary>True when acquired within <paramref name="milliseconds"/> (an abandoned mutex counts as acquired).</summary>
     bool Wait(int milliseconds);
 
@@ -274,6 +275,7 @@ public sealed class PawnIoSmbus : IPawnIoPort
     };
 
     public long MutexTimeouts => Interlocked.Read(ref _mutexTimeouts);
+    public long AbandonedMutexAcquisitions => _mutex.AbandonedAcquisitions;
 
     /// <summary>
     /// Opens one handle for <paramref name="port"/>. Throws <see cref="DeviceBlockedException"/> when PawnIO refuses, the
@@ -527,7 +529,11 @@ public sealed class PawnIoSmbus : IPawnIoPort
 /// <summary>The real global mutex <see cref="SmbusConstants.GlobalMutexName"/>.</summary>
 public sealed class GlobalSmbusMutex : ISmbusMutex
 {
-    private readonly Mutex _mutex = new(false, SmbusConstants.GlobalMutexName);
+    private readonly Mutex _mutex;
+    private long _abandoned;
+    public GlobalSmbusMutex() : this(SmbusConstants.GlobalMutexName) { }
+    internal GlobalSmbusMutex(string name) => _mutex = new Mutex(false, name);
+    public long AbandonedAcquisitions => Interlocked.Read(ref _abandoned);
 
     public bool Wait(int milliseconds)
     {
@@ -537,6 +543,8 @@ public sealed class GlobalSmbusMutex : ISmbusMutex
         }
         catch (AbandonedMutexException)
         {
+            Interlocked.Increment(ref _abandoned);
+            Trace.TraceWarning("SMBus mutex was abandoned by its previous owner; acquired with Windows abandonment semantics.");
             return true; // reference treats WAIT_ABANDONED as acquired
         }
     }

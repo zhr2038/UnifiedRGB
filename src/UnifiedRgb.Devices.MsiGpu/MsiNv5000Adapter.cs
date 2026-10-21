@@ -200,6 +200,7 @@ public sealed partial class MsiNv5000Adapter : IWholeFrameAdapter, INativeBringu
         var g = Get(id);
         lock (g.Sync)
         {
+            if (g.Releasing) return false;
             if (!g.OpenForWriter || g.Gate != FamilyGate.Pass || !g.Entered)
             {
                 throw new InvalidOperationException($"{id} is not open for frames");
@@ -441,6 +442,9 @@ public sealed partial class MsiNv5000Adapter : IWholeFrameAdapter, INativeBringu
 
         foreach (var g in gpus)
         {
+            lock (g.ReleaseGate)
+            {
+            var normalRelease = false;
             lock (g.Sync)
             {
                 StopKeepAlive(g);
@@ -465,8 +469,10 @@ public sealed partial class MsiNv5000Adapter : IWholeFrameAdapter, INativeBringu
                 }
                 else
                 {
-                    _ = ReleaseLocked(g);
+                    normalRelease = true;
                 }
+            }
+            if (normalRelease) _ = ReleaseCore(g);
             }
         }
 
@@ -564,6 +570,7 @@ public sealed partial class MsiNv5000Adapter : IWholeFrameAdapter, INativeBringu
 
     private void EnsureChain(Gpu g)
     {
+        if (g.Releasing) throw new DeviceBlockedException("GPU release is in progress; no new device operation was admitted.");
         if (g.Chain is null)
         {
             g.Chain = BuildChain(new NvapiI2cTransport(_nvapi, g.Handle, NvI2cProfile.MsiNv5000), g.Budget, _options.MaxIndices, out var fw, _logger);
@@ -574,6 +581,7 @@ public sealed partial class MsiNv5000Adapter : IWholeFrameAdapter, INativeBringu
     /// <summary>One control-sequence send (exempt from the frame limiter, design §9) as a probe row; never throws for NVAPI errors.</summary>
     private NativeProbeRow Control(Gpu g, string step, byte[] frame, bool black)
     {
+        if (g.Releasing) return new NativeProbeRow(step, Convert.ToHexString(frame), -1, null, 0, "GPU release is in progress; command was not sent.");
         var sw = Stopwatch.StartNew();
         int status;
         string? note = null;
@@ -685,9 +693,25 @@ public sealed partial class MsiNv5000Adapter : IWholeFrameAdapter, INativeBringu
 
     private NativeProbeResult ReleaseCore(Gpu g)
     {
+        lock (g.ReleaseGate)
+        {
+        var delay = false;
         lock (g.Sync)
         {
-            return ReleaseLocked(g);
+            if (!_options.HoldBlackOnRelease && g.Entered && g.Chain is not null)
+            {
+                StopKeepAlive(g);
+                g.Releasing = true;
+                delay = true;
+            }
+            else return ReleaseLocked(g);
+        }
+        try
+        {
+            if (delay) _sleep(TimeSpan.FromMilliseconds(_options.ReleaseDelayMs));
+            lock (g.Sync) { g.Releasing = false; return ReleaseLocked(g); }
+        }
+        finally { lock (g.Sync) g.Releasing = false; }
         }
     }
 
@@ -733,7 +757,6 @@ public sealed partial class MsiNv5000Adapter : IWholeFrameAdapter, INativeBringu
         }
 
         StopKeepAlive(g);
-        _sleep(TimeSpan.FromMilliseconds(_options.ReleaseDelayMs));
         var release = Control(g, "release 0x06<-1", Nv5000Frames.Session(Nv5000.SessionRelease), black: false);
         g.Entered = false; // attempted once; never retried in a loop
         g.Marker = null;
@@ -780,6 +803,8 @@ public sealed partial class MsiNv5000Adapter : IWholeFrameAdapter, INativeBringu
     private sealed class Gpu(IntPtr handle, ControllerDescriptor descriptor, int[][]? indices, FrameBudget budget)
     {
         public object Sync { get; } = new();
+        public object ReleaseGate { get; } = new();
+        public bool Releasing { get; set; }
 
         public IntPtr Handle { get; } = handle;
 

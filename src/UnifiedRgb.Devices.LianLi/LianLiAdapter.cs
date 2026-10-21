@@ -761,7 +761,20 @@ public sealed partial class LianLiAdapter : ILoopUploadAdapter, IDeviceClockProv
             Session[] sessions;
             lock (_gate) { sessions = _sessions.Values.Where(s => s.Delivery is not null).ToArray(); }
             var senders = sessions.Select(s => s.Sender).Distinct().ToArray();
-            if (senders.Length != 1 || !senders[0].UploadGate.Wait(0)) { return; }
+            if (senders.Length != 1)
+            {
+                lock (_gate)
+                {
+                    foreach (var session in sessions)
+                    {
+                        if (session.Delivery is not { } pending || !IsCurrent(session, pending)) continue;
+                        pending.Tracker.Unknown("Receiver feedback unavailable: multiple RF senders have no verified receiver pairing. No feedback query or automatic retry was sent.");
+                        PublishDelivery(session, pending);
+                    }
+                }
+                return;
+            }
+            if (!senders[0].UploadGate.Wait(0)) { return; }
             var sender = senders[0];
             try
             {

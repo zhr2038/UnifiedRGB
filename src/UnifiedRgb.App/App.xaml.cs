@@ -43,6 +43,7 @@ public partial class App : Application
     private MainWindow? _window;
     private bool _exiting;
     private readonly CancellationTokenSource _startupStop = new();
+    private UiExceptionCoordinator? _uiFaults;
 
     public static string HostDataDirectory => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "UnifiedRgb");
 
@@ -63,11 +64,14 @@ public partial class App : Application
             .MinimumLevel.Information()
             .WriteTo.File(Path.Combine(AppLogDirectory, "app-.log"), rollingInterval: RollingInterval.Day, rollOnFileSizeLimit: true, fileSizeLimitBytes: 5 * 1024 * 1024, retainedFileCountLimit: 10, formatProvider: System.Globalization.CultureInfo.InvariantCulture)
             .CreateLogger();
-        DispatcherUnhandledException += (_, args) =>
-        {
-            Log.Error(args.Exception, "Unhandled UI exception");
-            args.Handled = true;
-        };
+        var uiFaults = new UiExceptionCoordinator(
+            LogUiException,
+            reason => _client?.BlockForUiFault(reason),
+            ShowUiFault,
+            ex => _vm?.ReportError(ex),
+            () => _exiting);
+        _uiFaults = uiFaults;
+        DispatcherUnhandledException += (_, args) => args.Handled = uiFaults.Handle(args.Exception);
 
         _client = new PipeClient(PipeNames.Default);
         _client.StateChanged += (_, s) => Log.Information("Host connection {State}", s);
@@ -112,9 +116,55 @@ public partial class App : Application
         }
     }
 
+    private static void LogUiException(UiFaultLogLevel level, Exception? ex, string message)
+    {
+        var serilogLevel = level switch
+        {
+            UiFaultLogLevel.Fatal => Serilog.Events.LogEventLevel.Fatal,
+            UiFaultLogLevel.Error => Serilog.Events.LogEventLevel.Error,
+            _ => Serilog.Events.LogEventLevel.Warning,
+        };
+        Log.Write(serilogLevel, ex, "{UiFaultMessage}", message);
+    }
+
+    /// <summary>
+    /// In-window unsafe-fault state (no dialog): sticky banner/sidebar text, a title marker, and the page area disabled so
+    /// local edits (drafts, autostart toggle) cannot continue on possibly inconsistent state. The tray Exit still works.
+    /// </summary>
+    private void ShowUiFault(string text)
+    {
+#pragma warning disable CA1031 // each step is independent; one failing must not skip the others or recurse
+        try
+        {
+            _vm?.EnterUiFault(text);
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Could not set the UI fault banner");
+        }
+
+        try
+        {
+            if (_window is not null)
+            {
+                _window.ShowFaultState(text);
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Could not disable the page area after a UI fault");
+        }
+#pragma warning restore CA1031
+    }
+
     protected override void OnExit(ExitEventArgs e)
     {
         _exiting = true;
+        if (_uiFaults is { IsFaulted: true } faults)
+        {
+            Log.Warning("UI exited after an unsafe fault; {Suppressed} further exceptions were counted but not logged", faults.SuppressedCount);
+        }
+
         _startupStop.Cancel();
         _startupStop.Dispose();
         _tray?.Dispose();

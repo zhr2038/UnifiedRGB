@@ -7,7 +7,7 @@ namespace UnifiedRgb.Host.ScenePackages;
 public sealed record ScenePackageContent(string ContentId, byte[] ManifestBytes, ScenePackageManifest Manifest, IReadOnlyDictionary<string, byte[]> Files);
 
 /// <summary>
-/// Reads a v1 package ZIP from memory; nothing is extracted to disk and nothing outside the archive is touched. Rejected
+/// Reads a package ZIP from memory or a seekable stream; nothing is extracted to disk and nothing outside the archive is touched. Rejected
 /// (ArgumentException, nothing kept): oversized archive, too many entries, unsafe or colliding names (absolute, drive, UNC,
 /// backslash, '..', case collisions, duplicates), symlinks, encrypted or unreadable entries, entries that are not exactly the
 /// manifest plus its declared files, any byte count beyond the per-kind or cumulative limits (counted while reading, never
@@ -22,6 +22,23 @@ public static class ScenePackageReader
     public static ScenePackageContent Read(byte[] zip)
     {
         ArgumentNullException.ThrowIfNull(zip);
+        using var stream = new MemoryStream(zip, writable: false);
+        return Read(stream);
+    }
+
+    /// <summary>
+    /// Reads from a seekable stream (for example the Host-owned upload file) without copying the archive into memory. The
+    /// stream is read from position 0, left open and never written; its whole length is the archive, subject to the same
+    /// 1..MaxZipBytes bound and every validation of <see cref="Read(byte[])"/>.
+    /// </summary>
+    public static ScenePackageContent Read(Stream zip)
+    {
+        ArgumentNullException.ThrowIfNull(zip);
+        if (!zip.CanRead || !zip.CanSeek)
+        {
+            throw new ArgumentException("A package ZIP stream must be readable and seekable.", nameof(zip));
+        }
+
         if (zip.Length == 0 || zip.Length > ScenePackageFormat.MaxZipBytes)
         {
             throw ScenePackageFormat.Bad($"a package ZIP is 1..{ScenePackageFormat.MaxZipBytes} bytes (got {zip.Length})");
@@ -29,7 +46,8 @@ public static class ScenePackageReader
 
         try
         {
-            using var archive = new ZipArchive(new MemoryStream(zip, writable: false), ZipArchiveMode.Read, leaveOpen: false);
+            zip.Position = 0;
+            using var archive = new ZipArchive(zip, ZipArchiveMode.Read, leaveOpen: true);
             return Read(archive);
         }
         catch (InvalidDataException ex)

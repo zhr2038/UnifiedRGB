@@ -36,6 +36,8 @@ jobs:
         run: dotnet test src/UnifiedRgb.sln -c Release --no-build -m:1 --logger trx --results-directory TestResults
       - name: Scene package authoring tools
         run: python -m unittest discover -s tools/scene-packages -p "test_*.py"
+      - name: Generic effect generator reproducibility (read-only)
+        run: python tools/codegen/gen_effects.py --check
       - name: Installation lifecycle (Windows PowerShell 5.1, fake platform)
         shell: powershell
         run: ./tools/windows/installation-qa/Invoke-InstallationQa.ps1 -WorkRoot (Join-Path ([IO.Path]::GetTempPath()) 'urgb-installation-qa-ps51')

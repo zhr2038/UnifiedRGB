@@ -114,6 +114,8 @@ internal sealed class StaThread : IDisposable
 {
     private readonly System.Collections.Concurrent.BlockingCollection<Action> _queue = [];
     private readonly Thread _thread;
+    private int _disposed;
+    private int _queueDisposed;
 
     public StaThread(string name)
     {
@@ -159,11 +161,9 @@ internal sealed class StaThread : IDisposable
 
     public void Dispose()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
         _queue.CompleteAdding();
-        if (Thread.CurrentThread != _thread && _thread.Join(TimeSpan.FromSeconds(10)))
-        {
-            _queue.Dispose();
-        }
+        if (Thread.CurrentThread != _thread && _thread.Join(TimeSpan.FromSeconds(10))) DisposeQueue();
     }
 
     /// <summary>Releases the WPF dispatcher a thread acquired by touching imaging/visual objects.</summary>
@@ -182,6 +182,9 @@ internal sealed class StaThread : IDisposable
         finally
         {
             ShutdownDispatcher();
+            if (Volatile.Read(ref _disposed) != 0) DisposeQueue(); // also after a delayed decoder finally exits
         }
     }
+
+    private void DisposeQueue() { if (Interlocked.Exchange(ref _queueDisposed, 1) == 0) _queue.Dispose(); }
 }

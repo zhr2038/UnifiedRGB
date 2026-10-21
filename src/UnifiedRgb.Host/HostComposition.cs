@@ -27,7 +27,8 @@ public static class HostComposition
     {
         services.AddSingleton(options);
         services.AddSingleton<ISystemSnapshot, WindowsSystemSnapshot>();
-        services.AddSingleton(sp => new ProcessScanner(sp.GetRequiredService<ISystemSnapshot>()));
+        var writers = KnownWriters.WithExternalProcesses(options.ExternalProcessWriters);
+        services.AddSingleton(sp => new ProcessScanner(sp.GetRequiredService<ISystemSnapshot>(), writers));
         services.AddSingleton<IServiceControl, WindowsServiceControl>();
         services.AddSingleton(sp => new TakeoverStore(sp.GetRequiredService<UnifiedRgbOptions>()));
         services.AddSingleton<IWriterGuard>(sp => new WriterGuard(
@@ -95,7 +96,7 @@ public static class HostComposition
             sp.GetRequiredService<IWriterGuard>(),
             sp.GetRequiredService<FrameBus>(),
             sp.GetRequiredService<Func<IPreciseSleeper>>(),
-            sp.GetRequiredService<ILogger<AdapterHost>>()));
+            sp.GetRequiredService<ILogger<AdapterHost>>(), sp.GetRequiredService<UnifiedRgbOptions>()));
         if (enableIpc)
         {
             services.AddHostedService<PipeReservation>();

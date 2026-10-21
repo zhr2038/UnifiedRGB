@@ -47,6 +47,11 @@ public sealed class DeviceWriter : IDisposable
     /// <summary>Held for every device write or upload; <see cref="Quiesce"/> takes it to wait out the one in flight.</summary>
     private readonly object _io = new();
     private Thread? _thread;
+    private readonly object _lifecycle = new();
+    private readonly TimeSpan _stopTimeout;
+    private Task? _stopTask;
+    private Task? _quiesceTask;
+    private int _stopTimeoutReported;
     private volatile bool _running;
     private volatile bool _paused;
     private long _written;
@@ -64,13 +69,16 @@ public sealed class DeviceWriter : IDisposable
         IDeviceAdapter adapter,
         IPreciseSleeper? sleeper = null,
         Action<ControllerId, Exception>? onError = null,
-        Action<ControllerId, PendingLoop, LoopUploadStats?>? onLoopUploaded = null)
+        Action<ControllerId, PendingLoop, LoopUploadStats?>? onLoopUploaded = null,
+        TimeSpan? stopTimeout = null)
     {
         _mailbox = mailbox ?? throw new ArgumentNullException(nameof(mailbox));
         _adapter = adapter ?? throw new ArgumentNullException(nameof(adapter));
         _sleeper = sleeper ?? new HybridSleeper();
         _onError = onError;
         _onLoopUploaded = onLoopUploaded;
+        _stopTimeout = stopTimeout ?? TimeSpan.FromSeconds(10);
+        if (_stopTimeout <= TimeSpan.Zero || _stopTimeout > TimeSpan.FromMinutes(1)) throw new ArgumentOutOfRangeException(nameof(stopTimeout));
         if (mailbox.Controller.Capabilities.Delivery == Delivery.UploadedLoop)
         {
             _loopAdapter = adapter as ILoopUploadAdapter
@@ -101,6 +109,14 @@ public sealed class DeviceWriter : IDisposable
         get => _paused;
         set
         {
+            if (!value)
+            {
+                lock (_lifecycle)
+                {
+                    if (_quiesceTask is { IsCompleted: false }) throw new InvalidOperationException("A timed-out quiescence is still in flight; resuming device writes is refused.");
+                    _quiesceTask = null;
+                }
+            }
             _paused = value;
             (_loopAdapter as ILoopRecoveryControl)?.SetRecoveryAllowed(Controller, !value && _running);
         }
@@ -111,34 +127,74 @@ public sealed class DeviceWriter : IDisposable
     /// <see cref="Paused"/> is cleared: the pause is re-checked under the write lock, so a frame consumed just before the pause
     /// is dropped (streamed) or retained (uploaded loop) rather than written after it (NATIVE design §6: exclusive ownership).
     /// </summary>
-    public void Quiesce()
+    public async Task QuiesceAsync()
     {
-        Paused = true;
-        lock (_io)
+        Task quiescing;
+        lock (_lifecycle)
         {
+            _paused = true;
+            quiescing = _quiesceTask ??= Task.Factory.StartNew(() =>
+            {
+                (_loopAdapter as ILoopRecoveryControl)?.SetRecoveryAllowed(Controller, false);
+                lock (_io) { /* committed writes and committed recovery must both finish before ownership changes */ }
+            }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
         }
+        try { await quiescing.WaitAsync(_stopTimeout).ConfigureAwait(false); }
+        catch (TimeoutException ex) { throw new TimeoutException($"Writer {Controller} did not quiesce within {_stopTimeout.TotalMilliseconds:0} ms; ownership must not be handed off.", ex); }
     }
+
+#pragma warning disable VSTHRD002 // synchronous marker/legacy callers use the same bounded quiescence
+    public void Quiesce() => QuiesceAsync().GetAwaiter().GetResult();
+#pragma warning restore VSTHRD002
 
     public void Start()
     {
+        lock (_lifecycle)
+        {
         if (_running)
         {
             return;
         }
+        if (_thread is { IsAlive: true } || _stopTask is { IsCompleted: false })
+            throw new InvalidOperationException($"Writer {Controller} is still stopping; a second writer is refused.");
 
+        _stopTask = null;
+        _stopTimeoutReported = 0;
         _running = true;
         (_loopAdapter as ILoopRecoveryControl)?.SetRecoveryAllowed(Controller, !_paused);
         _thread = new Thread(Run) { IsBackground = true, Name = $"DeviceWriter {Controller}", Priority = ThreadPriority.AboveNormal };
         _thread.Start();
+        }
     }
 
-    public void Stop()
+    public async Task StopAsync()
     {
-        _running = false;
-        (_loopAdapter as ILoopRecoveryControl)?.SetRecoveryAllowed(Controller, false);
-        _thread?.Join();
-        _thread = null;
+        Task stopping;
+        lock (_lifecycle)
+        {
+            _running = false;
+            // Recovery revocation may itself wait for committed device I/O. Include it in the same bound.
+            // A dedicated shutdown helper avoids starving a small test/Host thread pool with blocking joins.
+            stopping = _stopTask ??= Task.Factory.StartNew(() =>
+                {
+                    (_loopAdapter as ILoopRecoveryControl)?.SetRecoveryAllowed(Controller, false);
+                    _thread?.Join();
+                    lock (_io) { /* explicitly driven writes must also finish before adapters close */ }
+                }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+        }
+        try { await stopping.WaitAsync(_stopTimeout).ConfigureAwait(false); }
+        catch (TimeoutException)
+        {
+            var message = $"Writer {Controller} did not stop within {_stopTimeout.TotalMilliseconds:0} ms; device I/O may still be in flight.";
+            if (Interlocked.Exchange(ref _stopTimeoutReported, 1) == 0) { Interlocked.Increment(ref _errors); _lastError = message; }
+            throw new TimeoutException(message);
+        }
+        lock (_lifecycle) { if (ReferenceEquals(_stopTask, stopping)) _thread = null; }
     }
+
+#pragma warning disable VSTHRD002 // Synchronous IDisposable/legacy callers use the same bounded shutdown as Host StopAsync.
+    public void Stop() => StopAsync().GetAwaiter().GetResult();
+#pragma warning restore VSTHRD002
 
     public void Dispose() => Stop();
 

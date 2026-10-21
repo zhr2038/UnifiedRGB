@@ -11,7 +11,7 @@ public sealed record ScenePackageUploadDto(string Name, string Base64);
 /// <summary>
 /// One installed, validated package. ContentId is the immutable lowercase SHA-256 content address (independent of bindings);
 /// Id/Name/Revision come from the manifest; PlaybackContract is the versioned playback semantics ("rgb24-hold-physical-ms-v1");
-/// SchemaVersion is the manifest's declared format version (1, or 2 with optional screen accent/overlay regions), never upgraded.
+/// SchemaVersion is the declared version (1, 2 adds optional screen accent/overlay regions, 3 also permits MP4), never upgraded.
 /// </summary>
 public sealed record ScenePackageInfoDto(
     string ContentId,

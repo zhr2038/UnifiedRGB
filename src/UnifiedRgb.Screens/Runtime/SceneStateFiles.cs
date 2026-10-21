@@ -16,6 +16,8 @@ public sealed record SceneStateFile(string RelativePath, byte[] Bytes);
 public static class SceneStateFiles
 {
     public const string JournalName = ".scene-state-transaction.json";
+    public const string RecoveryRequiredName = ".scene-state-recovery-required";
+    public const string RecoveryWarning = "Scene-state transaction is corrupt. Hardware output is disabled for this process. Original state and local device settings were retained; choose a complete saved RGB + screen scene, then restart the Host. Quarantine evidence is in state-recovery.";
     private const int MaxJournalBytes = 4 * 1024 * 1024;
     private static readonly ConcurrentDictionary<string, object> Gates = new(StringComparer.OrdinalIgnoreCase);
     private static readonly ConcurrentDictionary<string, Action<IReadOnlyList<SceneStateFile>>> Validations = new(StringComparer.OrdinalIgnoreCase);
@@ -61,6 +63,43 @@ public static class SceneStateFiles
         lock (Gates.GetOrAdd(root, static _ => new object())) { RecoverHeld(root); }
     }
 
+    /// <summary>Startup repair mode: preserve every original byte and disable output rather than playing a mixed transaction.</summary>
+    public static string? PrepareStartup(string root)
+    {
+        root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(root));
+        lock (Gates.GetOrAdd(root, static _ => new object()))
+        {
+            var marker = Path.Combine(root, RecoveryRequiredName);
+            var journal = Path.Combine(root, JournalName);
+            if (!File.Exists(marker))
+            {
+                try { RecoverHeld(root); return null; }
+                catch (InvalidDataException) { /* uncertain transaction: never guess which half is authoritative */ }
+            }
+            if (File.Exists(journal))
+            {
+                OwnedLibraryPaths.CheckAncestors(root);
+                var evidence = Path.Combine(root, "state-recovery", Guid.NewGuid().ToString("N"));
+                OwnedLibraryPaths.CheckAncestors(evidence);
+                Directory.CreateDirectory(evidence);
+                // This durable latch precedes moving the journal: a crash between these steps stays in repair mode.
+                AtomicWrite(marker, System.Text.Encoding.UTF8.GetBytes(RecoveryWarning));
+                foreach (var relative in new[] { "profiles/active.json", "screens/scene.json", "screens/device-settings.json" })
+                {
+                    var original = Resolve(root, relative);
+                    if (!File.Exists(original)) continue;
+                    OwnedLibraryPaths.CheckAncestors(original);
+                    AtomicWrite(Path.Combine(evidence, relative.Replace('/', Path.DirectorySeparatorChar)), ReadBounded(original, Limit(relative)));
+                }
+                OwnedLibraryPaths.CheckAncestors(journal);
+                // Even an oversized/corrupt record is moved intact, not copied into an unbounded buffer.
+                File.Move(journal, Path.Combine(evidence, JournalName));
+                System.Diagnostics.Trace.TraceWarning(RecoveryWarning);
+            }
+            return RecoveryWarning;
+        }
+    }
+
     public static void Commit(string root, IReadOnlyList<SceneStateFile> files) => CommitCore(root, files, null);
 
     internal static void CommitCore(string root, IReadOnlyList<SceneStateFile> files, Action<int>? afterFile)
@@ -68,6 +107,9 @@ public static class SceneStateFiles
         root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(root));
         lock (Gates.GetOrAdd(root, static _ => new object()))
         {
+            var repair = File.Exists(Path.Combine(root, RecoveryRequiredName));
+            if (repair && (!files.Any(f => f.RelativePath == "profiles/active.json") || !files.Any(f => f.RelativePath == "screens/scene.json")))
+                throw new InvalidOperationException("Repair requires one complete saved RGB + screen scene; partial state writes are refused.");
             RecoverHeld(root);
             if (files.Count is < 1 or > 3 || files.Select(f => f.RelativePath).Distinct(StringComparer.Ordinal).Count() != files.Count)
                 throw new ArgumentException("A scene-state transaction needs one to three distinct state files.", nameof(files));
@@ -102,6 +144,7 @@ public static class SceneStateFiles
                 throw;
             }
             TryDelete(journal); // a retained committed record is harmless and completed by the next recovery
+            if (repair) TryDelete(Path.Combine(root, RecoveryRequiredName)); // current process still keeps output disabled until restart
         }
     }
 

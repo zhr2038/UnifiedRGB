@@ -125,6 +125,7 @@ public sealed partial class ScenePackageService : IScenePackageService, ISceneLi
         _hydrationStop.Dispose();
         _referenceRegistration?.Dispose();
         if (_profiles?.BeforeReferenceCommit == ValidateProfileReferences) _profiles.BeforeReferenceCommit = null;
+        DisposeUploads(); // closes (and so deletes) every staging file
         _gate.Dispose();
     }
 
@@ -145,39 +146,27 @@ public sealed partial class ScenePackageService : IScenePackageService, ISceneLi
     public async Task<ScenePackageDetailsDto> ImportScenePackageAsync(ScenePackageUploadDto package, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(package);
-        var name = package.Name?.Trim();
-        if (string.IsNullOrEmpty(name) || name.Length > MaxUploadNameLength || name.Any(char.IsControl))
-        {
-            throw new ArgumentException($"An upload name must be 1..{MaxUploadNameLength} printable characters.", nameof(package));
-        }
-
+        _ = CheckedUploadName(package.Name, nameof(package));
         if (string.IsNullOrEmpty(package.Base64) || package.Base64.Length > MaxBase64Length)
         {
             throw new ArgumentException($"A package upload is 1..{ScenePackageFormat.MaxZipBytes} bytes of Base64 ZIP.", nameof(package));
         }
 
-        var zip = new byte[package.Base64.Length / 4 * 3];
-        if (!Convert.TryFromBase64String(package.Base64, zip, out var written))
-        {
-            throw new ArgumentException("The package upload is not valid Base64.", nameof(package));
-        }
-
-        Array.Resize(ref zip, written);
+        // Serialize BEFORE decoding, so concurrent legacy uploads never hold several decoded ZIPs at once, and decode into exactly
+        // one array (no trailing-pad slack, no resize copy) that the reader and store see as a read-only stream.
         await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            var content = await Task.Run(() => ScenePackageReader.Read(zip), ct).ConfigureAwait(false);
-            var media = new List<(ScenePackageMediaRecord, byte[])>();
-            foreach (var s in content.Manifest.Screens)
+            var text = package.Base64;
+            var pad = text.EndsWith("==", StringComparison.Ordinal) ? 2 : text.EndsWith('=') ? 1 : 0;
+            var zip = new byte[Math.Max(0, text.Length / 4 * 3 - pad)];
+            if (!Convert.TryFromBase64String(text, zip, out var written) || written == 0)
             {
-                media.Add(await ProbeAsync(s, content.Files[s.File], ct).ConfigureAwait(false));
+                throw new ArgumentException("The package upload is not valid Base64.", nameof(package));
             }
 
-            var (installed, created) = await Task.Run(() => Store.Install(content, zip, media), ct).ConfigureAwait(false);
-            _source.Restore(installed.ContentId);
-            await Task.Run(() => _timeline.Retry(installed.ContentId), ct).ConfigureAwait(false); // cached resolution failures only
-            LogImported(installed.ContentId, installed.Manifest.Id, installed.Manifest.Revision, created);
-            return DetailsOf(installed);
+            using var view = new MemoryStream(zip, 0, written, writable: false);
+            return await ImportLockedAsync(view, expectedZipSha256: null, ct).ConfigureAwait(false);
         }
         finally
         {

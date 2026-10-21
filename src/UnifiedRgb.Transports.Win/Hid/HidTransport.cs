@@ -34,14 +34,18 @@ internal static partial class HidNative
 /// </summary>
 public sealed class HidTransport : ITransport, IDisposable
 {
-    private readonly FileStream _stream;
+    private readonly Stream _stream;
     private readonly OpcodeLayout _layout;
     private readonly RelaySequence _sequence = new();
+    private readonly TimeSpan _timeout;
+    private int _faulted;
 
-    private HidTransport(FileStream stream, OpcodeLayout layout)
+    internal HidTransport(Stream stream, OpcodeLayout layout, TimeSpan? timeout = null)
     {
-        _stream = stream;
-        _layout = layout;
+        _stream = stream ?? throw new ArgumentNullException(nameof(stream));
+        _layout = layout ?? throw new ArgumentNullException(nameof(layout));
+        _timeout = timeout ?? TimeSpan.FromSeconds(1);
+        if (_timeout <= TimeSpan.Zero || _timeout > TimeSpan.FromSeconds(30)) throw new ArgumentOutOfRangeException(nameof(timeout));
     }
 
     public static Guid InterfaceClass
@@ -76,11 +80,36 @@ public sealed class HidTransport : ITransport, IDisposable
 
     public async ValueTask SendAsync(ReadOnlyMemory<byte> frame, CancellationToken ct)
     {
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _faulted) != 0, this);
         _sequence.Check(frame.Span, _layout);
-        await _stream.WriteAsync(frame, ct).ConfigureAwait(false);
+        using var bounded = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        bounded.CancelAfter(_timeout);
+        try { await _stream.WriteAsync(frame, bounded.Token).AsTask().WaitAsync(_timeout, ct).ConfigureAwait(false); }
+        catch (Exception ex) when (ex is TimeoutException || ex is OperationCanceledException && !ct.IsCancellationRequested)
+        {
+            Fault();
+            throw new TimeoutException($"HID output did not complete within {_timeout.TotalMilliseconds:0} ms; the uncertain transfer is not resent.", ex);
+        }
+        catch (OperationCanceledException) { Fault(); throw; }
     }
 
-    public ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct) => _stream.ReadAsync(buffer, ct);
+    public async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct)
+    {
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _faulted) != 0, this);
+        using var bounded = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        bounded.CancelAfter(_timeout);
+        try { return await _stream.ReadAsync(buffer, bounded.Token).AsTask().WaitAsync(_timeout, ct).ConfigureAwait(false); }
+        catch (Exception ex) when (ex is TimeoutException || ex is OperationCanceledException && !ct.IsCancellationRequested)
+        { Fault(); throw new TimeoutException($"HID input did not complete within {_timeout.TotalMilliseconds:0} ms.", ex); }
+        catch (OperationCanceledException) { Fault(); throw; }
+    }
 
-    public void Dispose() => _stream.Dispose();
+    private void Fault()
+    {
+        Interlocked.Exchange(ref _faulted, 1);
+        try { _stream.Dispose(); }
+        catch (IOException) { /* the original transfer failure stays authoritative */ }
+    }
+
+    public void Dispose() { Interlocked.Exchange(ref _faulted, 1); _stream.Dispose(); }
 }

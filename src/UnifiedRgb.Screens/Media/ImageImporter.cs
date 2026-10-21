@@ -13,6 +13,7 @@ internal sealed record ImportLimits(
     long MaxNormalizedBytes = 256L * 1024 * 1024)
 {
     public static ImportLimits Default { get; } = new();
+    public string? ScratchDirectory { get; init; }
 
     /// <summary>GIF delays below this (0 and 1 centisecond included) play as <see cref="ShortDelayMs"/>, as browsers do.</summary>
     public const int MinDelayMs = 20;

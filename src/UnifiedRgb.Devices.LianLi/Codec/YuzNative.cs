@@ -34,12 +34,17 @@ public sealed unsafe class YuzNative : IDisposable
     /// <summary>SHA-256 of the loaded file (logged at open, shown in Diagnostics; never compared against a pinned value).</summary>
     public string Sha256 { get; }
 
+    /// <summary>Relative explicit paths belong to the application directory, never the caller's working directory.</summary>
+    public static string? ResolveConfiguredPath(string? path) => string.IsNullOrWhiteSpace(path) ? path
+        : System.IO.Path.GetFullPath(path, AppContext.BaseDirectory);
+
     /// <summary>
     /// Loads <paramref name="path"/>. Throws <see cref="DeviceBlockedException"/> ("yuz.dll missing", wrong architecture or
     /// missing export) — the adapter then shows Blocked.
     /// </summary>
     public static YuzNative Load(string? path)
     {
+        path = ResolveConfiguredPath(path);
         if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
         {
             throw new DeviceBlockedException($"yuz.dll missing ({(string.IsNullOrWhiteSpace(path) ? "VendorYuz requires an explicit LianLi:YuzDllPath" : path)})");

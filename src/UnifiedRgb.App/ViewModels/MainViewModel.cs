@@ -28,6 +28,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private readonly IUiDispatcher _ui;
     private string _connection = "正在连接后台…";
     private string _error = string.Empty;
+    private volatile string? _uiFault;
     private TrayState _tray = TrayState.Disconnected;
 
     /// <param name="confirm">Yes/no prompt before flash writes ("Save current lighting to fans"); null: no prompt (tests).</param>
@@ -92,17 +93,59 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public AsyncCommand RefreshCommand { get; }
     public RelayCommand DismissErrorCommand { get; }
 
+    /// <summary>Sidebar connection line; frozen to the fault notice once <see cref="IsUiFaulted"/>.</summary>
     public string ConnectionText
     {
         get => _connection;
-        private set => SetProperty(ref _connection, value);
+        private set
+        {
+            if (_uiFault is null)
+            {
+                SetProperty(ref _connection, value);
+            }
+        }
     }
 
+    /// <summary>Error banner text; while <see cref="IsUiFaulted"/> it stays on the fault notice (dismiss/reports cannot clear it).</summary>
     public string Error
     {
         get => _error;
-        private set => SetProperty(ref _error, value);
+        private set
+        {
+            if (_uiFault is null)
+            {
+                SetProperty(ref _error, value);
+            }
+        }
     }
+
+    /// <summary>True after an unsafe UI exception: the view may be inconsistent and Host operations are blocked until restart.</summary>
+    public bool IsUiFaulted => _uiFault is not null;
+
+    /// <summary>
+    /// Enters the sticky fault state (first call wins). Must be called on the UI thread. Keeps all page view models and
+    /// their drafts in memory; does not contact the Host.
+    /// </summary>
+    public void EnterUiFault(string text)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(text);
+        if (Interlocked.CompareExchange(ref _uiFault, text, null) is not null)
+        {
+            return;
+        }
+
+        _error = text;
+        _connection = UiFaultConnectionText;
+        OnPropertyChanged(nameof(Error));
+        OnPropertyChanged(nameof(ConnectionText));
+        OnPropertyChanged(nameof(IsUiFaulted));
+    }
+
+    public const string UiFaultConnectionText = "界面需要重启 · 已停止向后台发送操作";
+
+    /// <summary>Sidebar text while disconnected: retry notice plus the bounded connection diagnostic, if any.</summary>
+    public static string DisconnectedText(string? lastError) =>
+        string.IsNullOrWhiteSpace(lastError) ? "后台未连接 · 自动重试中" : lastError + " · 自动重试中";
 
     public TrayState TrayState
     {
@@ -148,7 +191,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             {
                 ConnectionState.Connected => "后台已连接",
                 ConnectionState.Connecting => "正在连接后台…",
-                _ => _client.LastError ?? "后台未连接 · 自动重试中",
+                _ => DisconnectedText(_client.LastError),
             };
             if (state == ConnectionState.Connected)
             {
@@ -158,7 +201,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             UpdateTray();
             Studio.SetConnected(state == ConnectionState.Connected);
             if (state != ConnectionState.Connected) { Screens.MarkDisconnected(); Packages.MarkDisconnected(); }
-            if (state == ConnectionState.Connected)
+            if (state == ConnectionState.Connected && !IsUiFaulted)
             {
                 _ = RefreshCommand.ExecuteAsync();
             }

@@ -36,7 +36,8 @@ public sealed partial class AdapterHost(
     IWriterGuard guard,
     FrameBus bus,
     Func<IPreciseSleeper> sleeperFactory,
-    ILogger<AdapterHost> logger) : IAsyncDisposable
+    ILogger<AdapterHost> logger,
+    UnifiedRgbOptions? options = null) : IAsyncDisposable
 {
     // [LoggerMessage] in .NET 8 needs a field; primary-constructor parameters are not seen by the generator.
     private readonly ILogger _logger = logger;
@@ -85,6 +86,7 @@ public sealed partial class AdapterHost(
 
     public async Task StartAsync(CancellationToken ct)
     {
+        if (options?.StartupRecoveryNotice is not null) return; // no factory/driver/adapter construction in repair mode
         foreach (var factory in factories)
         {
             var adapter = factory.Create(services);
@@ -173,10 +175,6 @@ public sealed partial class AdapterHost(
         {
             entry.BringupLease = owner;
             writer = entry.Writer;
-            if (writer is not null)
-            {
-                writer.Paused = true;
-            }
         }
 
         writer?.Quiesce();
@@ -269,7 +267,14 @@ public sealed partial class AdapterHost(
         _ => 3,
     };
 
-    public async Task StopAsync()
+    private readonly object _stopGate = new();
+    private Task? _stopTask;
+    public Task StopAsync()
+    {
+        lock (_stopGate) return _stopTask ??= StopCoreAsync();
+    }
+
+    private async Task StopCoreAsync()
     {
         BeginStop();
         ControllerEntry[] entries;
@@ -279,10 +284,8 @@ public sealed partial class AdapterHost(
             _entries.Clear();
         }
 
-        foreach (var e in entries)
-        {
-            e.Writer?.Stop();
-        }
+        // Bound all writers together. On a timeout do not close adapters or restore foreign writers while I/O is uncertain.
+        await Task.WhenAll(entries.Where(e => e.Writer is not null).Select(e => e.Writer!.StopAsync())).ConfigureAwait(false);
 
         foreach (var e in entries.Where(e => e.IsActive))
         {
@@ -559,8 +562,8 @@ public sealed partial class AdapterHost(
             return;
         }
 
-        writer.Quiesce();
-        writer.Stop();
+        await writer.QuiesceAsync().ConfigureAwait(false);
+        await writer.StopAsync().ConfigureAwait(false);
         bus.Unregister(entry.Descriptor.Id);
         try
         {

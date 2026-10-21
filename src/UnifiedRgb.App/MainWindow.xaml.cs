@@ -18,4 +18,13 @@ public partial class MainWindow : Window
     private void MinimizeClick(object sender, RoutedEventArgs e) => WindowState = WindowState.Minimized;
     private void MaximizeClick(object sender, RoutedEventArgs e) => WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
     private void CloseClick(object sender, RoutedEventArgs e) => Close();
+
+    /// <summary>Independent of normal error bindings/filters, so even a partially failed view model has a visible exit path.</summary>
+    public void ShowFaultState(string message)
+    {
+        Title = "光域 · 界面需要重启";
+        PageHost.IsEnabled = false;
+        FaultNoticeText.Text = message;
+        FaultNotice.Visibility = Visibility.Visible;
+    }
 }

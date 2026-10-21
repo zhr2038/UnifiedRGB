@@ -81,7 +81,7 @@ public sealed partial class ScreenManager : IScreenPackageMedia
     {
         ArgumentNullException.ThrowIfNull(data);
         ObjectDisposedException.ThrowIf(_disposed, this);
-        var limits = ImportLimits.Default;
+        var limits = ImportLimits.Default with { ScratchDirectory = Path.Combine(_stateRoot, "screens", "scratch", "video-import") };
         return await _importThread.Value.InvokeAsync(() =>
         {
             var import = Mp4Importer.IsMp4(data) ? Mp4Importer.Import(data, limits, ct) : ImageImporter.Import(data, limits);
@@ -107,7 +107,7 @@ public sealed partial class ScreenManager : IScreenPackageMedia
             throw new ArgumentException($"An asset name must be 1..{MaxNameLength} printable characters.", nameof(name));
         }
 
-        var limits = ImportLimits.Default;
+        var limits = ImportLimits.Default with { ScratchDirectory = Path.Combine(_stateRoot, "screens", "scratch", "video-import") };
         if (data.Length == 0 || data.Length > limits.MaxBytes)
         {
             throw new ArgumentException($"An asset must be 1..{limits.MaxBytes} bytes (got {data.Length}).", nameof(data));

@@ -8,20 +8,88 @@ public sealed partial class ScenePackageStore
     public string DataRoot => Path.GetDirectoryName(Path.GetFullPath(Root))!;
     internal Action? BeforeRemoveCommit { get; set; }
 
+    // Usage cache. Only directories this store never changes after creating them are cached: committed content entries (named by
+    // their content id) and quarantined ~corrupt-* entries. Every other top-level directory (bindings, ~remove-*, ~stage-*,
+    // anything unknown) is measured on every call, the listing itself and the package count are always fresh, and each cached
+    // directory is still refused when it has become a link. Every store path that moves or deletes a cached name invalidates it
+    // first (install, move-aside, detach, debris removal). Changes made from outside the Host inside a cached entry are not
+    // observed until the next full walk: forced every UsageRefreshInterval and before EVERY install quota admission.
+    private Dictionary<string, long>? _usage;
+    private readonly HashSet<string> _usageStale = new(StringComparer.OrdinalIgnoreCase);
+    private long _usageWalkedAt;
+
+    /// <summary>Longest age of the cached entry sizes before the next usage read walks the whole tree again.</summary>
+    internal TimeSpan UsageRefreshInterval { get; set; } = TimeSpan.FromMinutes(10);
+
+    /// <summary>Completed walks of the whole tree (tests).</summary>
+    internal int FullUsageWalks { get; private set; }
+
+    /// <summary>Directories measured file by file, cached or not (tests).</summary>
+    internal int MeasuredDirectories { get; private set; }
+
     internal (int Count, long Bytes, long Pending) LibraryUsage()
+    {
+        var usage = MeasureUsage(full: false);
+        return (usage.Count, usage.Bytes, usage.Pending);
+    }
+
+    private (int Count, long Bytes, long Pending, bool Full) MeasureUsage(bool full)
     {
         lock (_gate)
         {
-            if (!Directory.Exists(Root)) return (0, 0, 0);
+            if (!Directory.Exists(Root))
+            {
+                _usage = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+                _usageStale.Clear();
+                _usageWalkedAt = Environment.TickCount64;
+                return (0, 0, 0, true);
+            }
+
             OwnedLibraryPaths.CheckAncestors(Root);
+            full |= _usage is null || Environment.TickCount64 - _usageWalkedAt >= (long)UsageRefreshInterval.TotalMilliseconds;
+            var next = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
             long total = 0, pending = 0;
+            var count = 0;
             foreach (var dir in Directory.EnumerateDirectories(Root))
             {
-                var size = DirectoryBytes(dir);
+                var name = Path.GetFileName(dir);
+                var cacheable = ScenePackageFormat.IsSha256Hex(name) || name.StartsWith("~corrupt-", StringComparison.Ordinal);
+                long size;
+                if (!full && cacheable && !_usageStale.Contains(name) && _usage!.TryGetValue(name, out var known))
+                {
+                    if ((File.GetAttributes(dir) & FileAttributes.ReparsePoint) != 0) throw new IOException("Library size inspection refuses a link: " + dir);
+                    size = known;
+                }
+                else
+                {
+                    size = DirectoryBytes(dir);
+                    MeasuredDirectories++;
+                }
+
+                if (cacheable) next[name] = size;
                 total += size;
-                if (Path.GetFileName(dir).StartsWith("~remove-", StringComparison.Ordinal)) pending += size;
+                if (name.StartsWith("~remove-", StringComparison.Ordinal)) pending += size;
+                if (ScenePackageFormat.IsSha256Hex(name)) count++;
             }
-            return (EntryIds().Length, total, pending);
+
+            _usage = next; // only a complete measurement replaces the cache; a refused link or I/O error keeps the old one and its stale marks
+            _usageStale.Clear();
+            if (full)
+            {
+                _usageWalkedAt = Environment.TickCount64;
+                FullUsageWalks++;
+            }
+
+            return (count, total, pending, full);
+        }
+    }
+
+    /// <summary>Marks top-level names whose cached size may no longer be true (called before or right after the store moves them).</summary>
+    private void Invalidate(params string[] names)
+    {
+        lock (_gate)
+        {
+            foreach (var name in names) _usageStale.Add(name);
         }
     }
 
@@ -46,6 +114,7 @@ public sealed partial class ScenePackageStore
             var bytes = files.Sum(f => new FileInfo(Path.Combine(package.Directory, f.Replace('/', Path.DirectorySeparatorChar))).Length);
             var trash = Path.Combine(Root, "~remove-" + package.ContentId + "-" + Guid.NewGuid().ToString("N"));
             BeforeRemoveCommit?.Invoke();
+            Invalidate(package.ContentId, Path.GetFileName(trash));
             Directory.Move(package.Directory, trash); // only after all reference/ownership checks; no authored bytes are rewritten
             _verified.TryRemove(package.ContentId, out _); _corrupt.TryRemove(package.ContentId, out _);
             return (trash, bytes, owned);

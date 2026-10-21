@@ -9,6 +9,8 @@ public sealed class ScreensOptions
 {
     /// <summary>Master output gate. While false no screen device handle is ever opened.</summary>
     public bool Enabled { get; set; }
+    /// <summary>Host startup repair latch; scene metadata starts empty and no output can be enabled in this process.</summary>
+    public bool StartupRecoveryReadOnly { get; set; }
 
     public ScreenFamilyOptions TlLcd { get; set; } = new();
 
@@ -35,7 +37,8 @@ public sealed class ScreensOptions
 
     /// <summary>
     /// Clockwise rotation from the landscape 1920x480 authoring canvas to the native 480x1920 TURZX raster (90 or 270). This is
-    /// our own pixel transform; no firmware orientation command is ever sent. The physically correct value is unverified.
+    /// our own pixel transform; no firmware orientation command is sent. The correct value is installation-specific and must
+    /// be checked on that screen; the owner's current 90-degree installation has been observed, not every TURZX model.
     /// </summary>
     public int TurzxLandscapeRotation { get; set; } = 90;
 
@@ -76,7 +79,7 @@ public sealed class ScreensOptions
     };
 
     /// <summary>True when frames may be written to screens of <paramref name="family"/>.</summary>
-    public bool OutputAllowed(ScreenFamily family) => Enabled && For(family).Output;
+    public bool OutputAllowed(ScreenFamily family) => !StartupRecoveryReadOnly && Enabled && For(family).Output;
 }
 
 public sealed class ScreenFamilyOptions

@@ -1,4 +1,6 @@
+using System.Buffers;
 using System.Collections.Concurrent;
+using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.Extensions.Logging;
@@ -193,9 +195,39 @@ public sealed partial class ScenePackageStore
     /// </summary>
     public (InstalledScenePackage Package, bool Created) Install(ScenePackageContent content, byte[] zip, IReadOnlyList<(ScenePackageMediaRecord Media, byte[] Thumbnail)> media)
     {
+        ArgumentNullException.ThrowIfNull(zip);
+        using var stream = new MemoryStream(zip, writable: false);
+        return Install(content, stream, null, media);
+    }
+
+    /// <summary>
+    /// As the byte-array overload, copying the original ZIP from a seekable stream (read from position 0, never written) into the
+    /// staged entry while hashing it, so no second in-memory copy of the archive is made. When <paramref name="expectedZipSha256"/>
+    /// is given, the copied bytes must hash to it (InvalidDataException otherwise, nothing installed): the stored package.zip is
+    /// exactly the bytes that were validated.
+    /// </summary>
+    public (InstalledScenePackage Package, bool Created) Install(ScenePackageContent content, Stream zip, string? expectedZipSha256,
+        IReadOnlyList<(ScenePackageMediaRecord Media, byte[] Thumbnail)> media)
+    {
         ArgumentNullException.ThrowIfNull(content);
         ArgumentNullException.ThrowIfNull(zip);
         ArgumentNullException.ThrowIfNull(media);
+        if (!zip.CanRead || !zip.CanSeek)
+        {
+            throw new ArgumentException("A package ZIP stream must be readable and seekable.", nameof(zip));
+        }
+
+        if (expectedZipSha256 is not null && !ScenePackageFormat.IsSha256Hex(expectedZipSha256))
+        {
+            throw new ArgumentException("An expected ZIP hash is a lowercase SHA-256 hex string.", nameof(expectedZipSha256));
+        }
+
+        var zipLength = zip.Length;
+        if (zipLength <= 0 || zipLength > ScenePackageFormat.MaxZipBytes)
+        {
+            throw ScenePackageFormat.Bad($"a package ZIP is 1..{ScenePackageFormat.MaxZipBytes} bytes (got {zipLength})");
+        }
+
         lock (_gate)
         {
             if (TryGet(content.ContentId, out var existing, out _))
@@ -208,11 +240,12 @@ public sealed partial class ScenePackageStore
             {
                 var aside = Path.Combine(Root, $"~corrupt-{content.ContentId}-{DateTime.UtcNow:yyyyMMddHHmmssfff}");
                 Directory.Move(final, aside);
+                Invalidate(content.ContentId, Path.GetFileName(aside));
                 LogMovedAside(content.ContentId, aside);
             }
 
+            var adding = zipLength + content.ManifestBytes.LongLength + content.Files.Values.Sum(f => f.LongLength) + media.Sum(m => (long)m.Thumbnail.Length);
             var (count, bytes) = Usage();
-            var adding = zip.LongLength + content.ManifestBytes.LongLength + content.Files.Values.Sum(f => f.LongLength) + media.Sum(m => (long)m.Thumbnail.Length);
             if (count >= MaxPackages || bytes + adding > MaxStoreBytes)
             {
                 throw new InvalidOperationException(
@@ -223,7 +256,12 @@ public sealed partial class ScenePackageStore
             try
             {
                 Directory.CreateDirectory(stage);
-                Write(Path.Combine(stage, ZipName), zip);
+                var zipSha256 = CopyZip(zip, Path.Combine(stage, ZipName), zipLength);
+                if (expectedZipSha256 is not null && zipSha256 != expectedZipSha256)
+                {
+                    throw new InvalidDataException("The package ZIP changed before it was stored; nothing was installed.");
+                }
+
                 Write(Path.Combine(stage, ScenePackageFormat.ManifestName), content.ManifestBytes);
                 foreach (var (path, data) in content.Files)
                 {
@@ -238,12 +276,13 @@ public sealed partial class ScenePackageStore
                     Write(Path.Combine(stage, ThumbsDir, m.Role + ".png"), thumb);
                 }
 
-                var record = new StoreRecord(1, content.ContentId, ScenePackageFormat.Sha256Hex(zip), zip.LongLength, DateTimeOffset.UtcNow,
+                var record = new StoreRecord(1, content.ContentId, zipSha256, zipLength, DateTimeOffset.UtcNow,
                     media.Select(m => m.Media).ToArray());
                 Write(Path.Combine(stage, RecordName), JsonSerializer.SerializeToUtf8Bytes(record, StoreJsonContext.Default.StoreRecord));
                 var staged = Verify(content.ContentId, stage); // what is renamed into place has been read back and verified
                 BeforeCommit?.Invoke(stage);
                 Directory.Move(stage, final);
+                Invalidate(content.ContentId);
                 var installed = new InstalledScenePackage(content.ContentId, final, staged.Manifest, staged.Lighting, staged.Media, staged.ZipSha256);
                 _verified[content.ContentId] = installed;
                 _corrupt.TryRemove(content.ContentId, out _);
@@ -308,8 +347,10 @@ public sealed partial class ScenePackageStore
             throw new InvalidDataException("record.json does not describe this entry");
         }
 
-        var zip = File.ReadAllBytes(Path.Combine(dir, ZipName));
-        if (zip.LongLength != record.ZipBytes || ScenePackageFormat.Sha256Hex(zip) != record.ZipSha256)
+        // streamed: the original archive (up to 64 MiB) and non-lighting files are hashed without being held in memory
+        var zipPath = Path.Combine(dir, ZipName);
+        if (record.ZipBytes is <= 0 or > ScenePackageFormat.MaxZipBytes || new FileInfo(zipPath).Length != record.ZipBytes
+            || HashFile(zipPath, ScenePackageFormat.MaxZipBytes) != record.ZipSha256)
         {
             throw new InvalidDataException("package.zip does not match its recorded SHA-256");
         }
@@ -318,16 +359,23 @@ public sealed partial class ScenePackageStore
         var lightingFiles = manifest.Lighting.Select(l => l.File).ToHashSet(StringComparer.Ordinal);
         foreach (var (path, hash) in manifest.Files)
         {
+            if (!lightingFiles.Contains(path))
+            {
+                if (HashFile(FilePath(dir, path), ScenePackageFormat.MaxExpandedBytes) != hash)
+                {
+                    throw new InvalidDataException($"'{path}' does not match its SHA-256");
+                }
+
+                continue;
+            }
+
             var bytes = File.ReadAllBytes(FilePath(dir, path));
             if (ScenePackageFormat.Sha256Hex(bytes) != hash)
             {
                 throw new InvalidDataException($"'{path}' does not match its SHA-256");
             }
 
-            if (lightingFiles.Contains(path))
-            {
-                lighting[path] = bytes;
-            }
+            lighting[path] = bytes;
         }
 
         foreach (var l in manifest.Lighting)
@@ -357,10 +405,52 @@ public sealed partial class ScenePackageStore
         return Directory.EnumerateDirectories(Root).Select(Path.GetFileName).Where(ScenePackageFormat.IsSha256Hex).Select(n => n!).ToArray();
     }
 
+    /// <summary>
+    /// Admission always rechecks the bounded on-disk tree. The UI usage cache is advisory: out-of-band changes must never
+    /// allow an install past the hard quota or hide a newly introduced link. This work never runs on a render thread.
+    /// </summary>
     private (int Count, long Bytes) Usage()
     {
-        var usage = LibraryUsage();
+        var usage = MeasureUsage(full: true);
         return (usage.Count, usage.Bytes);
+    }
+
+    /// <summary>Copies the whole stream into a new file and returns its SHA-256; the stream must yield exactly <paramref name="length"/> bytes.</summary>
+    private static string CopyZip(Stream source, string path, long length)
+    {
+        source.Position = 0;
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        var buffer = ArrayPool<byte>.Shared.Rent(81920);
+        try
+        {
+            using var fs = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+            long total = 0;
+            int n;
+            while ((n = source.Read(buffer, 0, buffer.Length)) > 0)
+            {
+                total += n;
+                if (total > length)
+                {
+                    throw new InvalidDataException("The package ZIP grew while it was stored; nothing was installed.");
+                }
+
+                hash.AppendData(buffer, 0, n);
+                fs.Write(buffer, 0, n);
+            }
+
+            if (total != length)
+            {
+                throw new InvalidDataException("The package ZIP ended early while it was stored; nothing was installed.");
+            }
+
+            fs.Flush(flushToDisk: true);
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(buffer);
+        }
+
+        return Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant();
     }
 
     /// <summary>Once per process: removes staging debris of an interrupted install (never a committed or corrupt entry).</summary>
@@ -412,6 +502,7 @@ public sealed partial class ScenePackageStore
                     foreach (var file in manifest.Files.Keys) names.Add(FilesDir + "/" + file);
                     foreach (var screen in manifest.Screens) names.Add(ThumbsDir + "/" + screen.Role + ".png");
                 }
+                Invalidate(name);
                 if (!UnifiedRgb.Screens.Runtime.OwnedLibraryPaths.Purge(Root, dir, names, ScenePackageFormat.ManifestName)) LogDebris(dir, "Unknown or locked files kept for inspection.");
             }
         }

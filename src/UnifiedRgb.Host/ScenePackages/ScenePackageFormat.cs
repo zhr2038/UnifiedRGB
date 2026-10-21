@@ -9,9 +9,10 @@ using UnifiedRgb.Screens.Composition;
 namespace UnifiedRgb.Host.ScenePackages;
 
 /// <summary>
-/// The external scene package (OPUS-GENERIC-SCENE-PACKAGES): exact identifiers and bounds. schemaVersion 1 and 2 share one
+/// The external scene package (OPUS-GENERIC-SCENE-PACKAGES): exact identifiers and bounds. schemaVersion 1, 2 and 3 share one
 /// playback contract; 2 ONLY adds the optional screen fields "accentColor" and "overlayLayout" (a telemetry region), which a
-/// schemaVersion 1 manifest still rejects in any form, including null. Anything else — another format, schema version or
+/// schemaVersion 1 manifest still rejects in any form, including null. Version 3 additionally permits MP4/H.264 screen assets.
+/// Anything else — another format, schema version or
 /// playback contract, including the "...Draft" / "...-draft" authoring drafts — is rejected explicitly; a package is never
 /// upgraded, migrated, regenerated or reinterpreted.
 /// </summary>
@@ -124,7 +125,7 @@ public static partial class ScenePackageFormat
     }
 
     /// <summary>
-    /// Parses and validates <paramref name="utf8"/> as a v1 manifest. Rejected (ArgumentException, reason first): not strict JSON
+    /// Parses and validates <paramref name="utf8"/> as a v1/v2/v3 manifest. Rejected (ArgumentException, reason first): not strict JSON
     /// (comments, trailing commas, duplicate keys), unknown format/schema/contract, unknown properties, bad ids/roles/paths,
     /// out-of-bounds counts and durations, inconsistent tracks, files that are unreferenced or unhashed.
     /// </summary>
@@ -564,7 +565,7 @@ public static partial class ScenePackageFormat
     private static partial Regex RoleRegex();
 }
 
-/// <summary>A validated v1/v2 manifest (see <see cref="SchemaVersion"/>). Lighting files are frame-major RGB24, <see cref="LightingTrack.ByteLength"/> bytes each.</summary>
+/// <summary>A validated v1/v2/v3 manifest (see <see cref="SchemaVersion"/>). Lighting files are frame-major RGB24, <see cref="LightingTrack.ByteLength"/> bytes each.</summary>
 public sealed record ScenePackageManifest(
     string Id,
     string Name,
@@ -574,7 +575,7 @@ public sealed record ScenePackageManifest(
     IReadOnlyList<ScreenTrack> Screens,
     IReadOnlyDictionary<string, string> Files)
 {
-    /// <summary>The manifest's declared schemaVersion (1 or 2); never upgraded.</summary>
+    /// <summary>The manifest's declared schemaVersion (1, 2 or 3); never upgraded.</summary>
     public int SchemaVersion { get; init; } = ScenePackageFormat.SchemaVersion;
 
     /// <summary>Roles in manifest order: lighting first, then screens.</summary>
@@ -588,7 +589,7 @@ public sealed record LightingTrack(string Role, string? Label, string File, int 
 }
 
 /// <summary>
-/// One screen medium on the package timeline. <see cref="AccentColor"/> and <see cref="OverlayLayout"/> exist only in schemaVersion 2
+/// One screen medium on the package timeline. <see cref="AccentColor"/> and <see cref="OverlayLayout"/> exist in schemaVersion 2 and 3
 /// (null = the historical behaviour).
 /// </summary>
 public sealed record ScreenTrack(

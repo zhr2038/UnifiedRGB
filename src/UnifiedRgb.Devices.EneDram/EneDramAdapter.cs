@@ -970,6 +970,7 @@ public sealed partial class EneDramAdapter : IWholeFrameAdapter, INativeBringup,
         fields["moduleCount"] = "unknown: a responding address is an observation; only the E3c smoke shows how many modules answer it";
         fields["mutexTimeouts"] = (p.Bus.MutexTimeouts - timeoutsBefore).ToString(CultureInfo.InvariantCulture);
         fields["mutexTimeoutsTotal"] = p.Bus.MutexTimeouts.ToString(CultureInfo.InvariantCulture);
+        fields["abandonedMutexAcquisitions"] = p.Bus.AbandonedMutexAcquisitions.ToString(CultureInfo.InvariantCulture);
         fields["dropped"] = dropped.ToString(CultureInfo.InvariantCulture);
         fields["refused"] = refused.ToString(CultureInfo.InvariantCulture);
         fields["comm"] = refused > 0 ? "error(-1)" : dropped > 0 ? "error(258)" : "ok";

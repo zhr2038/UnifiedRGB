@@ -14,8 +14,9 @@ namespace UnifiedRgb.Screens.Protocol;
 /// <item>H2: 500 plain bytes, PKCS7 → 504 cipher bytes in a 512-byte block ending A1 1A at 510/511; then the image (variable).</item>
 /// <item>TURZX: 500 plain bytes, ZERO padding → 504 cipher bytes, same 512-byte block and trailer; PNG ≤ 524288 bytes.</item>
 /// </list>
-/// Only the image-push commands of <see cref="AllowedCommands"/> can be framed: there is no API for init, frame rate, brightness,
-/// rotation, pump/fan, H.264, file/storage, firmware, reset, delete, flash or PWM commands.
+/// Only the image-push commands of <see cref="AllowedCommands"/> can be framed by THIS API. Typed H2VideoProtocol,
+/// TurzxVideoProtocol, LianLiBacklightProtocol and TurzxBacklightProtocol separately implement their narrowly gated operations.
+/// This image API never frames init, frame rate, brightness, rotation, pump/fan, video, storage, firmware, reset or PWM commands.
 /// The TURZX framing is derived from turing-smart-screen-cli ffc652ab (MIT, Copyright (c) 2025 Study Hsueh); see
 /// THIRD-PARTY-NOTICES.md in this project.
 /// </summary>

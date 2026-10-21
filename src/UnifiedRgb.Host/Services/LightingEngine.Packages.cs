@@ -22,6 +22,7 @@ public sealed partial class LightingEngine
         get
         {
             var blocked = _loop.BlockedContent;
+            if (options.StartupRecoveryNotice is { } repair) return [repair, .. blocked];
             return _startupBlocked is { } startup ? [startup, .. blocked] : blocked;
         }
     }
@@ -34,7 +35,7 @@ public sealed partial class LightingEngine
     /// Throws ArgumentException (nothing changed) when <paramref name="scene"/> carries strict content that cannot play exactly.
     /// Called under the scene gate, before <see cref="RenderLoop.SetScene(Scene, bool)"/>.
     /// </summary>
-    private void ValidateStrict(Scene scene, string paramName)
+    private void ValidateStrict(Scene scene, string paramName, bool requireActive = true)
     {
         var strict = scene.Assignments
             .Where(a => a.Strategy == ContentStrategy.Frames && ScenePackageIds.IsTimelineId(a.FrameSetId))
@@ -82,6 +83,7 @@ public sealed partial class LightingEngine
             {
                 throw new ArgumentException($"Frame set {a.FrameSetId} does not belong to the scene's package {timeline}.", paramName);
             }
+            if (!requireActive) continue;
 
             foreach (var t in a.Targets.Where(t => !active.Contains(t)))
             {

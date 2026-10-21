@@ -6,6 +6,17 @@ namespace UnifiedRgb.Screens.Tests;
 public sealed class DiscoveryGenerationTests
 {
     [Fact]
+    public async Task Concurrent_repeated_list_calls_keep_one_worker_and_one_channel_per_screen()
+    {
+        await using var rig = new Rig(Rig.AllOutput, Devices.Tl1, Devices.Tl2);
+        await rig.Manager.SetScreenSceneAsync(Images.Scene(new(Devices.Tl1.Id), new(Devices.Tl2.Id)));
+        await Task.WhenAll(Enumerable.Range(0, 20).Select(_ => Task.Run(() => rig.Manager.ListScreensAsync())));
+        await Wait.UntilAsync(() => rig.Opener.Opens == 2, "one channel per present screen");
+        rig.Manager.WorkerIds.Should().HaveCount(2);
+        rig.Opener.For(Devices.Tl1.Id).Should().ContainSingle();
+        rig.Opener.For(Devices.Tl2.Id).Should().ContainSingle();
+    }
+    [Fact]
     public async Task A_cached_snapshot_cannot_recreate_a_worker_after_a_newer_unplug()
     {
         await using var rig = new Rig(Rig.AllOutput, Devices.Tl1, Devices.Tl2);

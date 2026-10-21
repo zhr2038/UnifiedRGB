@@ -12,6 +12,7 @@ public sealed partial class StatusWriter(UnifiedRgbOptions options, LightingEngi
     private readonly ILogger _logger = logger;
 
     private static readonly JsonSerializerOptions Json = ContractsJson.Configure(new JsonSerializerOptions { WriteIndented = true });
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, object> WriteGates = new(StringComparer.OrdinalIgnoreCase);
 
     public string StatusPath { get; } = Path.Combine(options.ResolvedDataDirectory, "status.json");
 
@@ -19,8 +20,15 @@ public sealed partial class StatusWriter(UnifiedRgbOptions options, LightingEngi
 
     private void Write(Contracts.Dto.StatusDto status)
     {
+        lock (WriteGates.GetOrAdd(StatusPath, static _ => new object())) WriteCore(status);
+    }
+
+    private void WriteCore(Contracts.Dto.StatusDto status)
+    {
         Directory.CreateDirectory(Path.GetDirectoryName(StatusPath)!);
-        var tmp = StatusPath + ".tmp";
+        var tmp = StatusPath + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try
+        {
         File.WriteAllBytes(tmp, JsonSerializer.SerializeToUtf8Bytes(status, Json));
         // The replace fails while a reader (or AV/indexer) holds status.json without FILE_SHARE_DELETE; retry briefly,
         // otherwise the previous complete file stays in place and the next tick tries again.
@@ -35,6 +43,13 @@ public sealed partial class StatusWriter(UnifiedRgbOptions options, LightingEngi
             {
                 Thread.Sleep(10 * attempt);
             }
+        }
+        }
+        finally
+        {
+            try { File.Delete(tmp); }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
         }
     }
 

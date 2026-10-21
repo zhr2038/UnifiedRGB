@@ -11,6 +11,7 @@ public sealed record ControllerItem(ControllerDto Dto)
     public string Id => Dto.Id;
 
     public string Name => Dto.Name;
+    private bool NeedsNativeVerification => !Dto.ControlVerified && NativeBringupViewModel.NativeClasses.Contains(Dto.DeviceClass, StringComparer.OrdinalIgnoreCase);
     public string ChineseName => DisplayNames.Controller(Dto.Id, Dto.Name);
     public string ChineseState => DisplayNames.IsDiscoveryPort(Dto) ? "发现端口" : DisplayNames.State(Dto.State);
     public string ChineseZones => DisplayNames.IsDiscoveryPort(Dto) ? "只用于探测 · 不参与灯效" : $"{Dto.Zones.Count} 个分区 · {Dto.Zones.Sum(z => z.LedCount)} 个逻辑灯位";
@@ -18,7 +19,7 @@ public sealed record ControllerItem(ControllerDto Dto)
     {
         ControllerStates.Active => "", ControllerStates.BringUp => "正在进行独立硬件校验，暂不接收场景帧。",
         ControllerStates.Contended => $"其他程序正在写入：{Dto.BlockedBy}", ControllerStates.Offline => "设备未打开，详情见诊断。",
-        _ => Dto.ControlVerified ? $"未接管：{Dto.BlockedBy}" : $"控制待实机校验：{Dto.BlockedBy}",
+        _ => !NeedsNativeVerification ? $"未接管：{Dto.BlockedBy}" : $"控制待实机校验：{Dto.BlockedBy}",
     };
 
     public string Vendor => Dto.Vendor;
@@ -37,10 +38,10 @@ public sealed record ControllerItem(ControllerDto Dto)
     public string Hint => Dto.State switch
     {
         ControllerStates.BringUp => $"Native bring-up session: {Dto.BlockedBy}. No scene frames reach it until the session ends.",
-        ControllerStates.Blocked when Dto.BlockedBy?.StartsWith("takeover off", StringComparison.OrdinalIgnoreCase) == true => Dto.ControlVerified
+        ControllerStates.Blocked when Dto.BlockedBy?.StartsWith("takeover off", StringComparison.OrdinalIgnoreCase) == true => !NeedsNativeVerification
             ? $"Takeover is off for {Dto.DeviceClass}: turn it on below."
             : $"Takeover is off for {Dto.DeviceClass}: a bring-up session needs it on (below). Control not verified: no scene frames are sent.",
-        ControllerStates.Blocked when !Dto.ControlVerified =>
+        ControllerStates.Blocked when NeedsNativeVerification =>
             $"Control not verified ({Dto.BlockedBy}). No scene frames are sent; only an explicit Diagnostics › Native bring-up session opens it.",
         ControllerStates.Blocked => $"Blocked by {Dto.BlockedBy}: close it, or enable Takeover for {Dto.DeviceClass}.",
         ControllerStates.Contended => $"Paused: {Dto.BlockedBy} is writing to this device again.",

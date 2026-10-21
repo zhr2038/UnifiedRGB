@@ -178,7 +178,7 @@ public sealed partial class AsusAuraAdapter : IWholeFrameAdapter, INativeBringup
                 var row = Control(b, $"direct mode 0x35 effect channel {ch.EffectChannel}", [AuraReports.DirectMode(ch.EffectChannel)], black: false)[0];
                 if (row.Status != 0)
                 {
-                    throw new IOException(string.Create(CultureInfo.InvariantCulture, $"Aura direct mode select on effect channel {ch.EffectChannel} failed (status {row.Status}{(row.Note is null ? string.Empty : ": " + row.Note)})"));
+                    throw new DeviceBlockedException(string.Create(CultureInfo.InvariantCulture, $"Aura direct mode select on effect channel {ch.EffectChannel} failed (status {row.Status}{(row.Note is null ? string.Empty : ": " + row.Note)})"));
                 }
 
                 b.DirectSelected.Add(ch.EffectChannel);

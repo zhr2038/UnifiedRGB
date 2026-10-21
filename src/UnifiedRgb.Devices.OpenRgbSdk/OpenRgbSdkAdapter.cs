@@ -41,19 +41,31 @@ public sealed partial class OpenRgbSdkAdapter : IDeviceAdapter, IActiveDiscovery
     private int _generation;
     private volatile bool _broken;
     private Timer? _timer;
-    private int _ticking;
+    private Task? _tickTask;
+    private readonly CancellationTokenSource _lifetime = new();
+    private readonly CancellationToken _lifetimeToken;
+    private Task<ITransport>? _pendingConnection;
     private int _rawCount = -1;
+    private readonly TimeProvider _time;
+    private readonly Func<TimeSpan, CancellationToken, Task> _delay;
+    private bool _disposed;
 
     public OpenRgbSdkAdapter(
         Func<CancellationToken, Task<ITransport>> connect,
         OpenRgbSdkOptions? options = null,
         OpenRgbProcessSupervisor? supervisor = null,
-        ILogger? logger = null)
+        ILogger? logger = null,
+        TimeProvider? time = null,
+        Func<TimeSpan, CancellationToken, Task>? delay = null)
     {
         _connect = connect ?? throw new ArgumentNullException(nameof(connect));
         _options = options ?? new OpenRgbSdkOptions();
         _supervisor = supervisor;
         _logger = logger ?? NullLogger.Instance;
+        _time = time ?? TimeProvider.System;
+        _delay = delay ?? ((period, token) => Task.Delay(period, _time, token));
+        _lifetimeToken = _lifetime.Token;
+        if (_options.ConnectTimeout < TimeSpan.Zero || _options.ConnectTimeout > TimeSpan.FromMinutes(1)) throw new ArgumentOutOfRangeException(nameof(options));
     }
 
     public event Action<HotplugEvent>? Hotplug;
@@ -67,9 +79,13 @@ public sealed partial class OpenRgbSdkAdapter : IDeviceAdapter, IActiveDiscovery
 
     public async Task<IReadOnlyList<ControllerDescriptor>> DiscoverAsync(CancellationToken ct)
     {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, _lifetimeToken);
+        ct = linked.Token;
         await _linkGate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
+            ObjectDisposedException.ThrowIf(_disposed, this);
             _supervisor?.EnsureRunning();
             if (_client is null || _broken)
             {
@@ -83,9 +99,10 @@ public sealed partial class OpenRgbSdkAdapter : IDeviceAdapter, IActiveDiscovery
             _linkGate.Release();
         }
 
-        if (_options.RediscoverInterval > TimeSpan.Zero && _timer is null)
+        lock (_gate)
         {
-            _timer = new Timer(_ => _ = TickAsync(), null, _options.RediscoverInterval, _options.RediscoverInterval);
+            if (!_disposed && _options.RediscoverInterval > TimeSpan.Zero && _timer is null)
+                _timer = new Timer(_ => StartTick(), null, _options.RediscoverInterval, _options.RediscoverInterval);
         }
 
         lock (_gate)
@@ -168,9 +185,13 @@ public sealed partial class OpenRgbSdkAdapter : IDeviceAdapter, IActiveDiscovery
     /// </summary>
     public async Task RediscoverAsync(CancellationToken ct)
     {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, _lifetimeToken);
+        ct = linked.Token;
         await _linkGate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
+            ObjectDisposedException.ThrowIf(_disposed, this);
             var relaunched = _supervisor?.EnsureRunning() ?? false;
             var reconnect = relaunched || _broken || _client is null;
             if (!reconnect)
@@ -208,9 +229,12 @@ public sealed partial class OpenRgbSdkAdapter : IDeviceAdapter, IActiveDiscovery
 
     public async ValueTask DisposeAsync()
     {
-        if (_timer is not null)
+        Timer? timer;
+        lock (_gate) { if (_disposed) return; _disposed = true; timer = _timer; _timer = null; }
+        await _lifetime.CancelAsync().ConfigureAwait(false);
+        if (timer is not null)
         {
-            await _timer.DisposeAsync().ConfigureAwait(false);
+            await timer.DisposeAsync().ConfigureAwait(false);
         }
 
         await _linkGate.WaitAsync().ConfigureAwait(false);
@@ -226,6 +250,7 @@ public sealed partial class OpenRgbSdkAdapter : IDeviceAdapter, IActiveDiscovery
 
         _supervisor?.Dispose();
         _linkGate.Dispose();
+        _lifetime.Dispose();
     }
 
     /// <summary>Stable id from what the controller is and where it sits, independent of OpenRGB's enumeration order.</summary>
@@ -286,17 +311,23 @@ public sealed partial class OpenRgbSdkAdapter : IDeviceAdapter, IActiveDiscovery
         return sb.ToString();
     }
 
+    private void StartTick()
+    {
+        lock (_gate)
+        {
+            if (_disposed || _tickTask is { IsCompleted: false }) return;
+            _tickTask = TickAsync();
+        }
+    }
+
     private async Task TickAsync()
     {
-        if (Interlocked.Exchange(ref _ticking, 1) == 1)
-        {
-            return;
-        }
-
         try
         {
-            await RediscoverAsync(CancellationToken.None).ConfigureAwait(false);
+            await RediscoverAsync(_lifetimeToken).ConfigureAwait(false);
         }
+        catch (OperationCanceledException) when (_lifetimeToken.IsCancellationRequested) { }
+        catch (ObjectDisposedException) when (_disposed) { }
 #pragma warning disable CA1031 // a failed pass is retried on the next tick
         catch (Exception ex)
 #pragma warning restore CA1031
@@ -304,37 +335,66 @@ public sealed partial class OpenRgbSdkAdapter : IDeviceAdapter, IActiveDiscovery
             _broken = true;
             LogRediscoverFailed(ex);
         }
-        finally
-        {
-            Volatile.Write(ref _ticking, 0);
-        }
     }
 
     private async Task ReconnectAsync(CancellationToken ct)
     {
         _client?.Dispose();
         _client = null;
-        var deadline = DateTime.UtcNow + _options.ConnectTimeout;
+        if (_pendingConnection is { IsCompleted: false })
+            throw new IOException("A previous timed-out OpenRGB connection is still pending; a second connection is refused.");
+        var start = _time.GetTimestamp();
+        Exception? last = null;
         while (true)
         {
+            ct.ThrowIfCancellationRequested();
+            var remaining = _options.ConnectTimeout - _time.GetElapsedTime(start);
+            if (last is not null && remaining <= TimeSpan.Zero)
+                throw new IOException("OpenRGB reconnect deadline elapsed.", last);
+            var budget = _options.ConnectTimeout == TimeSpan.Zero ? TimeSpan.FromSeconds(10) : remaining;
+            OpenRgbSdkClient? candidate = null;
             try
             {
-                var transport = await _connect(ct).ConfigureAwait(false);
-                var client = new OpenRgbSdkClient(transport, _logger);
-                await client.HandshakeAsync(_options.ClientName, ct).ConfigureAwait(false);
-                _client = client;
+                using var deadline = new CancellationTokenSource(budget, _time);
+                using var attempt = CancellationTokenSource.CreateLinkedTokenSource(ct, deadline.Token);
+                var pending = _pendingConnection = _connect(attempt.Token);
+                ITransport transport;
+                try { transport = await pending.WaitAsync(budget, _time, ct).ConfigureAwait(false); }
+                catch (OperationCanceledException ex) when (!ct.IsCancellationRequested)
+                { _ = DisposeLateConnectionAsync(pending); throw new TimeoutException("OpenRGB connection deadline elapsed.", ex); }
+                catch { _ = DisposeLateConnectionAsync(pending); throw; }
+                _pendingConnection = null;
+                candidate = new OpenRgbSdkClient(transport, _logger);
+                var handshakeBudget = _options.ConnectTimeout == TimeSpan.Zero ? budget : _options.ConnectTimeout - _time.GetElapsedTime(start);
+                if (handshakeBudget <= TimeSpan.Zero) throw new TimeoutException("OpenRGB handshake deadline elapsed.");
+                try { await candidate.HandshakeAsync(_options.ClientName, attempt.Token).WaitAsync(handshakeBudget, _time, ct).ConfigureAwait(false); }
+                catch (OperationCanceledException ex) when (!ct.IsCancellationRequested) { throw new TimeoutException("OpenRGB handshake deadline elapsed.", ex); }
+                _client = candidate;
+                candidate = null;
                 break;
             }
-            catch (System.Net.Sockets.SocketException) when (DateTime.UtcNow < deadline)
+            catch (Exception ex) when (ex is System.Net.Sockets.SocketException or IOException or ObjectDisposedException
+                && !ct.IsCancellationRequested && _time.GetElapsedTime(start) < _options.ConnectTimeout)
             {
-                await Task.Delay(250, ct).ConfigureAwait(false);
+                last = ex;
+                remaining = _options.ConnectTimeout - _time.GetElapsedTime(start);
+                if (remaining > TimeSpan.Zero) await _delay(remaining < TimeSpan.FromMilliseconds(250) ? remaining : TimeSpan.FromMilliseconds(250), ct).ConfigureAwait(false);
             }
+            finally { candidate?.Dispose(); }
         }
 
         _broken = false;
         Connections++;
         Interlocked.Increment(ref _generation);
         LogConnected(_client.Protocol);
+    }
+
+    private static async Task DisposeLateConnectionAsync(Task<ITransport> pending)
+    {
+        try { (await pending.ConfigureAwait(false) as IDisposable)?.Dispose(); }
+#pragma warning disable CA1031 // observe a timed-out connection and release any eventual transport, never retry its writes
+        catch (Exception) { }
+#pragma warning restore CA1031
     }
 
     /// <summary>Re-reads the device list; returns how many known controllers came back.</summary>

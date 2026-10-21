@@ -7,6 +7,17 @@ public sealed class HardwareHostLease : IDisposable
     private readonly ManualResetEventSlim _release = new();
     private readonly Thread _owner;
     private int _disposed;
+    private int _retainUntilProcessExit;
+
+    public static bool TryAcquire([System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out HardwareHostLease? lease,
+        out string? failure, string name = Name)
+    {
+        try { lease = new HardwareHostLease(name); failure = null; return true; }
+        catch (InvalidOperationException ex) { lease = null; failure = ex.Message; return false; }
+    }
+
+    /// <summary>An unclean shutdown must retain hardware ownership until the OS actually ends this process.</summary>
+    public void RetainUntilProcessExit() => Volatile.Write(ref _retainUntilProcessExit, 1);
 
     public HardwareHostLease(string name = Name)
     {
@@ -44,6 +55,7 @@ public sealed class HardwareHostLease : IDisposable
     public void Dispose()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+        if (Volatile.Read(ref _retainUntilProcessExit) != 0) return; // background mutex owner remains rooted until process exit
         _release.Set();
         _owner.Join();
         _release.Dispose();

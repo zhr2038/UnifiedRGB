@@ -20,13 +20,19 @@ internal static class Mp4Importer
         ArgumentNullException.ThrowIfNull(data);
         if (!IsMp4(data) || data.Length > limits.MaxBytes) throw new ArgumentException("An MP4 must fit the upload byte budget.", nameof(data));
         ValidateContainer(data);
-        var directory = Path.Combine(Path.GetTempPath(), "UnifiedRgb-video-import", Guid.NewGuid().ToString("N"));
+        return WithInput(data, limits.ScratchDirectory, path => Decode(path, limits, ct));
+    }
+
+    internal static ImportResult WithInput(byte[] data, string? scratchRoot, Func<string, ImportResult> decode)
+    {
+        var root = scratchRoot ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "UnifiedRgb", "scratch", "video-import");
+        var directory = Path.Combine(root, Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
         var path = Path.Combine(directory, "input.mp4");
         try
         {
             File.WriteAllBytes(path, data);
-            return Decode(path, limits, ct);
+            return decode(path);
         }
         catch (Exception ex) when (ex is SharpGen.Runtime.SharpGenException or COMException or DllNotFoundException)
         {
@@ -34,8 +40,10 @@ internal static class Mp4Importer
         }
         finally
         {
-            File.Delete(path);
-            Directory.Delete(directory, recursive: false);
+            try { File.Delete(path); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { Trace.TraceWarning("Video scratch cleanup failed: {0}", ex.Message); }
+            try { Directory.Delete(directory, recursive: false); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { Trace.TraceWarning("Video scratch directory cleanup failed: {0}", ex.Message); }
         }
     }
 

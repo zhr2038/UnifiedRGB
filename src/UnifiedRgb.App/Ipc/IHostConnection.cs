@@ -16,6 +16,6 @@ public interface IHostConnection
     /// <summary>Number of successful connections so far.</summary>
     int Connections { get; }
 
-    /// <summary>The proxy, or InvalidOperationException("Host not connected").</summary>
+    /// <summary>The proxy, or a typed InvalidOperationException when disconnected or blocked after an unsafe UI fault.</summary>
     IRgbService Require();
 }

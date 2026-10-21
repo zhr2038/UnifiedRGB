@@ -2,7 +2,7 @@ using UnifiedRgb.Devices;
 
 namespace UnifiedRgb.Core.Color;
 
-/// <summary>HSV helpers (port target: slv3.RgbEffect.HsvToRgb). Hue in degrees [0,360), S and V in [0,1].</summary>
+/// <summary>Standard HSV sector/chroma conversion. Hue in degrees [0,360), S and V in [0,1].</summary>
 public static class Hsv
 {
     public static Rgb ToRgb(float hue, float saturation, float value)

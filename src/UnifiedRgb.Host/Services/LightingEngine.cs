@@ -79,7 +79,12 @@ public sealed partial class LightingEngine(
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
-        SceneStateFiles.Recover(options.ResolvedDataDirectory); // incomplete disk commits must be recovered before any adapter opens
+        options.StartupRecoveryNotice = SceneStateFiles.PrepareStartup(options.ResolvedDataDirectory);
+        if (options.StartupRecoveryNotice is not null)
+        {
+            options.Screens.Enabled = false;
+            options.Screens.StartupRecoveryReadOnly = true;
+        }
         _uptime.Start();
         ApplyConfiguredCalibration();
         if (options.LianLi.UseDeviceClock)
@@ -96,7 +101,7 @@ public sealed partial class LightingEngine(
             _loop.FrameSets = frameSets; // OPUS-GENERIC-SCENE-PACKAGES: the durable source is wired before active.json is applied
         }
 
-        var restored = LoadActive();
+        var restored = options.StartupRecoveryNotice is null ? LoadActive() : null;
         await _scan.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -140,7 +145,7 @@ public sealed partial class LightingEngine(
         }
 
         await adapters.StopAsync().ConfigureAwait(false);
-        if (options.Bringup.HoldBlackOnRelease)
+        if (options.Bringup.HoldBlackOnRelease || options.StartupRecoveryNotice is not null)
         {
             // addendum §4/§9: vendor services must not start and repaint the dark devices; takeover.json keeps every record
             LogRestoreDeferred();
@@ -173,7 +178,12 @@ public sealed partial class LightingEngine(
             var prepared = screens as IPreparedScreenSceneTransaction;
             void Commit()
             {
-                ValidateStrict(scene, nameof(scene));
+                var repair = options.StartupRecoveryNotice is not null;
+                if (repair && (!allowMissing || prepared is null))
+                    throw new InvalidOperationException("Repair requires a complete saved RGB + screen profile; live/partial scene edits are refused.");
+                // Repair is a durable offline restore, never a playback admission. Content/binding hashes stay strict;
+                // hardware readiness is checked on the next normal restart, with all output disabled in this process.
+                ValidateStrict(scene, nameof(scene), requireActive: !repair);
                 _loop.SetScene(scene, allowMissing, () =>
                 {
                     cancellationToken.ThrowIfCancellationRequested(); // cancellation stops admission, never interrupts a durable commit halfway

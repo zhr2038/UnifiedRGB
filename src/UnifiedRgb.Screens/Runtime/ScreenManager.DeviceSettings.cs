@@ -254,8 +254,11 @@ public sealed partial class ScreenManager : IScreenDeviceSettingsService
 
             try
             {
-                _settingsStore.Save(loaded);
-                LogDeviceSettingsMigrated(_log, loaded.Count, _settingsStore.Path);
+                if (!_options.StartupRecoveryReadOnly)
+                {
+                    _settingsStore.Save(loaded);
+                    LogDeviceSettingsMigrated(_log, loaded.Count, _settingsStore.Path);
+                }
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {

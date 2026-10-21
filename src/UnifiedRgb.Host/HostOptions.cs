@@ -7,6 +7,9 @@ namespace UnifiedRgb.Host;
 public sealed class UnifiedRgbOptions
 {
     public const string Section = "UnifiedRgb";
+    internal string? StartupRecoveryNotice { get; set; }
+    /// <summary>Additional local process-only blockers. Built-in vendor and legacy compatibility rules remain effective.</summary>
+    public UnifiedRgb.Transports.Process.ExternalProcessWriterOptions[] ExternalProcessWriters { get; set; } = [];
 
     public int Fps { get; set; } = 60;
 

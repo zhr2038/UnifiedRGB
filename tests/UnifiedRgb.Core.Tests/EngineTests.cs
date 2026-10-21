@@ -183,6 +183,56 @@ public class EngineTests
         writer.GetStats().Written.Should().Be(1);
     }
 
+    [Fact]
+    public async Task Blocked_writer_stop_is_bounded_refuses_overlap_and_can_finish_after_io_returns()
+    {
+        using var bus = new FrameBus();
+        var box = bus.Register(Gpu);
+        using var adapter = new BlockingAdapter();
+        var writer = new DeviceWriter(box, adapter, stopTimeout: TimeSpan.FromMilliseconds(150));
+        writer.Start();
+        bus.Publish(Gpu.Id, box.Back);
+        try
+        {
+            adapter.Entered.Wait(TimeSpan.FromSeconds(5)).Should().BeTrue();
+            var stop = () => writer.StopAsync();
+            await stop.Should().ThrowAsync<TimeoutException>().WithMessage("*I/O may still be in flight*");
+            writer.GetStats().Errors.Should().Be(1);
+            writer.GetStats().LastError.Should().Contain("did not stop");
+            var start = writer.Start;
+            start.Should().Throw<InvalidOperationException>().WithMessage("*second writer is refused*");
+            await stop.Should().ThrowAsync<TimeoutException>();
+            writer.GetStats().Errors.Should().Be(1, "the same failed shutdown is reported only once");
+        }
+        finally
+        {
+            adapter.Release.Set();
+            // The same stop task completes; it never starts a second hardware writer.
+            await Task.Delay(50);
+            await writer.StopAsync();
+        }
+        adapter.Writes.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Quiesce_timeout_keeps_pause_until_the_inflight_write_finishes()
+    {
+        using var bus = new FrameBus();
+        var box = bus.Register(Gpu);
+        using var adapter = new BlockingAdapter();
+        var writer = new DeviceWriter(box, adapter, stopTimeout: TimeSpan.FromMilliseconds(100));
+        bus.Publish(Gpu.Id, box.Back);
+        var draining = Task.Run(writer.DrainOnce);
+        try
+        {
+            adapter.Entered.Wait(TimeSpan.FromSeconds(5)).Should().BeTrue();
+            var quiesce = writer.Quiesce;
+            quiesce.Should().Throw<TimeoutException>();
+            writer.Paused.Should().BeTrue();
+        }
+        finally { adapter.Release.Set(); await draining; writer.Dispose(); }
+    }
+
     private sealed class BlockingAdapter : IDeviceAdapter, IDisposable
     {
         private int _writes;

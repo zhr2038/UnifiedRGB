@@ -483,6 +483,29 @@ public class MsiNv5000AdapterTests
 
     private static string Hex(Rgb[] records) => Convert.ToHexString(Nv5000Frames.Frame(records).AsSpan(2));
 
+    [Fact]
+    public async Task Release_quiet_period_does_not_hold_the_group_lock_or_admit_another_frame()
+    {
+        using var sleeping = new ManualResetEventSlim();
+        using var resume = new ManualResetEventSlim();
+        var adapter = new MsiNv5000Adapter(_nv, new MsiGpuOptions { ControlVerified = true }, time: _time,
+            sleep: _ => { sleeping.Set(); resume.Wait(TimeSpan.FromSeconds(5)).Should().BeTrue(); });
+        var descriptor = (await adapter.DiscoverAsync(default)).Single();
+        _nv.Reads.Enqueue((0, [0x91, 0x50, 0x00, 0x09], 4));
+        await adapter.OpenAsync(descriptor.Id, default);
+        var releasing = Task.Run(() => adapter.CloseAsync(descriptor.Id));
+        try
+        {
+            sleeping.Wait(TimeSpan.FromSeconds(5)).Should().BeTrue();
+            var before = _nv.Log.Count;
+            var writing = Task.Run(() => adapter.WriteFrame(descriptor.Id, [[Rgb.White]]));
+            (await writing.WaitAsync(TimeSpan.FromSeconds(1))).Should().BeFalse("release reserves the device, rather than blocking other callers on its sleep");
+            _nv.Log.Count.Should().Be(before, "no frame can violate the quiet period");
+        }
+        finally { resume.Set(); await releasing; await adapter.DisposeAsync(); }
+        _nv.Log.Count(l => l == Release).Should().Be(1);
+    }
+
     private static long Ms(int ms) => ms * 1000L;
 
     private async Task<(MsiNv5000Adapter Adapter, ControllerDescriptor Descriptor)> Make(MsiGpuOptions options, INativeMapSource? maps = null)

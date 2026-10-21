@@ -15,7 +15,7 @@ public static class ControllerStates
 /// <summary>
 /// One discovered controller. <c>ControlVerified</c> (NATIVE design §2/§6) is false for a native controller whose class gate
 /// has not been set after the morning E3c: discoverable and openable by a bring-up session only, never a scene writer.
-/// Older Hosts omit it, which reads as true (they have no native adapters).
+/// Older Hosts may omit it; missing verification is displayed conservatively as unverified. The Host remains the write gate.
 /// </summary>
 public sealed record ControllerDto(
     string Id,
@@ -28,4 +28,4 @@ public sealed record ControllerDto(
     int MaxFps,
     string State,
     string? BlockedBy,
-    bool ControlVerified = true);
+    bool ControlVerified = false);

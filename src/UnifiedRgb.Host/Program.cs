@@ -18,7 +18,8 @@ if (args.Length == 1 && args[0] is "--register-task" or "--unregister-task" or "
         case "--unregister-task":
             return ScheduledTaskInstaller.Unregister();
         default:
-            using (var ownership = new HardwareHostLease())
+            if (!HardwareHostLease.TryAcquire(out var ownership, out var failure)) { Console.Error.WriteLine(failure); return 2; }
+            using (ownership)
             {
             var cfg = new ConfigurationBuilder().SetBasePath(AppContext.BaseDirectory).AddJsonFile("appsettings.json", optional: true).Build();
             var o = new UnifiedRgbOptions();
@@ -59,6 +60,7 @@ try
 catch (Exception ex)
 #pragma warning restore CA1031
 {
+    hardwareOwnership.RetainUntilProcessExit(); // a timed-out writer must never overlap a replacement Host before process termination
     Log.Fatal(ex, "Host terminated unexpectedly");
     return 1;
 }

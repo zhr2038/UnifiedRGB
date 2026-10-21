@@ -64,6 +64,9 @@
         <Border Grid.Row="2" Background="#12171F" BorderBrush="{StaticResource LineBrush}" BorderThickness="0,1,0,0" Padding="22,0"><DockPanel LastChildFill="False" VerticalAlignment="Center">
             <TextBlock Text="{Binding Studio.Updated}" FontSize="12" Foreground="{StaticResource MutedBrush}"/><TextBlock DockPanel.Dock="Right" Text="{Binding Studio.Written}" FontSize="12" Foreground="{StaticResource MutedBrush}"/><TextBlock DockPanel.Dock="Right" Text="{Binding Studio.Clock}" FontSize="12" FontFamily="Consolas" Margin="0,0,24,0" Foreground="{StaticResource MutedBrush}"/>
         </DockPanel></Border>
+        <Border x:Name="FaultNotice" Grid.Row="1" Panel.ZIndex="100" Visibility="Collapsed" VerticalAlignment="Top" Margin="24" Padding="18,14" CornerRadius="8" Background="#351E29" BorderBrush="#D87A98" BorderThickness="1" AutomationProperties.LiveSetting="Assertive">
+            <StackPanel><TextBlock Text="界面需要重启" Foreground="#FFF2F5" FontWeight="SemiBold" FontSize="16"/><TextBlock x:Name="FaultNoticeText" Foreground="#FFF2F5" TextWrapping="Wrap" Margin="0,8,0,0"/></StackPanel>
+        </Border>
     </Grid></Border>
 </Window>
 

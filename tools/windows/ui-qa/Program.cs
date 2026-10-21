@@ -111,6 +111,20 @@ internal static class Program
             await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
             if (!baseline && Get("--verify", "false") == "true")
                 await UiQaChecks.RunAsync(window, current, vm, service, record + ".checks.json", Get("--verify-writes", "false") == "true");
+            if (Get("--fault", "false") == "true")
+            {
+                if (window is not MainWindow shell) throw new InvalidOperationException("Fault QA needs --shell=true.");
+                var draft = vm.Background;
+                shell.ShowFaultState(UiExceptionCoordinator.FaultMessage);
+                await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+                var notice = (Border)shell.FindName("FaultNotice");
+                var text = (TextBlock)shell.FindName("FaultNoticeText");
+                var pages = (UIElement)shell.FindName("PageHost");
+                if (pages.IsEnabled || !notice.IsVisible || text.Text != UiExceptionCoordinator.FaultMessage || vm.Background != draft)
+                    throw new InvalidOperationException("Unsafe UI fault must remain visible, disable page input and preserve draft state.");
+                File.WriteAllText(record + ".fault-check.json", JsonSerializer.Serialize(new { Passed = true, PageEnabled = pages.IsEnabled,
+                    NoticeVisible = notice.IsVisible, Message = text.Text, DraftPreserved = vm.Background == draft, service.Writes, Errors = errors }));
+            }
             timer.Start(); SaveMetrics(window, vm, service, baseline, scenario, record, errors);
             if (Get("--diagnostic-render", "false") == "true")
             {

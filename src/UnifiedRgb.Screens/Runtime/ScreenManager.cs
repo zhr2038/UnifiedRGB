@@ -725,7 +725,7 @@ public sealed partial class ScreenManager : IScreenService, IScreenSceneBinding,
         }
 
         SceneStateFiles.Recover(_stateRoot);
-        var persisted = _sceneStore.Load();
+        var persisted = _options.StartupRecoveryReadOnly ? new ScreenSceneDto([]) : _sceneStore.Load();
         LoadDeviceSettingsHeld(persisted);
         _scene = NormalizeHeld(persisted);
     }

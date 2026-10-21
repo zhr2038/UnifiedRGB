@@ -18,9 +18,20 @@ public sealed class OpenRgbSupervisorOptions
     /// <summary>Headless detector configuration, copied to &lt;ConfigDirectory&gt;/OpenRGB.json before every launch.</summary>
     public string ConfigTemplate { get; set; } = Path.Combine(AppContext.BaseDirectory, "openrgb-headless.json");
 
-    public string ConfigDirectory { get; set; } = Path.Combine(Path.GetTempPath(), "UnifiedRgb", "openrgb");
+    public string ConfigDirectory { get; set; } = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "UnifiedRgb", "openrgb");
 
     public int Port { get; set; } = TcpSdkTransport.DefaultPort;
+    public int MaxConsecutiveStarts { get; set; } = 5;
+    public TimeSpan InitialRestartDelay { get; set; } = TimeSpan.FromMilliseconds(250);
+    public TimeSpan MaximumRestartDelay { get; set; } = TimeSpan.FromSeconds(10);
+    public TimeSpan StablePeriod { get; set; } = TimeSpan.FromSeconds(30);
+}
+
+public sealed class OpenRgbRestartLimitException : InvalidOperationException
+{
+    public OpenRgbRestartLimitException() { }
+    public OpenRgbRestartLimitException(string message) : base(message) { }
+    public OpenRgbRestartLimitException(string message, Exception innerException) : base(message, innerException) { }
 }
 
 public interface IOwnedProcess : IDisposable
@@ -67,16 +78,26 @@ public sealed partial class OpenRgbProcessSupervisor : IDisposable
     private readonly ILogger _logger;
     private readonly object _gate = new();
     private IOwnedProcess? _process;
+    private readonly TimeProvider _time;
+    private long _startedAt, _nextAttempt;
+    private int _consecutiveStarts;
+    private bool _disposed;
+    private bool _hasLaunched;
 
-    public OpenRgbProcessSupervisor(OpenRgbSupervisorOptions options, IProcessLauncher launcher, ProcessScanner? scanner = null, ILogger? logger = null)
+    public OpenRgbProcessSupervisor(OpenRgbSupervisorOptions options, IProcessLauncher launcher, ProcessScanner? scanner = null, ILogger? logger = null, TimeProvider? time = null)
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _launcher = launcher ?? throw new ArgumentNullException(nameof(launcher));
         _scanner = scanner;
         _logger = logger ?? NullLogger.Instance;
+        _time = time ?? TimeProvider.System;
+        if (options.MaxConsecutiveStarts is < 1 or > 20 || options.InitialRestartDelay < TimeSpan.Zero
+            || options.MaximumRestartDelay < options.InitialRestartDelay || options.MaximumRestartDelay > TimeSpan.FromMinutes(1)
+            || options.StablePeriod <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(options));
     }
 
     public int Restarts { get; private set; }
+    public string? LastFailure { get; private set; }
 
     public bool IsRunning
     {
@@ -128,14 +149,42 @@ public sealed partial class OpenRgbProcessSupervisor : IDisposable
     {
         lock (_gate)
         {
+            ObjectDisposedException.ThrowIf(_disposed, this);
             if (_process is { HasExited: false })
             {
+                if (_time.GetElapsedTime(_startedAt) >= _options.StablePeriod) { _consecutiveStarts = 0; _nextAttempt = 0; LastFailure = null; }
                 return false;
             }
 
-            var restarting = _process is not null;
+            var restarting = _hasLaunched;
             ReleaseProcess();
-            _process = Launch();
+            if (_consecutiveStarts >= _options.MaxConsecutiveStarts)
+                throw new OpenRgbRestartLimitException(LastFailure = $"OpenRGB stopped after {_consecutiveStarts} consecutive starts without observed stability. Restart the optional adapter explicitly after resolving the cause.");
+            var now = _time.GetTimestamp();
+            if (now < _nextAttempt)
+                throw new IOException(LastFailure = $"OpenRGB restart backoff: {1000.0 * (_nextAttempt - now) / _time.TimestampFrequency:0} ms remaining.");
+            _consecutiveStarts++;
+            var delay = Math.Min(_options.MaximumRestartDelay.TotalMilliseconds,
+                _options.InitialRestartDelay.TotalMilliseconds * Math.Pow(2, Math.Max(0, _consecutiveStarts - 2)));
+            try { _process = Launch(); }
+            catch (OpenRgbBinaryRejectedException ex)
+            {
+                // No process was started. Keep pin failures explicit even if the owner repairs the hash file immediately.
+                _consecutiveStarts--;
+                _nextAttempt = 0;
+                LastFailure = ex.Message;
+                throw;
+            }
+            catch
+            {
+                _nextAttempt = now + (long)(delay * _time.TimestampFrequency / 1000);
+                LastFailure = $"OpenRGB launch attempt {_consecutiveStarts} failed; retry is bounded by backoff and the start limit.";
+                throw;
+            }
+            _startedAt = _time.GetTimestamp();
+            _hasLaunched = true;
+            _nextAttempt = _consecutiveStarts > 1 ? _startedAt + (long)(delay * _time.TimestampFrequency / 1000) : 0;
+            LastFailure = null;
             _scanner?.RegisterOwnedProcess(_process.Id);
             if (restarting)
             {
@@ -161,10 +210,11 @@ public sealed partial class OpenRgbProcessSupervisor : IDisposable
             }
 
             ReleaseProcess();
+            _consecutiveStarts = 0; _nextAttempt = 0; LastFailure = null;
         }
     }
 
-    public void Dispose() => Stop();
+    public void Dispose() { lock (_gate) { if (_disposed) return; Stop(); _disposed = true; } }
 
     private IOwnedProcess Launch()
     {

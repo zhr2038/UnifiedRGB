@@ -203,6 +203,57 @@ public sealed class OpenRgbSupervisorTests : IDisposable
 
     private static string Sha(string path) => Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path)));
 
+    [Fact]
+    public void Crash_loop_has_monotonic_backoff_and_a_terminal_start_budget()
+    {
+        File.WriteAllText(HashFile, Sha(Exe) + "  OpenRGB.exe\n");
+        var time = new SupervisorClock();
+        var options = Options;
+        options.MaxConsecutiveStarts = 3;
+        using var sup = new OpenRgbProcessSupervisor(options, _launcher, time: time);
+        sup.EnsureRunning().Should().BeTrue();
+        _launcher.Started[^1].Exited = true;
+        sup.EnsureRunning().Should().BeTrue();
+        _launcher.Started[^1].Exited = true;
+        var start = sup.EnsureRunning;
+        start.Should().Throw<IOException>().WithMessage("*backoff*");
+        _launcher.Started.Should().HaveCount(2);
+        time.Advance(TimeSpan.FromSeconds(1));
+        sup.EnsureRunning().Should().BeTrue();
+        sup.Restarts.Should().Be(2, "backoff must not lose restart diagnostics");
+        _launcher.Started[^1].Exited = true;
+        start.Should().Throw<OpenRgbRestartLimitException>();
+        time.Advance(TimeSpan.FromHours(1));
+        start.Should().Throw<OpenRgbRestartLimitException>();
+        _launcher.Started.Should().HaveCount(3);
+        sup.Stop();
+        sup.EnsureRunning().Should().BeTrue("explicit stop resets the bounded budget");
+    }
+
+    [Fact]
+    public void Observed_stable_process_resets_the_crash_budget()
+    {
+        File.WriteAllText(HashFile, Sha(Exe) + "  OpenRGB.exe\n");
+        var time = new SupervisorClock();
+        var options = Options;
+        options.MaxConsecutiveStarts = 1;
+        using var sup = new OpenRgbProcessSupervisor(options, _launcher, time: time);
+        sup.EnsureRunning().Should().BeTrue();
+        time.Advance(options.StablePeriod);
+        sup.EnsureRunning().Should().BeFalse();
+        _launcher.Started[^1].Exited = true;
+        sup.EnsureRunning().Should().BeTrue();
+    }
+
+    private sealed class SupervisorClock : TimeProvider
+    {
+        private long _timestamp;
+        public override long TimestampFrequency => 1000;
+        public override long GetTimestamp() => _timestamp;
+        public override DateTimeOffset GetUtcNow() => throw new InvalidOperationException("Only monotonic time is valid.");
+        public void Advance(TimeSpan duration) => _timestamp += (long)duration.TotalMilliseconds;
+    }
+
     private sealed class FakeSnapshot : ISystemSnapshot
     {
         public List<ProcessInfo> Procs { get; } = [];
