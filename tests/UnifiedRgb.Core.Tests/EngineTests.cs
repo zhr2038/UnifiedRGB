@@ -166,10 +166,10 @@ public class EngineTests
         using var adapter = new BlockingAdapter();
         using var writer = new DeviceWriter(box, adapter);
         bus.Publish(Gpu.Id, box.Back);
-        var draining = Task.Run(writer.DrainOnce);
+        var draining = Task.Factory.StartNew(writer.DrainOnce, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
         adapter.Entered.Wait(TimeSpan.FromSeconds(5)).Should().BeTrue("the first write is in flight");
 
-        var quiesce = Task.Run(writer.Quiesce);
+        var quiesce = Task.Factory.StartNew(writer.Quiesce, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
         (await Task.WhenAny(quiesce, Task.Delay(200))).Should().NotBeSameAs(quiesce, "Quiesce returns only after the in-flight write");
         writer.Paused.Should().BeTrue("the pause is visible at once");
         adapter.Release.Set();
@@ -222,7 +222,7 @@ public class EngineTests
         using var adapter = new BlockingAdapter();
         var writer = new DeviceWriter(box, adapter, stopTimeout: TimeSpan.FromMilliseconds(100));
         bus.Publish(Gpu.Id, box.Back);
-        var draining = Task.Run(writer.DrainOnce);
+        var draining = Task.Factory.StartNew(writer.DrainOnce, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
         try
         {
             adapter.Entered.Wait(TimeSpan.FromSeconds(5)).Should().BeTrue();
