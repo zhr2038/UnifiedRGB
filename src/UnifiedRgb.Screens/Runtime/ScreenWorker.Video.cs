@@ -25,7 +25,7 @@ internal sealed partial class ScreenWorker
         if (_device.Family.Family != ScreenFamily.Turzx || !_ctx.NativeVideoAllowed(_device.Id))
             throw new ScreenEncodeException("Native H.264 is not individually verified for this TURZX (or an explicit trial is not active).");
         var native = PixelOps.Rotate(canvas, _ctx.Options.TurzxLandscapeRotation);
-        _videoEncoder ??= new MfH264IntraEncoder(native.Width, native.Height);
+        _videoEncoder ??= new MfH264IntraEncoder(native.Width, native.Height, fullRange: true);
         var bytes = _videoEncoder.Encode(native);
         return new(Protocol.TurzxVideoProtocol.DataCommand, bytes, "H.264 all-IDR Baseline; host/shared-clock-selected picture; live PNG overlay");
     }
@@ -91,9 +91,9 @@ internal sealed partial class ScreenWorker
     {
         if (family.Family != ScreenFamily.Turzx) throw new ScreenEncodeException("Native H.264 is only supported on verified TURZX.");
         var native = PixelOps.Rotate(background, internalRotation);
-        using var encoder = new MfH264IntraEncoder(native.Width, native.Height);
+        using var encoder = new MfH264IntraEncoder(native.Width, native.Height, fullRange: true);
         var data = encoder.Encode(native);
-        var decoded = MfH264IntraEncoder.Decode(data, native.Width, native.Height);
+        var decoded = MfH264IntraEncoder.Decode(data, native.Width, native.Height, fullRange: true);
         var shown = PixelOps.Rotate(decoded, 360 - internalRotation);
         var layer = RenderVideoOverlay(new OverlayRenderer(), family, assignment, telemetry, now);
         if (layer is not null)

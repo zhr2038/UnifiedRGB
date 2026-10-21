@@ -14,17 +14,18 @@ internal sealed class MfH264IntraEncoder : IDisposable
 {
     internal const int MaxEncodedBytes = 2 * 1024 * 1024;
     private readonly int _width, _height;
+    private readonly bool _fullRange;
     private readonly IMFTransform _encoder;
     private readonly object _codecOwner;
     private readonly IMfCodecApi _codec;
     private long _index;
     private bool _disposed;
 
-    public MfH264IntraEncoder(int width, int height)
+    public MfH264IntraEncoder(int width, int height, bool fullRange = false)
     {
         if (width < 2 || height < 2 || (width & 1) != 0 || (height & 1) != 0 || (long)width * height > 1920L * 1920)
             throw new ArgumentOutOfRangeException(nameof(width), "H.264 needs an even, bounded raster.");
-        _width = width; _height = height;
+        _width = width; _height = height; _fullRange = fullRange;
         MFStartup().CheckError();
         IMFTransform? transform = null; object? owner = null;
         try
@@ -37,11 +38,11 @@ internal sealed class MfH264IntraEncoder : IDisposable
             Set(codec, "9c27891a-ed7a-40e1-88e8-b22727a024ee", true); // AVLowLatencyMode: one input -> one output
             Set(codec, "1c0608e9-370c-4710-8a58-cb6181c42423", (uint)3); // quality VBR
             Set(codec, "fcbf57a3-7ea5-4b0c-9644-69b40c39c391", (uint)95); // AVEncCommonQuality
-            using var output = Type(VideoFormatGuids.H264, width, height);
+            using var output = Type(VideoFormatGuids.H264, width, height, fullRange);
             output.Set(MediaTypeAttributeKeys.AvgBitrate, (uint)24_000_000).CheckError();
             output.Set(MediaTypeAttributeKeys.Mpeg2Profile, (uint)66).CheckError();
             transform.SetOutputType(0, output, 0);
-            using var input = Type(VideoFormatGuids.NV12, width, height);
+            using var input = Type(VideoFormatGuids.NV12, width, height, fullRange);
             transform.SetInputType(0, input, 0);
             Start(transform);
             _encoder = transform; _codecOwner = owner; _codec = codec;
@@ -57,11 +58,11 @@ internal sealed class MfH264IntraEncoder : IDisposable
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         if (frame.Width != _width || frame.Height != _height) throw new ArgumentException("H.264 raster changed.", nameof(frame));
-        var nv12 = ToNv12(frame);
+        var nv12 = ToNv12(frame, _fullRange);
         using var sample = Sample(nv12, _index++);
         Set(_codec, "398c1b98-8353-475a-9ef2-8f265d260345", (uint)1); // ForceKeyFrame is VT_UI4, NOT VT_BOOL
         _encoder.ProcessInput(0, sample, 0);
-        var bytes = Output(_encoder, MaxEncodedBytes);
+        var bytes = H264ColourMetadata.SpecifyCanvasColour(Output(_encoder, MaxEncodedBytes), _fullRange);
         var kinds = H264AnnexB.Types(bytes);
         if (!kinds.Contains(7) || !kinds.Contains(8) || !kinds.Contains(5) || kinds.Any(t => t is >= 1 and <= 4))
             throw new InvalidDataException("H.264 encoder did not produce an independently decodable SPS/PPS/IDR access unit.");
@@ -69,7 +70,7 @@ internal sealed class MfH264IntraEncoder : IDisposable
     }
 
     /// <summary>Preview-only decode of the exact encoded access unit, through the Windows inbox decoder.</summary>
-    public static PixelFrame Decode(byte[] data, int width, int height)
+    public static PixelFrame Decode(byte[] data, int width, int height, bool fullRange = false)
     {
         if (data.Length > MaxEncodedBytes || width < 2 || height < 2 || (long)width * height > 1920L * 1920)
             throw new ArgumentException("H.264 preview exceeds its bounds.");
@@ -77,22 +78,41 @@ internal sealed class MfH264IntraEncoder : IDisposable
         try
         {
             using var decoder = MfCodecNative.Create(new("62ce7e72-4c71-4d20-b15d-452831a87d9d"));
-            using var input = Type(VideoFormatGuids.H264, width, height);
+            using var input = Type(VideoFormatGuids.H264, width, height, fullRange);
             decoder.SetInputType(0, input, 0);
-            using var output = Type(VideoFormatGuids.NV12, width, height);
+            using var output = Type(VideoFormatGuids.NV12, width, height, fullRange);
             decoder.SetOutputType(0, output, 0);
             Start(decoder);
             using var sample = Sample(data, 0);
             decoder.ProcessInput(0, sample, 0);
             decoder.ProcessMessage((TMessageType)0x10000002, 0); // NOTIFY_END_OF_STREAM
             decoder.ProcessMessage((TMessageType)1, 0); // COMMAND_DRAIN: the single preview picture needs no successor
-            var bytes = Output(decoder, checked(width * height * 2));
-            return FromNv12(bytes, width, height);
+            byte[] bytes;
+            try { bytes = Output(decoder, checked(width * height * 2)); }
+            catch (COMException ex) when (ex.HResult == unchecked((int)0xC00D6D61))
+            {
+                // Explicit SPS colour information may complete the decoder's output type only after the first picture.
+                // Accept one bounded renegotiation, with the same raster and NV12 matrix/range used by FromNv12.
+                var configured = false;
+                for (var i = 0; i < 16; i++)
+                {
+                    using var available = decoder.GetOutputAvailableType(0, i);
+                    if (available.GetGUID(MediaTypeAttributeKeys.Subtype) != VideoFormatGuids.NV12) continue;
+                    var size = available.GetUInt64(MediaTypeAttributeKeys.FrameSize);
+                    if ((size >> 32) != (uint)width || (uint)size != (uint)height) throw new InvalidDataException("H.264 preview changed its raster.");
+                    available.Set(MediaTypeAttributeKeys.YuvMatrix, (uint)1).CheckError();
+                    available.Set(MediaTypeAttributeKeys.VideoNominalRange, fullRange ? (uint)1 : 2).CheckError();
+                    decoder.SetOutputType(0, available, 0); configured = true; break;
+                }
+                if (!configured) throw new InvalidDataException("H.264 decoder has no matching NV12 output.");
+                bytes = Output(decoder, checked(width * height * 2));
+            }
+            return FromNv12(bytes, width, height, fullRange);
         }
         finally { MFShutdown().CheckError(); }
     }
 
-    private static IMFMediaType Type(Guid subtype, int width, int height)
+    private static IMFMediaType Type(Guid subtype, int width, int height, bool fullRange)
     {
         var type = MFCreateMediaType();
         try
@@ -105,8 +125,8 @@ internal sealed class MfH264IntraEncoder : IDisposable
             type.Set(MediaTypeAttributeKeys.InterlaceMode, (uint)2).CheckError();
             type.Set(MediaTypeAttributeKeys.YuvMatrix, (uint)1).CheckError(); // BT.709
             type.Set(MediaTypeAttributeKeys.VideoPrimaries, (uint)2).CheckError();
-            type.Set(MediaTypeAttributeKeys.TransferFunction, (uint)5).CheckError();
-            type.Set(MediaTypeAttributeKeys.VideoNominalRange, (uint)2).CheckError(); // 16..235
+            type.Set(MediaTypeAttributeKeys.TransferFunction, (uint)7).CheckError(); // compositor pixels are sRGB
+            type.Set(MediaTypeAttributeKeys.VideoNominalRange, fullRange ? (uint)1 : 2).CheckError(); // 0..255 or 16..235, matching the actual samples
             return type;
         }
         catch { type.Dispose(); throw; }
@@ -155,7 +175,7 @@ internal sealed class MfH264IntraEncoder : IDisposable
 
     private static void Set(IMfCodecApi codec, string key, object value) => Marshal.ThrowExceptionForHR(codec.SetValue(new Guid(key), ref value));
 
-    internal static byte[] ToNv12(PixelFrame frame)
+    internal static byte[] ToNv12(PixelFrame frame, bool fullRange = false)
     {
         var w = frame.Width; var h = frame.Height; var p = frame.Pixels;
         var data = new byte[checked(w * h * 3 / 2)];
@@ -167,29 +187,36 @@ internal sealed class MfH264IntraEncoder : IDisposable
             for (var xx = 0; xx < 2; xx++)
             {
                 var i = ((y + yy) * w + x + xx) * 4; int b = p[i], g = p[i + 1], r = p[i + 2];
-                data[(y + yy) * w + x + xx] = (byte)Math.Clamp(16 + ((47 * r + 157 * g + 16 * b + 128) >> 8), 16, 235);
+                data[(y + yy) * w + x + xx] = fullRange
+                    ? (byte)Math.Clamp((54 * r + 183 * g + 19 * b + 128) >> 8, 0, 255)
+                    : (byte)Math.Clamp(16 + ((47 * r + 157 * g + 16 * b + 128) >> 8), 16, 235);
                 sumR += r; sumG += g; sumB += b;
             }
             var r4 = (sumR + 2) / 4; var g4 = (sumG + 2) / 4; var b4 = (sumB + 2) / 4;
             var uv = w * h + y / 2 * w + x;
-            data[uv] = (byte)Math.Clamp(128 + ((-26 * r4 - 87 * g4 + 112 * b4 + 128) >> 8), 16, 240);
-            data[uv + 1] = (byte)Math.Clamp(128 + ((112 * r4 - 102 * g4 - 10 * b4 + 128) >> 8), 16, 240);
+            data[uv] = fullRange ? (byte)Math.Clamp(128 + ((-29 * r4 - 99 * g4 + 128 * b4 + 128) >> 8), 0, 255)
+                : (byte)Math.Clamp(128 + ((-26 * r4 - 87 * g4 + 112 * b4 + 128) >> 8), 16, 240);
+            data[uv + 1] = fullRange ? (byte)Math.Clamp(128 + ((128 * r4 - 116 * g4 - 12 * b4 + 128) >> 8), 0, 255)
+                : (byte)Math.Clamp(128 + ((112 * r4 - 102 * g4 - 10 * b4 + 128) >> 8), 16, 240);
         }
         return data;
     }
 
-    private static PixelFrame FromNv12(byte[] data, int w, int h)
+    private static PixelFrame FromNv12(byte[] data, int w, int h, bool fullRange)
     {
         if (data.Length < w * h * 3L / 2) throw new InvalidDataException("Short decoded H.264 raster.");
         var frame = new PixelFrame(w, h);
         for (var y = 0; y < h; y++)
         for (var x = 0; x < w; x++)
         {
-            var c = data[y * w + x] - 16; var uv = w * h + y / 2 * w + (x & ~1);
+            var luminance = data[y * w + x]; var c = luminance - 16; var uv = w * h + y / 2 * w + (x & ~1);
             var u = data[uv] - 128; var v = data[uv + 1] - 128; var i = (y * w + x) * 4;
-            frame.Pixels[i] = (byte)Math.Clamp((298 * c + 541 * u + 128) >> 8, 0, 255);
-            frame.Pixels[i + 1] = (byte)Math.Clamp((298 * c - 55 * u - 136 * v + 128) >> 8, 0, 255);
-            frame.Pixels[i + 2] = (byte)Math.Clamp((298 * c + 459 * v + 128) >> 8, 0, 255);
+            frame.Pixels[i] = fullRange ? (byte)Math.Clamp(luminance + ((475 * u + 128) >> 8), 0, 255)
+                : (byte)Math.Clamp((298 * c + 541 * u + 128) >> 8, 0, 255);
+            frame.Pixels[i + 1] = fullRange ? (byte)Math.Clamp(luminance - ((48 * u + 120 * v + 128) >> 8), 0, 255)
+                : (byte)Math.Clamp((298 * c - 55 * u - 136 * v + 128) >> 8, 0, 255);
+            frame.Pixels[i + 2] = fullRange ? (byte)Math.Clamp(luminance + ((403 * v + 128) >> 8), 0, 255)
+                : (byte)Math.Clamp((298 * c + 459 * v + 128) >> 8, 0, 255);
             frame.Pixels[i + 3] = 255;
         }
         return frame;

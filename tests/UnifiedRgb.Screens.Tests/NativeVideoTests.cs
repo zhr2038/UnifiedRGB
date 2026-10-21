@@ -152,7 +152,8 @@ public sealed class NativeVideoTests
         var asset=await rig.Manager.UploadScreenAssetAsync(new("native clock fixture",Convert.ToBase64String(gif)));
         var scene=new ScreenSceneDto([new(Devices.Turzx.Id,asset.Id,Overlay:"dashboard",Fps:15,TimelineId:"shared-clock-test")]);
         await rig.Manager.SetScreenSceneAsync(scene);rig.Manager.Start();
-        await Wait.UntilAsync(()=>rig.Opener.Channels.Any(c=>!c.Writes.IsEmpty),"normal image first");
+        await Wait.UntilAsync(async () => (await rig.ScreenAsync(Devices.Turzx.Id)).State == ScreenStates.Running,
+            "normal image transaction committed before starting a native trial");
         var scenePath=Path.Combine(rig.DataDirectory,"screens","scene.json");var saved=File.ReadAllBytes(scenePath);
         var trial=await rig.Manager.BeginNativeVideoTrialAsync(new(Devices.Turzx.Id,60000,30));
         byte[]? Red=null;
