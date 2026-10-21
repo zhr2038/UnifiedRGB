@@ -6,6 +6,7 @@
   <ItemGroup>
     <ProjectReference Include="../UnifiedRgb.Contracts/UnifiedRgb.Contracts.csproj" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
+    <PackageReference Include="Vortice.MediaFoundation" />
   </ItemGroup>
   <ItemGroup>
     <!-- UseWPF drops System.IO from the implicit usings -->
@@ -15,5 +16,6 @@
   <ItemGroup>
     <!-- MIT attribution for the TURZX framing travels with every output that contains this assembly -->
     <None Include="THIRD-PARTY-NOTICES.md" Link="THIRD-PARTY-NOTICES.Screens.md" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="Licenses/*.txt" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

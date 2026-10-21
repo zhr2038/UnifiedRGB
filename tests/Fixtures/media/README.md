@@ -1,0 +1,11 @@
+# Generic video fixture
+
+`h264-30.mp4`: 64×64, 60 frames, 2000 ms, H.264 SDR 4:2:0, no audio. Generated offline from an abstract test pattern:
+
+```text
+ffmpeg -f lavfi -i testsrc2=size=64x64:rate=30:duration=2 -c:v libx264 -g 30 -crf 18 -pix_fmt yuv420p h264-30.mp4
+```
+
+FFmpeg is only a fixture authoring tool, not a product or test-runtime dependency. The tests decode using Windows Media Foundation.
+
+`h264-rotated.mp4` keeps exactly the same compressed samples and timing, with the track-header matrix changed to a standard 90-degree rotation. `h264-anamorphic.mp4` remuxes those samples with `-c copy -aspect 2:1`. They exercise explicit rejection of unsupported container presentation geometry; they are not themes or device media.

@@ -63,6 +63,8 @@ public sealed class ScreensOptions
     /// screen. Configuration only; nothing verifies or adds an id automatically.
     /// </summary>
     public string[] Indexed8VerifiedScreenIds { get; set; } = [];
+    /// <summary>Exact TURZX ids accepted for clock-driven all-IDR H.264 AND transparent live-overlay output. Empty by default.</summary>
+    public string[] NativeH264VerifiedScreenIds { get; set; } = [];
 
     public ScreenFamilyOptions For(ScreenFamily family) => family switch
     {

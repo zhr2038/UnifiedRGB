@@ -32,6 +32,7 @@ public sealed class PipeClient : IHostConnection, IAsyncDisposable
     private volatile ISceneLibraryService? _library;
     private volatile IScreenDeviceSettingsService? _screenSettings;
     private volatile IScreenPerformanceService? _screenPerformance;
+    private volatile IScreenVideoService? _screenVideo;
     private ConnectionState _state = ConnectionState.Disconnected;
 
     public PipeClient(string pipeName, PipeTrust trust = PipeTrust.ElevatedOwner)
@@ -72,6 +73,7 @@ public sealed class PipeClient : IHostConnection, IAsyncDisposable
     public IScreenDeviceSettingsService RequireScreenSettings() => _screenSettings ?? throw new InvalidOperationException("后台未连接。");
     public IScreenService RequireScreens() => _screens ?? throw new InvalidOperationException("后台未连接。");
     public IScreenPerformanceService RequireScreenPerformance() => _screenPerformance ?? throw new InvalidOperationException("后台未连接。");
+    public IScreenVideoService RequireScreenVideo() => _screenVideo ?? throw new InvalidOperationException("后台未连接。");
     public IScenePackageService RequirePackages() => _packages ?? throw new InvalidOperationException("后台未连接。");
     public ISceneLibraryService RequireLibrary() => _library ?? throw new InvalidOperationException("后台未连接。");
 
@@ -137,6 +139,7 @@ public sealed class PipeClient : IHostConnection, IAsyncDisposable
                 _library = library;
                 _screenSettings = screenSettings;
                 _screenPerformance = screenPerformance;
+                _screenVideo = rpc.Attach<IScreenVideoService>();
                 Connections++;
                 attempt = 0;
                 SetState(ConnectionState.Connected);
@@ -163,6 +166,7 @@ public sealed class PipeClient : IHostConnection, IAsyncDisposable
                 _library = null;
                 _screenSettings = null;
                 _screenPerformance = null;
+                _screenVideo = null;
                 await pipe.DisposeAsync().ConfigureAwait(false);
             }
 

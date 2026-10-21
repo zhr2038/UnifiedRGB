@@ -11,6 +11,24 @@ pack = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(pack)
 
 class AuthoringTests(unittest.TestCase):
+    def test_sample_does_not_silently_downgrade_a_video_schema(self):
+        with self.assertRaisesRegex(ValueError,"schema must be 1 or 2"):
+            pack.sample(self.root/"video",schema=3)
+        self.assertFalse((self.root/"video").exists())
+
+    def test_v3_mp4_is_explicit_and_source_media_is_unchanged(self):
+        video = Path(__file__).resolve().parents[2] / "tests" / "Fixtures" / "media" / "h264-30.mp4"
+        target = self.source / "screens" / "panel.mp4"
+        target.write_bytes(video.read_bytes())
+        self.edit(lambda m: m.update(schemaVersion=3, screens=[{"role":"video-panel","file":"screens/panel.mp4","durationMs":12000,"overlay":"dashboard","fit":"contain","fps":30}]))
+        before=target.read_bytes()
+        manifest,_=pack.prepare(self.source)
+        self.assertEqual(3,json.loads(manifest)["schemaVersion"])
+        self.assertEqual(before,target.read_bytes())
+        self.edit(lambda m:m.update(schemaVersion=2))
+        with self.assertRaises(ValueError): pack.prepare(self.source)
+        # This helper checks package structure; the Windows importer remains authoritative for video decoding and duration.
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -89,9 +107,9 @@ class AuthoringTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,"needs schemaVersion 2"): pack.build(self.source,self.root/"bad.zip")
 
     def test_unknown_schema_versions_fail_closed(self):
-        for version in (0,3,"2",2.0,True):
+        for version in (0,4,"2",2.0,True):
             self.edit(lambda m:m.update(schemaVersion=version))
-            with self.assertRaisesRegex(ValueError,"v1 or v2"): pack.build(self.source,self.root/"bad.zip")
+            with self.assertRaisesRegex(ValueError,"v1/v2/v3"): pack.build(self.source,self.root/"bad.zip")
 
 class RegionAuthoringTests(unittest.TestCase):
     def setUp(self):

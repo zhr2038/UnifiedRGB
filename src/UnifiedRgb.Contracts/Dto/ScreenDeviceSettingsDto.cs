@@ -6,7 +6,8 @@ namespace UnifiedRgb.Contracts.Dto;
 /// ("legacy" or "lossless-first-v1"). Indexed8Verified is read-only and computed from the Host configuration
 /// (ScreensOptions.Indexed8VerifiedScreenIds). The research-only palette token is refused even when this flag is true.
 /// </summary>
-public sealed record ScreenDeviceSettingsDto(string ScreenId, int Rotation, string EncodingQuality, bool Indexed8Verified);
+public sealed record ScreenDeviceSettingsDto(string ScreenId, int Rotation, string EncodingQuality, bool Indexed8Verified,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)] bool NativeH264Verified = false);
 
 /// <summary>An explicit save of one screen's local settings (see <see cref="ScreenDeviceSettingsDto"/>); no capability fields.</summary>
 public sealed record ScreenDeviceSettingsUpdateDto(string ScreenId, int Rotation = 0, string EncodingQuality = "legacy");

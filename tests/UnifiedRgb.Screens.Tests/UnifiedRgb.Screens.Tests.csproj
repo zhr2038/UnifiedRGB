@@ -11,6 +11,9 @@
   </ItemGroup>
   <ItemGroup>
     <Using Include="System.IO" />
+    <None Include="../Fixtures/media/h264-30.mp4" Link="Fixtures/h264-30.mp4" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../Fixtures/media/h264-rotated.mp4" Link="Fixtures/h264-rotated.mp4" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../Fixtures/media/h264-anamorphic.mp4" Link="Fixtures/h264-anamorphic.mp4" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../../src/UnifiedRgb.Screens/UnifiedRgb.Screens.csproj" />

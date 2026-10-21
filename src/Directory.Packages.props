@@ -12,6 +12,8 @@
     <PackageVersion Include="xunit.runner.visualstudio" Version="2.8.2" />
     <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
     <PackageVersion Include="StreamJsonRpc" Version="2.20.20" />
+    <!-- .NET 8 compatible MIT bindings; 3.8.x pulls System.Text.Json 9 into the existing Host/RPC stack. -->
+    <PackageVersion Include="Vortice.MediaFoundation" Version="3.6.2" />
     <PackageVersion Include="FluentAssertions" Version="6.12.2" />
   </ItemGroup>
 </Project>

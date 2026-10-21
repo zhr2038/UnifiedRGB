@@ -96,8 +96,8 @@
        <Slider x:Name="BrightnessSlider" Minimum="0" Maximum="100" Value="{Binding Brightness}" Style="{StaticResource ScreenPilot.Slider}" AutomationProperties.Name="图像亮度，百分比"/>
        <TextBlock Text="调整画面像素，不代表设备硬件背光。" Style="{StaticResource ScreenPilot.Caption}"/>
        <Label x:Name="FpsLabel" Content="目标刷新率 / fps" Target="{Binding ElementName=FpsEditor}" Style="{StaticResource ScreenPilot.Label}"/>
-       <TextBox x:Name="FpsEditor" Text="{Binding Fps, UpdateSourceTrigger=LostFocus, ValidatesOnExceptions=True}" Style="{StaticResource ScreenPilot.TextInput}" AutomationProperties.LabeledBy="{Binding ElementName=FpsLabel}" ToolTip="请输入 1～15 的整数；实际发送率见设备状态。"/>
-       <TextBlock Text="请输入 1～15 的整数。" Foreground="{DynamicResource ScreenPilot.Error}" FontSize="13" Margin="0,6,0,0" Visibility="{Binding ElementName=FpsEditor, Path=(Validation.HasError), Converter={StaticResource ScreenPilot.Visible}}"/>
+       <TextBox x:Name="FpsEditor" Text="{Binding Fps, UpdateSourceTrigger=LostFocus, ValidatesOnExceptions=True}" Style="{StaticResource ScreenPilot.TextInput}" AutomationProperties.LabeledBy="{Binding ElementName=FpsLabel}" ToolTip="请输入 1～60 的整数；这是发送上限，不会增加素材帧数。实际发送率见设备状态。"/>
+       <TextBlock Text="请输入 1～60 的整数。" Foreground="{DynamicResource ScreenPilot.Error}" FontSize="13" Margin="0,6,0,0" Visibility="{Binding ElementName=FpsEditor, Path=(Validation.HasError), Converter={StaticResource ScreenPilot.Visible}}"/>
        <CheckBox Content="启用此屏幕内容" IsChecked="{Binding Enabled}" Style="{StaticResource ScreenPilot.Check}" Margin="0,12,0,0"/>
       </StackPanel>
       <Border Height="1" Background="{DynamicResource ScreenPilot.Line}" Margin="0,20,0,16" Visibility="{Binding HasSelection, Converter={StaticResource ScreenPilot.Visible}}"/>
@@ -106,7 +106,7 @@
         <TextBlock Text="{Binding LocalDraftState}" Style="{StaticResource ScreenPilot.Caption}" Margin="0,10,0,0"/>
         <Label x:Name="RotationLabel" Content="安装方向" Target="{Binding ElementName=RotationPicker}" Style="{StaticResource ScreenPilot.Label}"/>
         <ComboBox x:Name="RotationPicker" ItemsSource="{Binding Rotations}" SelectedItem="{Binding Rotation}" ItemStringFormat="{}{0}°" Style="{StaticResource ScreenPilot.Combo}" IsEnabled="{Binding DeviceSettingsAvailable}" AutomationProperties.LabeledBy="{Binding ElementName=RotationLabel}"/>
-        <Label x:Name="QualityLabel" Content="PNG 编码质量" Target="{Binding ElementName=QualityPicker}" Style="{StaticResource ScreenPilot.Label}"/>
+        <Label x:Name="QualityLabel" Content="屏幕编码策略" Target="{Binding ElementName=QualityPicker}" Style="{StaticResource ScreenPilot.Label}"/>
         <ComboBox x:Name="QualityPicker" ItemsSource="{Binding EncodingQualities}" SelectedItem="{Binding EncodingQuality}" DisplayMemberPath="Name" Style="{StaticResource ScreenPilot.Combo}" IsEnabled="{Binding DeviceSettingsAvailable}" AutomationProperties.LabeledBy="{Binding ElementName=QualityLabel}"/>
         <Button Content="保存设备设置" Command="{Binding SaveDeviceSettingsCommand}" IsEnabled="{Binding CanSaveDeviceSettings}" Style="{StaticResource ScreenPilot.Button}" HorizontalAlignment="Left" Margin="0,12,0,0"/>
         <TextBlock Text="{Binding DeviceSettingsNote}" Style="{StaticResource ScreenPilot.Caption}" Margin="0,10,0,0"/>

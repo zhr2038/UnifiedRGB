@@ -24,7 +24,7 @@ public sealed record ScreenChoice(ScreenDeviceDto Dto)
 public sealed record AssetChoice(ScreenAssetDto? Dto)
 {
     public string Name => Dto?.Name ?? "纯色背景";
-    public string Detail => Dto is null ? "不使用图片" : $"{Dto.Width} × {Dto.Height} · {(Dto.Kind == "animation" ? $"{Dto.FrameCount} 帧动画" : "图片")}";
+    public string Detail => Dto is null ? "不使用图片" : $"{Dto.Width} × {Dto.Height} · {(Dto.Kind == "video" ? $"MP4 视频 · {Dto.FrameCount} 帧" : Dto.Kind == "animation" ? $"{Dto.FrameCount} 帧动画" : "图片")}";
 }
 public sealed record ValueChoice(string Id, string Name);
 
@@ -101,7 +101,7 @@ public sealed class ScreensViewModel : ObservableObject
     public ObservableCollection<AssetChoice> Assets { get; } = [];
     public IReadOnlyList<ValueChoice> Overlays { get; }
     public IReadOnlyList<ValueChoice> Fits { get; }
-    public IReadOnlyList<ValueChoice> EncodingQualities { get; }
+    public ObservableCollection<ValueChoice> EncodingQualities { get; }
     public AsyncCommand SaveDeviceSettingsCommand { get; }
     public bool DeviceSettingsDirty { get => _settingsDirty; private set { if (SetProperty(ref _settingsDirty, value)) UpdateSettingsState(); } }
     public bool CanSaveDeviceSettings => _settingsAvailable && Available && Selected is not null && DeviceSettingsDirty && !_savingSettings && !_restartingLcd;
@@ -339,7 +339,7 @@ public sealed class ScreensViewModel : ObservableObject
     public ScreenAssignmentDto Build()
     {
         if (Selected is null) throw new InvalidOperationException("请先选择屏幕。");
-        if (!double.IsFinite(Brightness) || Brightness is < 0 or > 100 || Fps is < 1 or > 15) throw new InvalidOperationException("亮度范围为 0～100%，刷新帧率范围为 1～15。");
+        if (!double.IsFinite(Brightness) || Brightness is < 0 or > 100 || Fps is < 1 or > 60) throw new InvalidOperationException("亮度范围为 0～100%，发送帧率范围为 1～60。发送上限不会增加素材帧数。");
         var overlay = Overlay?.Id ?? "none";
         var saved = SavedAssignment();
         var region = overlay == "dashboard" ? saved?.OverlayLayout : null;
@@ -381,7 +381,7 @@ public sealed class ScreensViewModel : ObservableObject
         var path = _chooseFile();
         if (path is null) return;
         var file = new FileInfo(path);
-        if (file.Length > 12 * 1024 * 1024) throw new InvalidOperationException("图片或 GIF 不可超过 12 MiB。");
+        if (file.Length > 12 * 1024 * 1024) throw new InvalidOperationException("图片、GIF 或 MP4 不可超过 12 MiB。MP4 支持 H.264 SDR，最长 30 秒，不播放声音。");
         var bytes = await File.ReadAllBytesAsync(path).ConfigureAwait(true);
         if (!CurrentConnection(epoch)) return;
         var version = _draftVersion;
@@ -471,9 +471,13 @@ public sealed class ScreensViewModel : ObservableObject
             try
             {
                 _savedRotation = value.Rotation; Rotation = value.Rotation;
+                var native = EncodingQualities.FirstOrDefault(q => q.Id == "h264-intra-v1");
+                if (native is not null) EncodingQualities.Remove(native);
+                if (value.NativeH264Verified || value.EncodingQuality == "h264-intra-v1")
+                    EncodingQualities.Add(new("h264-intra-v1", value.NativeH264Verified ? "原生 H.264 · 统一时钟 / 实时叠加" : "原生 H.264 · 本机验证不可用"));
                 EncodingQuality = EncodingQualities.FirstOrDefault(q => q.Id == value.EncodingQuality) ?? EncodingQualities[0];
                 _settingsAvailable = true; DeviceSettingsDirty = false;
-                DeviceSettingsNote = "方向与质量仅保存在本机。保色优先用于长条屏 PNG，复杂帧编码较慢；实时信息叠加也会影响缓存与帧率。调色板模式仍待设备验证，暂不提供。";
+                DeviceSettingsNote = "方向与质量仅保存在本机。保色优先用于长屏 PNG；原生 H.264 仅向实机验证过的长屏开放，仍按统一时钟取帧并叠加实时信息，背景为有损编码。调色板模式仍未开放。";
                 UpdateSettingsState();
             }
             finally { _loading = loading; }

@@ -80,9 +80,9 @@ public static class ScreenSceneValidator
             throw new ArgumentException($"{a.ScreenId}: brightness must be within 0..1.", nameof(a));
         }
 
-        if (a.Fps is < 1 or > 15)
+        if (a.Fps is < 1 or > 60)
         {
-            throw new ArgumentException($"{a.ScreenId}: fps must be within 1..15.", nameof(a));
+            throw new ArgumentException($"{a.ScreenId}: fps must be within 1..60.", nameof(a));
         }
 
         if (a.TimelineId is { } timeline && (timeline.Length is 0 or > MaxTimelineIdLength || !timeline.All(c => c is > ' ' and <= '~')))

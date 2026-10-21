@@ -51,7 +51,7 @@ public sealed class CompositionTests
                  {
                      new ScreenAssignmentDto("screen:h2:a", Rotation: 45),
                      new ScreenAssignmentDto("screen:h2:a", Brightness: 1.5),
-                     new ScreenAssignmentDto("screen:h2:a", Fps: 16),
+                     new ScreenAssignmentDto("screen:h2:a", Fps: 61),
                      new ScreenAssignmentDto("screen:h2:a", BackgroundColor: "red"),
                      new ScreenAssignmentDto("screen:h2:a", Overlay: "big"),
                      new ScreenAssignmentDto("screen:h2:a", Fit: "stretch"),

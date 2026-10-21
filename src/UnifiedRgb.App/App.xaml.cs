@@ -81,7 +81,7 @@ public partial class App : Application
             q => MessageBox.Show(q, "光域", MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes,
             () =>
             {
-                var dialog = new Microsoft.Win32.OpenFileDialog { Title = "导入屏幕背景或动画", Filter = "图片与 GIF 动画|*.png;*.jpg;*.jpeg;*.gif", Multiselect = false };
+                var dialog = new Microsoft.Win32.OpenFileDialog { Title = "导入屏幕背景或动画", Filter = "图片、GIF 与 MP4 视频|*.png;*.jpg;*.jpeg;*.gif;*.mp4", Multiselect = false };
                 return dialog.ShowDialog() == true ? dialog.FileName : null;
             },
             () =>

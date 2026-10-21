@@ -1,5 +1,18 @@
 # Third-party notices — UnifiedRgb.Screens
 
+## Windows Media Foundation bindings
+
+MP4/H.264 processing uses the Windows inbox media components through Vortice.MediaFoundation/DirectX **3.6.2**,
+Vortice.Mathematics **1.9.2**, and SharpGen.Runtime/Runtime.COM **2.2.0-beta** (all MIT).
+The binding version is pinned to retain the existing .NET 8/System.Text.Json runtime; it does not pull System.Text.Json 9
+into the Host/RPC/persistence stack. The transitive SharpGen version is explicitly a beta dependency, covered by the local
+interop and regression tests, not described as a separately certified Microsoft component.
+
+Copyright (c) Amer Koleci and Contributors; SharpGen attribution is in `Licenses/SharpGen-LICENSE.txt`.
+Full MIT texts travel in `Licenses/Vortice-LICENSE.txt` and `Licenses/SharpGen-LICENSE.txt`.
+Sources: https://github.com/amerkoleci/Vortice.Windows and https://github.com/SharpGenTools/SharpGenTools.
+Neither FFmpeg nor a manufacturer screen-control application is invoked or redistributed by this runtime path.
+
 ## turing-smart-screen-cli (TURZX 1CBE:0088 image push)
 
 The TURZX framing in `Protocol/ScreenProtocol.cs` and the TURZX family facts in `ScreenFamilies.cs` (VID 1CBE /
@@ -14,8 +27,10 @@ bound) were derived from:
 
 This is an independent C# reimplementation of image push and the narrowly typed volatile backlight command14
 (level at byte8), used to turn the case display's backlight off during whole-case blackout and restore a configured
-wake level. No source file of that project is included. Storage, video, persistent-device settings and reset operations
-are not implemented. The image-push API still rejects backlight/control commands; the separate backlight builder can
+wake level. The independent typed H.264 path also uses volatile commands 111/112/41/15/121/122/123/114,
+with the original .NET sender's queue wait condition independently checked. No source file of that project is included.
+Storage, persistent-device settings, firmware writes and reset operations are not implemented.
+The image-push API still rejects backlight/control commands; the separate backlight builder can
 only construct command14 and never writes device flash.
 
 ```

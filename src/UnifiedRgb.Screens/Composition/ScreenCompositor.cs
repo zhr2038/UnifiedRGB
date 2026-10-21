@@ -230,6 +230,8 @@ internal static class ScreenFrameEncoder
     public static EncodedFrame Encode(ScreenFamilyInfo family, PixelFrame canvas, int turzxLandscapeRotation,
         string quality = Encoding.ScreenEncodingPolicies.Legacy, bool indexed8Verified = false)
     {
+        if (quality == Encoding.ScreenEncodingPolicies.NativeH264IntraV1)
+            throw new ScreenEncodeException("Native H.264 needs the verified TURZX video renderer; it is not a PNG/JPEG policy.");
         if (!Encoding.ScreenEncodingPolicies.IsKnown(quality))
             throw new ScreenEncodeException("Unsupported PNG quality policy. Indexed8 remains research-only: firmware acceptance and a quality benefit are unproved.");
         ArgumentNullException.ThrowIfNull(family);

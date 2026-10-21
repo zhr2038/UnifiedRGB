@@ -157,6 +157,8 @@ public sealed partial class ScreenManager : IScreenService, IScreenSceneBinding,
         {
             Timeline = () => Volatile.Read(ref _timeline),
             EncodingOf = EncodingOf,
+            VideoTrialOf = VideoTrialOf,
+            NativeVideoAllowed = id => NativeVideoVerified(id) || VideoTrialOf(id) is not null,
             Encode = Encode,
             TrialOf = TrialOf,
             AbortTrial = AbortTrialOf,
@@ -295,6 +297,8 @@ public sealed partial class ScreenManager : IScreenService, IScreenSceneBinding,
                 {
                     throw new InvalidOperationException($"Asset {assetId} is used by the current screen scene; change the scene first.");
                 }
+                if (_videoTrial is { } trial && VideoTrialOf(trial.Info.ScreenId)?.Info.AssetId == assetId)
+                    throw new InvalidOperationException("This media is pinned by the active native-video trial.");
             }
 
             if (BeforeAssetDeleteForTest is { } barrier)
@@ -334,6 +338,9 @@ public sealed partial class ScreenManager : IScreenService, IScreenSceneBinding,
         }
 
         var encoding = EncodingOf(assignment.ScreenId);
+        if (encoding.Quality == Encoding.ScreenEncodingPolicies.NativeH264IntraV1 && !NativeVideoVerified(assignment.ScreenId)
+            && VideoTrialOf(assignment.ScreenId) is null)
+            throw new InvalidOperationException("NOT SENDABLE: native H.264 has not been individually verified for this screen.");
         var present = Present(TimeSpan.FromSeconds(1)).Any(d => d.Id == assignment.ScreenId);
         if (assignment.Overlay != "none")
         {
@@ -347,7 +354,13 @@ public sealed partial class ScreenManager : IScreenService, IScreenSceneBinding,
         {
             _previewCompositor ??= new ScreenCompositor(_assets, PreviewCacheBytes);
             _previewCompositor.ClearCache();
-            var composed = _previewCompositor.Compose(family, shownAssignment, 0, telemetry, now);
+            var video = encoding.Quality == Encoding.ScreenEncodingPolicies.NativeH264IntraV1;
+            var composed = _previewCompositor.Compose(family, video ? shownAssignment with { Overlay = "none", OverlayLayout = null } : shownAssignment, 0, telemetry, now);
+            if (video)
+            {
+                var preview = ScreenWorker.PreviewVideo(family, shownAssignment, composed.Canvas, telemetry, now, rotation);
+                return (WpfCodec.EncodePng(preview.Shown), preview.Note);
+            }
             EncodedFrame encoded;
             try
             {
@@ -412,6 +425,7 @@ public sealed partial class ScreenManager : IScreenService, IScreenSceneBinding,
         {
             EnsureScene();
             _paused = true;
+            Volatile.Write(ref _videoTrial, null);
             foreach (var (id, w) in _workers)
             {
                 w.Post(AssignmentFor(id), paused: true);
@@ -592,6 +606,7 @@ public sealed partial class ScreenManager : IScreenService, IScreenSceneBinding,
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
             Volatile.Write(ref _rateTrial, null); // any explicit new scene ends the temporary lab override
+            Volatile.Write(ref _videoTrial, null);
             if (established is not null)
             {
                 Volatile.Write(ref _deviceSettings, established);

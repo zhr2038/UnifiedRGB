@@ -1,7 +1,7 @@
-"""Data-only ScenePackage v1/v2 authoring helper. Runtime import remains authoritative.
+"""Data-only ScenePackage v1/v2/v3 authoring helper. Runtime import remains authoritative.
 
 schemaVersion 2 only adds two optional screen fields: accentColor (#RRGGBB) and overlayLayout (a telemetry
-region on rectangular screens). schemaVersion 1 packages are read and written exactly as before."""
+region on rectangular screens). v3 explicitly adds MP4/H.264 tracks. v1/v2 retain their original meaning."""
 from __future__ import annotations
 import argparse
 import hashlib
@@ -17,7 +17,7 @@ import zlib
 FORMAT = "UnifiedRgb.ScenePackage"
 CONTRACT = "rgb24-hold-physical-ms-v1"
 INERT = {"README.md", "README.txt", "bindings.template.json"}
-SCHEMAS = (1, 2)
+SCHEMAS = (1, 2, 3)
 REGION_KEYS = ("x", "y", "width", "height", "columns", "backgroundOpacity")
 V2_SCREEN_FIELDS = ("accentColor", "overlayLayout")
 RESERVED = {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"} | {f"{p}{i}" for p in ("COM", "LPT") for i in range(1, 10)}
@@ -85,7 +85,7 @@ def prepare(folder):
     manifest = json.loads(raw, object_pairs_hook=unique_object)
     schema = manifest.get("schemaVersion")
     if manifest.get("format") != FORMAT or type(schema) is not int or schema not in SCHEMAS or manifest.get("playbackContract") != CONTRACT:
-        raise ValueError("Explicit ScenePackage v1 or v2 / rgb24-hold-physical-ms-v1 required; drafts are never upgraded")
+        raise ValueError("Explicit ScenePackage v1/v2/v3 / rgb24-hold-physical-ms-v1 required; drafts are never upgraded")
     if manifest.get("loop") is not True:
         raise ValueError("v1 requires loop:true")
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", manifest.get("id", "")):
@@ -132,11 +132,12 @@ def prepare(folder):
                 if isinstance(baked, bool) or not isinstance(baked, (int,float)) or not math.isfinite(baked) or not 0 <= baked <= 1:
                     raise ValueError("brightnessBaked must be metadata in 0..1")
             else:
-                if PurePosixPath(name).suffix.lower() not in (".png", ".jpg", ".jpeg", ".gif") or path.stat().st_size > 12*1024*1024:
+                video = schema == 3 and PurePosixPath(name).suffix.lower() == ".mp4"
+                if (not video and PurePosixPath(name).suffix.lower() not in (".png", ".jpg", ".jpeg", ".gif")) or path.stat().st_size > 12*1024*1024:
                     raise ValueError(f"Unsupported or oversized screen asset: {name}")
                 if track.get("durationMs") != duration or track.get("overlay") not in ("none", "compact", "dashboard") or track.get("fit") not in ("contain", "cover"):
                     raise ValueError(f"Invalid screen track: {role}")
-                integer(track.get("fps"), 1, 15, "fps")
+                integer(track.get("fps"), 1, 60 if video else 15, "fps")
                 if schema == 1:
                     for field in V2_SCREEN_FIELDS:
                         if field in track:  # even an explicit null: v1 never had these fields
@@ -186,7 +187,7 @@ def build(folder, output):
     return {"path": str(output), "contentId": hashlib.sha256(manifest).hexdigest(), "zipSha256": hashlib.sha256(output.read_bytes()).hexdigest(), "bytes": output.stat().st_size, "validation": "authoring checks only; import into the application for authoritative media/device/wire validation"}
 
 def sample(folder, schema=1):
-    if schema not in SCHEMAS:
+    if schema not in (1, 2):
         raise ValueError("schema must be 1 or 2")
     folder = Path(folder).resolve()
     if folder.exists():
@@ -215,7 +216,7 @@ def sample(folder, schema=1):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
-    make = sub.add_parser("sample"); make.add_argument("folder"); make.add_argument("--schema", type=int, choices=SCHEMAS, default=1)
+    make = sub.add_parser("sample"); make.add_argument("folder"); make.add_argument("--schema", type=int, choices=(1,2), default=1)
     pack = sub.add_parser("build"); pack.add_argument("folder"); pack.add_argument("output")
     args = parser.parse_args()
     try:

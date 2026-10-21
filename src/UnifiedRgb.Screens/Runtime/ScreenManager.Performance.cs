@@ -16,6 +16,7 @@ public sealed partial class ScreenManager : IScreenPerformanceService
 
     private void AbortTrialOf(string id)
     {
+        AbortVideoTrialOf(id);
         var trial = Volatile.Read(ref _rateTrial);
         if (trial is not null && trial.Info.ScreenIds.Contains(id, StringComparer.Ordinal))
             Interlocked.CompareExchange(ref _rateTrial, null, trial); // a failed high-rate trial never repeats through backoff
@@ -39,7 +40,8 @@ public sealed partial class ScreenManager : IScreenPerformanceService
         lock (_gate)
         {
             ObjectDisposedException.ThrowIf(_disposed || _stopped, this);
-            if (_paused || (_rateTrial is { } active && _platform.Time.GetTimestamp() < active.Deadline))
+            if (_paused || (_rateTrial is { } active && _platform.Time.GetTimestamp() < active.Deadline)
+                || (_videoTrial is { } video && _platform.Time.GetTimestamp() < video.Deadline))
                 throw new InvalidOperationException("Screens are paused, or another rate trial is still active.");
             foreach (var id in request.ScreenIds)
             {

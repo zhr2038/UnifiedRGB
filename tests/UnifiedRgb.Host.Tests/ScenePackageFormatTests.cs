@@ -146,7 +146,7 @@ public sealed class ScenePackageFormatTests
     [Fact]
     public void Unknown_schema_versions_properties_and_duplicate_keys_are_rejected()
     {
-        Reading(Pkg.Lighting(edit: m => m["schemaVersion"] = 3)).Should().Throw<ArgumentException>().WithMessage("*schemaVersion 3*reads 1 and 2 only*");
+        Reading(Pkg.Lighting(edit: m => m["schemaVersion"] = 4)).Should().Throw<ArgumentException>().WithMessage("*schemaVersion 4*reads 1, 2 and 3 only*");
         Reading(Pkg.Lighting(edit: m => m["schemaVersion"] = 0)).Should().Throw<ArgumentException>().WithMessage("*schemaVersion*");
         Reading(Pkg.Lighting(edit: m => m["brightness"] = 0.7)).Should().Throw<ArgumentException>().WithMessage("*brightness*");
         Reading(Pkg.Lighting(edit: m => m["lighting"]![0]!["coordinates"] = "x")).Should().Throw<ArgumentException>();

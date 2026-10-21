@@ -17,7 +17,7 @@ internal sealed record StoredAsset(string Id, string Name, string Format, int Wi
 
     public int DurationMs => Animated ? DelaysMs.Sum() : 0;
 
-    public string Kind => Animated ? "animation" : "image";
+    public string Kind => Format == "mp4" ? "video" : Animated ? "animation" : "image";
 
     public ScreenAssetDto ToDto() => new(Id, Name, Width, Height, FrameCount, DurationMs, Kind);
 
@@ -154,13 +154,14 @@ internal sealed partial class AssetStore
         string? stale = null;
         try
         {
+            // The private staging metadata also bounds crash cleanup; publication still happens only after every frame exists.
+            var meta = new AssetMeta(import.Format == "mp4" ? 2 : 1, id, name, import.Format, import.Width, import.Height, [.. import.DelaysMs]);
+            File.WriteAllBytes(Path.Combine(temp, "meta.json"), JsonSerializer.SerializeToUtf8Bytes(meta, ScreensJsonContext.Default.AssetMeta));
             for (var i = 0; i < import.FramePngs.Count; i++)
             {
                 File.WriteAllBytes(Path.Combine(temp, FrameFile(i)), import.FramePngs[i]);
             }
 
-            var meta = new AssetMeta(1, id, name, import.Format, import.Width, import.Height, [.. import.DelaysMs]);
-            File.WriteAllBytes(Path.Combine(temp, "meta.json"), JsonSerializer.SerializeToUtf8Bytes(meta, ScreensJsonContext.Default.AssetMeta));
             var asset = new StoredAsset(id, name, import.Format, import.Width, import.Height, [.. import.DelaysMs], bytes);
             BeforeCommit?.Invoke();
             lock (_gate)
@@ -288,8 +289,11 @@ internal sealed partial class AssetStore
             try
             {
                 var meta = JsonSerializer.Deserialize(ReadBounded(Path.Combine(dir, "meta.json"), MaxMetaBytes), ScreensJsonContext.Default.AssetMeta);
-                if (meta is null || meta.Id != name || meta.DelaysMs is not { Length: >= 1 and <= 300 } || meta.Width < 1 || meta.Height < 1
-                    || string.IsNullOrEmpty(meta.Name) || meta.Format is not ("jpeg" or "png" or "gif"))
+                if (meta is null || meta.Id != name || meta.DelaysMs is not { Length: >= 1 } || meta.Width < 1 || meta.Height < 1
+                    || string.IsNullOrEmpty(meta.Name)
+                    || (meta.Format == "mp4"
+                        ? meta.Version != 2 || meta.DelaysMs.Length is < 2 or > Mp4Importer.MaxFrames || meta.DelaysMs.Any(d => d <= 0 || d > 30000) || meta.DelaysMs.Sum(d => (long)d) > 30000
+                        : meta.Version != 1 || meta.DelaysMs.Length > 300 || meta.Format is not ("jpeg" or "png" or "gif")))
                 {
                     LogSkipped(_log, name, "invalid meta.json");
                     continue;
@@ -318,11 +322,18 @@ internal sealed partial class AssetStore
             if (Directory.Exists(path) && (name.StartsWith("~tmp-", StringComparison.Ordinal) || name.StartsWith("~del-", StringComparison.Ordinal))
                 && Guid.TryParseExact(name[5..], "N", out _))
             {
-                var owned = Enumerable.Range(0, 300).Select(FrameFile).Append("meta.json").ToHashSet(StringComparer.OrdinalIgnoreCase);
+                var limit = 300;
+                var metadata = Path.Combine(path, "meta.json");
+                if (File.Exists(metadata))
+                {
+                    var meta = JsonSerializer.Deserialize(ReadBounded(metadata, MaxMetaBytes), ScreensJsonContext.Default.AssetMeta);
+                    if (meta is { Version: 2, Format: "mp4", DelaysMs.Length: >= 2 and <= Mp4Importer.MaxFrames }) limit = meta.DelaysMs.Length;
+                }
+                var owned = Enumerable.Range(0, limit).Select(FrameFile).Append("meta.json").ToHashSet(StringComparer.OrdinalIgnoreCase);
                 if (!OwnedLibraryPaths.Purge(_root, path, owned)) LogCleanupFailed(_log, path, "Unknown or locked files kept for inspection.");
             }
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
         {
             LogCleanupFailed(_log, path, ex.Message);
         }

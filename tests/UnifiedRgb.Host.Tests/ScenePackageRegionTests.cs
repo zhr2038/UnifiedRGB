@@ -153,7 +153,7 @@ public sealed class ScenePackageRegionFormatTests
     {
         var v2 = Encoding.UTF8.GetString(Pkg.Entries(Pkg.RegionScreenOnly(Pkg.Png())).Single(e => e.Name == "scene.json").Data);
         v2.Should().Contain("\"schemaVersion\":2");
-        Reading(Pkg.Lighting(edit: m => m["schemaVersion"] = 3)).Should().Throw<ArgumentException>().WithMessage("*unsupported schemaVersion 3 (this program reads 1 and 2 only)*");
+        Reading(Pkg.Lighting(edit: m => m["schemaVersion"] = 4)).Should().Throw<ArgumentException>().WithMessage("*unsupported schemaVersion 4 (this program reads 1, 2 and 3 only)*");
         Reading(Pkg.Lighting(edit: m => m["format"] = "UnifiedRgb.ScenePackage.Draft")).Should().Throw<ArgumentException>().WithMessage("*v1 or v2 package*");
     }
 }

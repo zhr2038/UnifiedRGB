@@ -4,7 +4,12 @@ namespace UnifiedRgb.Contracts.Dto;
 public sealed record ScreenPerformanceDto(string ScreenId, string State, long FramesWritten, long Dropped, double EffectiveFps,
     int TargetFps, string? TrialId, int? DeviceSpeedCode, int Samples, long SkippedScheduleSlots,
     IReadOnlyDictionary<string, ScreenTimingDto> Stages, long ImageBytes, long PacketBytes, long RawReads, long ReadTimeouts, long ZeroLengthReplies,
-    long MatchedReplies = 0, long CorrelatedTransactions = 0);
+    long MatchedReplies = 0, long CorrelatedTransactions = 0,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] NativeVideoPerformanceDto? NativeVideo = null);
+
+/// <summary>Host picture selection and acknowledged native transfers, NOT device presentation timestamps or optical sync proof.</summary>
+public sealed record NativeVideoPerformanceDto(long AccessUnits, long OverlayWrites, int DeviceBufferStatus,
+    long SourcePositionMs, int SourceFrameIndex, string SourceClock, long LoopWraps);
 
 public sealed record ScreenTimingDto(double MeanMs, double P50Ms, double P95Ms, double MaxMs);
 

@@ -120,7 +120,7 @@ python .\tools\scene-packages\pack_scene.py sample .\my-scenes\region-starter --
 
 ## 屏幕画质与已知限制
 
-- 支持 PNG / JPEG / GIF。当前 v1 不包含 MP4、任意视频插件或新的24fps播放契约。
+- 支持 PNG / JPEG / GIF，以及通过 Windows Media Foundation 导入 MP4/H.264 SDR（不播放音频，12 MiB / 30 秒 / 1800 帧）。同步 MP4 场景须显式使用 schemaVersion 3；v1/v2 含义和旧包保持不变，不引入任意视频插件或新的播放契约。
 - TURZX 单张 PNG 图片数据上限为 **524288 字节**；不能靠增大软件常量突破设备协议。
 - `legacy` 保持旧的编码策略。可选 `lossless-first-v1` 在必要时先尝试有界无损优化，再使用原有降色路径；能装下的原始全色 PNG 保持原输出。
 - Indexed8 PNG 的设备固件接受情况尚未确认，未默认开放。预览显示实际编码后的画面或明确失败，不用原图假装编码成功。
@@ -157,7 +157,7 @@ flowchart LR
 
 ## 后续交付
 
-屏幕性能与原生视频的最新研究见 [五屏画质与 MP4 研究](design/SCREEN-QUALITY-AND-VIDEO-20261021.zh-CN.md)。现有图片链路增加了有界编码帧复用；MP4 导入及设备 H.264 播放尚未开放，固件兼容性和实际可见帧率仍需独立验证。
+屏幕性能与原生视频的研究见 [五屏画质与 MP4 研究](design/SCREEN-QUALITY-AND-VIDEO-20261021.zh-CN.md)，本轮代码和实机结果见 [原生视频实现记录](design/NATIVE-VIDEO-IMPLEMENTATION-20261021.zh-CN.md)。MP4 使用原有统一时间轴选帧，长屏 H.264 独立关键帧路径保留实时电脑信息 PNG 叠加，不调用厂商程序。原生策略默认关闭，只向单独完成同步、循环和叠加验证的设备开放；成功传输不代表实际可见帧率或光学同步通过。
 
 1. 自带运行环境的 Windows 安装程序，以及升级、卸载、开始菜单与启动项验证。
 2. 针对当前电脑的首次设备检测、依赖准备与可理解的控制验证流程。

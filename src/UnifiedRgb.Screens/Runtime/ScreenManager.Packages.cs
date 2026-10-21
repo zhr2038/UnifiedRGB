@@ -59,6 +59,7 @@ public sealed partial class ScreenManager : IScreenPackageMedia
             return SceneStateFiles.Coordinate(_stateRoot, () =>
             {
                 if ((_scene?.Assignments.Any(a => a.BackgroundAssetId == assetId) ?? false)
+                    || (_videoTrial is { } trial && VideoTrialOf(trial.Info.ScreenId)?.Info.AssetId == assetId)
                     || AssetPinned?.Invoke(assetId) == true || profileReference(assetId)) return new ScreenAssetCleanupResult(false, false, 0);
                 return _assets.DeleteDetailed(assetId);
             });
@@ -83,7 +84,7 @@ public sealed partial class ScreenManager : IScreenPackageMedia
         var limits = ImportLimits.Default;
         return await _importThread.Value.InvokeAsync(() =>
         {
-            var import = ImageImporter.Import(data, limits);
+            var import = Mp4Importer.IsMp4(data) ? Mp4Importer.Import(data, limits, ct) : ImageImporter.Import(data, limits);
             var thumb = ImageImporter.Import(import.FramePngs[0], limits with { NormalizeBox = ThumbnailBox });
             return new ScreenMediaInfo(import.Format, import.Width, import.Height, import.FramePngs.Count, import.DurationMs, thumb.FramePngs[0]);
         }, ct).ConfigureAwait(false);
@@ -119,7 +120,8 @@ public sealed partial class ScreenManager : IScreenPackageMedia
         }
 
         _assets.RequireRoomForOne();
-        var import = await _importThread.Value.InvokeAsync(() => ImageImporter.Import(data, limits), ct).ConfigureAwait(false);
+        var import = await _importThread.Value.InvokeAsync(() => Mp4Importer.IsMp4(data)
+            ? Mp4Importer.Import(data, limits, ct) : ImageImporter.Import(data, limits), ct).ConfigureAwait(false);
         var stored = await Task.Run(() => _assets.Commit(id, trimmed, import), ct).ConfigureAwait(false);
         LogUploaded(_log, stored.Id, stored.Kind, stored.Width, stored.Height, stored.FrameCount, stored.Bytes);
         return stored;

@@ -22,6 +22,8 @@ public static partial class ScenePackageFormat
 
     /// <summary>The newest schema read: <see cref="SchemaVersion"/> plus the optional screen accentColor/overlayLayout.</summary>
     public const int SchemaVersionRegions = 2;
+    /// <summary>Explicit video schema: adds MP4/H.264 screen media and up to 60 FPS for those tracks. v1/v2 are unchanged.</summary>
+    public const int SchemaVersionVideo = 3;
 
     /// <summary>RGB24 frames held (no interpolation) for exactly frameDurationMs PHYSICAL milliseconds each; screens on the same timeline.</summary>
     public const string PlaybackContract = "rgb24-hold-physical-ms-v1";
@@ -155,9 +157,9 @@ public static partial class ScenePackageFormat
             }
 
             var schema = Int(root, "schemaVersion", ManifestName);
-            if (schema is not (SchemaVersion or SchemaVersionRegions))
+            if (schema is not (SchemaVersion or SchemaVersionRegions or SchemaVersionVideo))
             {
-                throw Bad($"unsupported schemaVersion {schema} (this program reads {SchemaVersion} and {SchemaVersionRegions} only)");
+                throw Bad($"unsupported schemaVersion {schema} (this program reads {SchemaVersion}, {SchemaVersionRegions} and {SchemaVersionVideo} only)");
             }
 
             var contract = Str(root, "playbackContract", ManifestName);
@@ -351,9 +353,10 @@ public static partial class ScenePackageFormat
         var label = Label(o, where);
         var file = FilePath(o, where);
         var ext = Path.GetExtension(file).ToLowerInvariant();
-        if (ext is not (".png" or ".jpg" or ".jpeg" or ".gif"))
+        var video = schema == SchemaVersionVideo && ext == ".mp4";
+        if (!video && ext is not (".png" or ".jpg" or ".jpeg" or ".gif"))
         {
-            throw Bad($"{where}: screen media is PNG, JPEG or GIF ('{file}')");
+            throw Bad($"{where}: screen media is PNG, JPEG or GIF; MP4 requires schemaVersion 3 ('{file}')");
         }
 
         var duration = Num(o, "durationMs", where);
@@ -370,9 +373,10 @@ public static partial class ScenePackageFormat
         }
 
         var fps = Int(o, "fps", where);
-        if (fps is < 1 or > MaxScreenFps)
+        var maxFps = video ? 60 : MaxScreenFps;
+        if (fps < 1 || fps > maxFps)
         {
-            throw Bad($"{where}: fps must be 1..{MaxScreenFps}");
+            throw Bad($"{where}: fps must be 1..{maxFps}");
         }
 
         string? accent = null;

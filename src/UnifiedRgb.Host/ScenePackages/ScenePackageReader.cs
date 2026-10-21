@@ -140,7 +140,8 @@ public static class ScenePackageReader
                 throw ScenePackageFormat.Bad($"'{path}' is {bytes.Length} bytes, not {track.Frames} frames × {track.LedCount} LEDs × 3");
             }
 
-            if (screens.Contains(path) && SignatureProblem(bytes) is { } bad)
+            if (screens.Contains(path) && SignatureProblem(bytes, manifest.SchemaVersion == ScenePackageFormat.SchemaVersionVideo
+                && Path.GetExtension(path).Equals(".mp4", StringComparison.OrdinalIgnoreCase)) is { } bad)
             {
                 throw ScenePackageFormat.Bad($"'{path}': {bad}");
             }
@@ -161,8 +162,9 @@ public static class ScenePackageReader
     }
 
     /// <summary>Null when <paramref name="data"/> starts like PNG, JPEG or GIF; anything else (video, executables, scripts) is refused.</summary>
-    public static string? SignatureProblem(ReadOnlySpan<byte> data)
+    public static string? SignatureProblem(ReadOnlySpan<byte> data, bool allowMp4 = false)
     {
+        if (allowMp4) return data.Length >= 16 && data.Slice(4, 4).SequenceEqual("ftyp"u8) ? null : "MP4 track does not contain an MP4 file";
         ReadOnlySpan<byte> png = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
         if (data.StartsWith(png) || (data.Length >= 3 && data[0] == 0xFF && data[1] == 0xD8 && data[2] == 0xFF)
             || data.StartsWith("GIF87a"u8) || data.StartsWith("GIF89a"u8))

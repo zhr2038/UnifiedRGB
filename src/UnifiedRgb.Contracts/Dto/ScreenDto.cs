@@ -21,15 +21,15 @@ public sealed record ScreenDeviceDto(
     string? LastError,
     double EffectiveFps);
 
-/// <summary>An owned, normalized media asset. Kind is "image" (DurationMs 0) or "animation".</summary>
+/// <summary>An owned, normalized media asset. Kind is "image" (DurationMs 0), "animation" (GIF), or "video" (MP4/H.264).</summary>
 public sealed record ScreenAssetDto(string Id, string Name, int Width, int Height, int FrameCount, int DurationMs, string Kind);
 
-/// <summary>An upload: a display name and the raw JPEG, PNG or GIF bytes as Base64 (at most 12 MiB decoded).</summary>
+/// <summary>An upload: a display name and raw JPEG/PNG/GIF or MP4/H.264 SDR bytes as Base64 (at most 12 MiB decoded).</summary>
 public sealed record ScreenAssetUploadDto(string Name, string Base64);
 
 /// <summary>
 /// What one screen shows. BackgroundAssetId null = BackgroundColor only. Overlay is "none", "compact" or "dashboard"; Rotation
-/// 0/90/180/270 clockwise; Brightness 0..1; Fps 1..15; Fit "cover" (crop) or "contain" (letterbox on BackgroundColor).
+/// 0/90/180/270 clockwise; Brightness 0..1; Fps 1..60 (send ceiling, not optical FPS); Fit "cover" (crop) or "contain" (letterbox on BackgroundColor).
 /// TimelineId (optional, OPUS-GENERIC-SCENE-PACKAGES; not written when null) puts the screen on a shared playback timeline (a
 /// package's "package:&lt;contentId&gt;:&lt;bindingId&gt;") instead of the worker's local start; null keeps the historical behavior.
 /// OverlayLayout (optional, scene content; not written when null) confines the overlay to a region; null = historical overlay.

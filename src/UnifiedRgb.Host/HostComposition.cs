@@ -119,6 +119,7 @@ public static class HostComposition
         services.AddSingleton<IScreenPackageMedia>(sp => sp.GetRequiredService<ScreenManager>());
         services.AddSingleton<IScreenDeviceSettingsService>(sp => sp.GetRequiredService<ScreenManager>());
         services.AddSingleton<IScreenPerformanceService>(sp => sp.GetRequiredService<ScreenManager>());
+        services.AddSingleton<IScreenVideoService>(sp => sp.GetRequiredService<ScreenManager>());
 
         services.AddSingleton(sp =>
         {

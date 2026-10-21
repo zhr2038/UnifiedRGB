@@ -82,6 +82,9 @@ public sealed partial class ScreenManager : IScreenDeviceSettingsService
                 "(hardware Indexed8 output verified by the owner). Refused; nothing was changed.", nameof(settings));
         }
 
+        if (settings.EncodingQuality == ScreenEncodingPolicies.NativeH264IntraV1 && !NativeVideoVerified(id))
+            throw new ArgumentException("Native H.264 is available only for an individually verified TURZX with clock/loop/live-overlay acceptance. Nothing was changed.", nameof(settings));
+
         var wanted = new ScreenDeviceSetting(settings.Rotation, settings.EncodingQuality);
         await EnterMutationAsync(ct).ConfigureAwait(false);
         try
@@ -128,6 +131,7 @@ public sealed partial class ScreenManager : IScreenDeviceSettingsService
             lock (_gate)
             {
                 Volatile.Write(ref _deviceSettings, next);
+                AbortVideoTrialOf(id); // an explicit local setting change supersedes a transient test transport
                 if (!ReferenceEquals(normalized, _scene))
                 {
                     _scene = normalized;
@@ -167,6 +171,7 @@ public sealed partial class ScreenManager : IScreenDeviceSettingsService
     /// <summary>The encoder policy of <paramref name="screenId"/> from memory (display workers, preview). Legacy until loaded.</summary>
     internal ScreenEncodingSelection EncodingOf(string screenId)
     {
+        if (VideoTrialOf(screenId) is not null) return new(ScreenEncodingPolicies.NativeH264IntraV1, false);
         var settings = Volatile.Read(ref _deviceSettings);
         var quality = settings is not null && settings.TryGetValue(screenId, out var s) ? s.EncodingQuality : ScreenEncodingPolicies.Legacy;
         var verified = _indexed8Verified.Contains(screenId);
@@ -179,7 +184,7 @@ public sealed partial class ScreenManager : IScreenDeviceSettingsService
             : ScreenFrameEncoder.Encode(family, canvas, turzxLandscapeRotation, quality, indexed8Verified);
 
     private ScreenDeviceSettingsDto Dto(string screenId, ScreenDeviceSetting s) =>
-        new(screenId, s.Rotation, s.EncodingQuality, _indexed8Verified.Contains(screenId));
+        new(screenId, s.Rotation, s.EncodingQuality, _indexed8Verified.Contains(screenId), NativeVideoVerified(screenId));
 
     /// <summary>_gate held. Each assignment with a saved setting at that rotation; the same instance when nothing changes.</summary>
     private ScreenSceneDto NormalizeHeld(ScreenSceneDto scene)

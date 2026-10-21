@@ -13,12 +13,15 @@
 | Serilog.Sinks.File | 6.0.0 | Apache-2.0 |
 | xUnit | 2.9.2 | Apache-2.0 |
 | FluentAssertions（测试依赖） | 6.12.2 | Apache-2.0 |
+| Vortice.MediaFoundation / Vortice.DirectX | 3.6.2 | MIT |
+| Vortice.Mathematics | 1.9.2 | MIT |
+| SharpGen.Runtime / SharpGen.Runtime.COM（传递依赖） | 2.2.0-beta | MIT |
 
 完整依赖及传递依赖以还原生成的 `project.assets.json` 和各自包内许可为准；后续版本须重新核对。
 
 ## TURZX 屏幕图像传输
 
-独立 C# 实现的协议来源、固定上游 commit 和 MIT 原文见 `src/UnifiedRgb.Screens/THIRD-PARTY-NOTICES.md`。不包含上游的存储、视频、亮度或设备固件操作实现。
+独立 C# 实现的图片传输、易失背光控制和类型化 H.264 流协议来源、固定上游 commit 与 MIT 原文见 `src/UnifiedRgb.Screens/THIRD-PARTY-NOTICES.md`。不包含存储、持久设备设置、重置或固件写入操作。Windows Media Foundation 使用系统媒体组件；Vortice/SharpGen 许可文本随程序复制，不打包 FFmpeg 或厂商媒体 DLL。SharpGen 的固定传递版本为 beta，具体兼容性仍以本轮回归和设备验收为准。
 
 ## PawnIO.Modules
 

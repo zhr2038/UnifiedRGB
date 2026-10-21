@@ -50,6 +50,8 @@ internal sealed record ScreenWorkerContext(
     public ScreenEncodeFunc Encode { get; init; } = static (f, c, r, q, i) => ScreenFrameEncoder.Encode(f, c, r, q, i);
     public Func<string, ScreenRateTrial?> TrialOf { get; init; } = static _ => null;
     public Action<string> AbortTrial { get; init; } = static _ => { };
+    public Func<string, NativeVideoTrial?> VideoTrialOf { get; init; } = static _ => null;
+    public Func<string, bool> NativeVideoAllowed { get; init; } = static _ => false;
     public Func<bool> WholeCaseBlackout { get; init; } = static () => false;
     public string? BacklightStateDirectory { get; init; }
 }
@@ -118,7 +120,7 @@ internal sealed partial class ScreenWorker : IDisposable
 
     public ScreenDeviceInfo Device => _device;
     internal bool HasExited => !_thread.IsAlive;
-    internal ScreenPerformanceDto Performance => _performance.Snapshot(Snapshot());
+    internal ScreenPerformanceDto Performance => _performance.Snapshot(Snapshot()) with { NativeVideo = Volatile.Read(ref _videoFacts) };
 
     /// <summary>
     /// The labelled source of the last timeline-driven frame ("device-clock", "upload-anchor: ...", "apply-epoch", "unavailable",
@@ -363,10 +365,17 @@ internal sealed partial class ScreenWorker : IDisposable
 
                 if (assignment is null) continue;
                 var trial = _ctx.TrialOf(_device.Id);
-                var targetFps = trial?.Info.Fps ?? assignment.Fps;
+                var videoTrial = _ctx.VideoTrialOf(_device.Id);
+                var renderAssignment = videoTrial?.Info.AssetId is { } trialAsset ? assignment with { BackgroundAssetId = trialAsset } : assignment;
+                var targetFps = videoTrial?.Info.Fps ?? trial?.Info.Fps ?? assignment.Fps;
                 var period = 1000.0 / targetFps;
-                if (lastTrial != trial?.Info.TrialId) { pacing.Reset(); lastTrial = trial?.Info.TrialId; }
-                if (lastSlow || staticFrame is not null || !compositor.IsDynamic(assignment)) period = Math.Max(period, 1000);
+                var currentTrialId = videoTrial?.Info.TrialId ?? trial?.Info.TrialId;
+                if (lastTrial != currentTrialId)
+                {
+                    pacing.Reset(); lastTrial = currentTrialId; staticFrame = null;
+                    animationCache.Clear(); compositor.ClearCache(); lastSlow = false;
+                }
+                if (lastSlow || staticFrame is not null || !compositor.IsDynamic(renderAssignment)) period = Math.Max(period, 1000);
                 if (trial?.Info.LegacyPacing != true)
                 {
                     var wait = pacing.Remaining(_ctx.Time.GetTimestamp(), _ctx.Time.TimestampFrequency, period);
@@ -400,13 +409,15 @@ internal sealed partial class ScreenWorker : IDisposable
                     }
                     else
                     {
-                        var elapsed = ElapsedMs(assignment, animationStart, out var blocked);
+                        var elapsed = ElapsedMs(renderAssignment, animationStart, out var blocked);
                         var encoding = _ctx.EncodingOf(_device.Id);
+                        var nativeVideo = encoding.Quality == Encoding.ScreenEncodingPolicies.NativeH264IntraV1 && blocked is null;
                         if (cachedEncoding != encoding) { animationCache.Clear(); cachedEncoding = encoding; }
                         // A cache hit NEVER bypasses a blocked/missing timeline, missing media or live telemetry.
-                        var cacheAsset = blocked is null && assignment.Overlay == "none" && assignment.OverlayLayout is null
-                            && assignment.BackgroundAssetId is { } id ? _ctx.Assets.Find(id) : null;
+                        var cacheAsset = blocked is null && (nativeVideo || renderAssignment.Overlay == "none" && renderAssignment.OverlayLayout is null)
+                            && renderAssignment.BackgroundAssetId is { } id ? _ctx.Assets.Find(id) : null;
                         var frameIndex = cacheAsset?.FrameAt(elapsed) ?? 0;
+                        if (nativeVideo) { _videoPosition = elapsed; _videoFrameIndex = frameIndex; }
                         if (cacheAsset is not null && animationCache.Find(cacheAsset.Id, frameIndex) is { } hit)
                         {
                             frame = hit;
@@ -415,17 +426,20 @@ internal sealed partial class ScreenWorker : IDisposable
                         {
                             var composeStart = _ctx.Time.GetTimestamp();
                             var composed = blocked is null
-                                ? compositor.Compose(family, assignment, elapsed, _ctx.Telemetry(), _ctx.Time.GetUtcNow())
+                                ? compositor.Compose(family, nativeVideo ? renderAssignment with { Overlay = "none", OverlayLayout = null } : renderAssignment,
+                                    elapsed, _ctx.Telemetry(), _ctx.Time.GetUtcNow())
                                 : ScreenCompositor.ComposeBlocked(family, blocked);
                             warning = composed.Warning;
                             composeMs = _ctx.Time.GetElapsedTime(composeStart).TotalMilliseconds;
                             var encodeStart = _ctx.Time.GetTimestamp();
-                            frame = ScreenImage.Of(_ctx.Encode(family, composed.Canvas, _ctx.Options.TurzxLandscapeRotation, encoding.Quality, encoding.Indexed8Verified));
+                            frame = nativeVideo && warning is null ? EncodeVideo(composed.Canvas)
+                                : ScreenImage.Of(_ctx.Encode(family, composed.Canvas, _ctx.Options.TurzxLandscapeRotation,
+                                    encoding.Quality == Encoding.ScreenEncodingPolicies.NativeH264IntraV1 ? Encoding.ScreenEncodingPolicies.Legacy : encoding.Quality, encoding.Indexed8Verified));
                             encodeMs = _ctx.Time.GetElapsedTime(encodeStart).TotalMilliseconds;
                             if (cacheAsset is not null && warning is null && animationCache.Add(cacheAsset.Id, frameIndex, frame))
                                 compositor.ClearCache(); // encoded bytes replace decoded rasters, rather than retaining both caches
                         }
-                        var still = !compositor.IsDynamic(assignment);
+                        var still = !compositor.IsDynamic(renderAssignment);
                         if (assignment.TimelineId is null)
                         {
                             if (still && warning is null)
@@ -467,26 +481,39 @@ internal sealed partial class ScreenWorker : IDisposable
                         }
                     }
 
-                    var packetStart = _ctx.Time.GetTimestamp();
-                    var requestTimestamp = stamp!.Next();
-                    var packet = ScreenProtocol.BuildImagePacket(family.Family, frame.Command, frame.Image, requestTimestamp);
-                    (_channel as IScreenUsbDiagnostics)?.ExpectResponse(frame.Command, requestTimestamp);
-                    var packetMs = _ctx.Time.GetElapsedTime(packetStart).TotalMilliseconds;
-                    var writeStart = _ctx.Time.GetTimestamp();
-                    _channel!.Write(packet, family.WriteTimeoutMs);
-                    var writeMs = _ctx.Time.GetElapsedTime(writeStart).TotalMilliseconds;
-                    var readStart = _ctx.Time.GetTimestamp();
-                    if (_channel is IScreenUsbDiagnostics configured)
+                    double packetMs, writeMs, readMs; int packetLength, replyBytes; uint requestTimestamp;
+                    string? readError;
+                    if (frame.Command == Protocol.TurzxVideoProtocol.DataCommand)
                     {
-                        configured.ReplyQuietMs = trial?.Info.ReplyQuietMs ?? 10;
-                        configured.CorrelatedReplies = correlationDisabled ? false : trial?.Info.CorrelatedReplies;
+                        var beforePacket = _videoSession?.PacketMs ?? 0; var beforeWrite = _videoSession?.WriteMs ?? 0;
+                        var beforeRead = _videoSession?.ReadMs ?? 0; var beforeBytes = _videoSession?.BytesWritten ?? 0;
+                        if (!SendVideo(frame, renderAssignment, stamp!)) { StopVideo(); staticFrame = null; continue; }
+                        packetMs = _videoSession!.PacketMs - beforePacket; writeMs = _videoSession.WriteMs - beforeWrite;
+                        readMs = _videoSession.ReadMs - beforeRead; packetLength = checked((int)(_videoSession.BytesWritten - beforeBytes));
+                        readError = null; replyBytes = 0; requestTimestamp = 0; // SendVideo validates EVERY native/overlay acknowledgement itself
                     }
-                    var readError = ReadResponse(response, family.Family == ScreenFamily.TlLcd ? trial?.Info.TlReadTimeoutMs ?? family.ReadTimeoutMs : family.ReadTimeoutMs, out var replyBytes);
-                    var readMs = _ctx.Time.GetElapsedTime(readStart).TotalMilliseconds;
+                    else
+                    {
+                        StopVideo();
+                        var packetStart = _ctx.Time.GetTimestamp(); requestTimestamp = stamp!.Next();
+                        var packet = ScreenProtocol.BuildImagePacket(family.Family, frame.Command, frame.Image, requestTimestamp);
+                        (_channel as IScreenUsbDiagnostics)?.ExpectResponse(frame.Command, requestTimestamp);
+                        packetMs = _ctx.Time.GetElapsedTime(packetStart).TotalMilliseconds; packetLength = packet.Length;
+                        var writeStart = _ctx.Time.GetTimestamp(); _channel!.Write(packet, family.WriteTimeoutMs);
+                        writeMs = _ctx.Time.GetElapsedTime(writeStart).TotalMilliseconds;
+                        var readStart = _ctx.Time.GetTimestamp();
+                        if (_channel is IScreenUsbDiagnostics configured)
+                        {
+                            configured.ReplyQuietMs = trial?.Info.ReplyQuietMs ?? 10;
+                            configured.CorrelatedReplies = correlationDisabled ? false : trial?.Info.CorrelatedReplies;
+                        }
+                        readError = ReadResponse(response, family.Family == ScreenFamily.TlLcd ? trial?.Info.TlReadTimeoutMs ?? family.ReadTimeoutMs : family.ReadTimeoutMs, out replyBytes);
+                        readMs = _ctx.Time.GetElapsedTime(readStart).TotalMilliseconds;
+                    }
                     var contentReadFacts = (_channel as IScreenUsbDiagnostics)?.LastRead;
                     if (backlight is { Off: true } && warning?.StartsWith(ScreenCompositor.BlockedPrefix, StringComparison.Ordinal) != true)
                     {
-                        if (readError is not null || (family.Family != ScreenFamily.TlLcd
+                        if (readError is not null || (frame.Command != Protocol.TurzxVideoProtocol.DataCommand && family.Family != ScreenFamily.TlLcd
                             && !ScreenReplyFlow.MatchesImageReply(response.AsSpan(0, replyBytes), frame.Command, requestTimestamp)))
                             throw new ScreenTransferException(ScreenTransferError.ResponseMismatch, "Fresh content was not acknowledged; leave the backlight off.");
                         // Restore only AFTER a fresh valid picture was accepted, so the old vendor picture never flashes on wake.
@@ -501,9 +528,9 @@ internal sealed partial class ScreenWorker : IDisposable
                     var skipped = trial?.Info.LegacyPacing == true ? 0 : pacing.Completed(_ctx.Time.GetTimestamp(), _ctx.Time.TimestampFrequency);
                     var facts = contentReadFacts;
                     _performance.Add(new ScreenFrameWork(composeMs, encodeMs, packetMs, writeMs, readMs, waitedMs, intervalMs,
-                        _ctx.Time.GetElapsedTime(frameStart).TotalMilliseconds, frame.Image.Length, packet.Length,
+                        _ctx.Time.GetElapsedTime(frameStart).TotalMilliseconds, frame.Image.Length, packetLength,
                         facts?.Reads ?? 0, facts?.Timeouts ?? 0, facts?.ZeroLength ?? 0, facts?.FirstMs ?? 0, facts?.DrainMs ?? 0,
-                        facts?.Matched ?? 0, facts?.Correlated ?? false), targetFps, trial?.Info.TrialId,
+                        facts?.Matched ?? 0, facts?.Correlated ?? false), targetFps, currentTrialId,
                         (_channel as IScreenUsbDiagnostics)?.DeviceSpeedCode, skipped);
                     waitedMs = 0;
                 }
@@ -567,6 +594,10 @@ internal sealed partial class ScreenWorker : IDisposable
         finally
         {
             CloseChannel();
+            try { _videoEncoder?.Dispose(); }
+#pragma warning disable CA1031 // native cleanup failure must not escape a screen's background thread
+            catch (Exception ex) { LogFrameFailed(_ctx.Log, _device.Id, "H.264 cleanup: " + ex.Message); }
+#pragma warning restore CA1031
             StaThread.ShutdownDispatcher();
         }
     }
@@ -713,6 +744,8 @@ internal sealed partial class ScreenWorker : IDisposable
 
     private void CloseChannel()
     {
+        try { StopVideo(); }
+        catch (IOException ex) { LogFrameFailed(_ctx.Log, _device.Id, ex.Message); }
         IScreenUsbChannel? channel;
         lock (_channelGate)
         {
