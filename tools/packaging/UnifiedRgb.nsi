@@ -57,7 +57,7 @@ Section "光域" Main
   SetOutPath "$PLUGINSDIR\tools\installation"
   File "..\installation\UnifiedRgb.Installation.psm1"
   DetailPrint "校验并安装程序；现有界面必须先退出，未应用草稿不会被强制丢弃。"
-  nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\tools\packaging\Bundle-Lifecycle.ps1" -Mode Install -InstallRoot "$INSTDIR" -Source "$PLUGINSDIR\payload" -Receipt "$PLUGINSDIR\current.txt" -NoStart'
+  nsExec::ExecToLog '"$WINDIR\Sysnative\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\tools\packaging\Bundle-Lifecycle.ps1" -Mode Install -InstallRoot "$INSTDIR" -Source "$PLUGINSDIR\payload" -Receipt "$PLUGINSDIR\current.txt" -NoStart'
   Pop $0
   ${If} $0 != 0
     MessageBox MB_ICONSTOP "安装未完成（$0）。请检查详细日志，退出光域界面后重试。旧版本和用户数据不会被强制删除。" /SD IDOK
@@ -87,7 +87,7 @@ SectionEnd
 Section "Uninstall"
   SetRegView 64
   ReadRegStr $CurrentVersionDir HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\UnifiedRgb" "CurrentVersionDir"
-  nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$CurrentVersionDir\Tools\packaging\Bundle-Lifecycle.ps1" -Mode Uninstall -InstallRoot "$INSTDIR"'
+  nsExec::ExecToLog '"$WINDIR\Sysnative\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$CurrentVersionDir\Tools\packaging\Bundle-Lifecycle.ps1" -Mode Uninstall -InstallRoot "$INSTDIR"'
   Pop $0
   ${If} $0 != 0
     MessageBox MB_ICONSTOP "卸载未完成（$0）。请退出光域后重试。配置、场景与未知文件将保留。" /SD IDOK

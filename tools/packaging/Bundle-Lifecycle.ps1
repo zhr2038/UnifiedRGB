@@ -2,6 +2,10 @@
 param([ValidateSet('Install','Uninstall')][string]$Mode, [Parameter(Mandatory)][string]$InstallRoot,
       [string]$Source, [string]$Receipt, [switch]$NoStart)
 $ErrorActionPreference = 'Stop'
+$logPath=Join-Path ([IO.Path]::GetTempPath()) ('UnifiedRgb-Setup-'+[Guid]::NewGuid().ToString('N')+'.log')
+Start-Transcript -LiteralPath $logPath -NoClobber | Out-Null
+try {
+if(-not[Environment]::Is64BitProcess){throw 'The x64 installer lifecycle requires 64-bit PowerShell.'}
 Import-Module (Join-Path $PSScriptRoot '../installation/UnifiedRgb.Installation.psm1') -Force
 $platform = New-UrgbWindowsPlatform
 if (-not (& $platform.IsAdministrator)) { throw 'Administrator permission is required.' }
@@ -16,3 +20,9 @@ if ($Mode -eq 'Install') {
     $result = Invoke-UrgbUninstall @arguments
 }
 $result | ConvertTo-Json -Depth 8 | Write-Output
+} catch {
+    $_ | Out-String | Write-Output
+    throw
+} finally {
+    Stop-Transcript | Out-Null
+}

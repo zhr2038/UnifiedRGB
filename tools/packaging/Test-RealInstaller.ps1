@@ -10,10 +10,20 @@ if ((Test-Path -LiteralPath $root) -or (Test-Path -LiteralPath $data) -or (Get-S
 $Installer = [IO.Path]::GetFullPath($Installer)
 $Evidence = [IO.Path]::GetFullPath($Evidence)
 [void][IO.Directory]::CreateDirectory($Evidence)
+$startedAt=Get-Date
+function Copy-LifecycleLogs {
+    foreach($log in Get-ChildItem -LiteralPath ([IO.Path]::GetTempPath()) -Filter 'UnifiedRgb-Setup-*.log' -File|Where-Object CreationTime -ge $startedAt) {
+        Copy-Item -LiteralPath $log.FullName -Destination $Evidence -Force
+    }
+}
 function Invoke-Installer {
     $p = Start-Process -FilePath $Installer -ArgumentList @('/S',"/D=$root") -WindowStyle Hidden -PassThru
     if (-not $p.WaitForExit(180000)) { throw 'Installer timed out; not force-killed.' }
-    if ($p.ExitCode -ne 0) { throw "Installer exited $($p.ExitCode)." }
+    Copy-LifecycleLogs
+    if ($p.ExitCode -ne 0) {
+        Get-ChildItem -LiteralPath $Evidence -Filter '*.log'|ForEach-Object {Get-Content -LiteralPath $_.FullName -Tail 25}
+        throw "Installer exited $($p.ExitCode)."
+    }
 }
 function Read-Manifest { Get-Content -LiteralPath (Join-Path $root 'UnifiedRgb.install.json') -Raw | ConvertFrom-Json }
 Invoke-Installer
@@ -70,6 +80,7 @@ while ((Test-Path 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Uni
 }
 if (Get-ScheduledTask -TaskName 'UnifiedRgb Host' -ErrorAction SilentlyContinue) { throw 'Owned task survived uninstall.' }
 if (Test-Path 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\UnifiedRgb') { throw 'Application registration survived uninstall.' }
+Copy-LifecycleLogs
 if (-not (Test-Path -LiteralPath $unknown) -or (Get-FileHash -LiteralPath $sentinel).Hash -ne $sentinelSha) { throw 'Uninstall removed unknown files or user data.' }
 @{Passed=$true;FirstVersion=$first.Current;SecondVersion=$second.Current;ConfigurationByteExact=$true;UserDataByteExact=$true;UnknownFilesRetained=$true;TaskRemoved=$true;SelfContainedVirtualHostStarted=$true;HardwareOpened=$false;SignedInstaller=$false} |
     ConvertTo-Json | Set-Content -LiteralPath (Join-Path $Evidence 'result.json') -Encoding utf8
