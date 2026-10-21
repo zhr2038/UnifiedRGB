@@ -145,7 +145,8 @@ public sealed class RoundOverlayTests
     {
         var device = which == "tl" ? Devices.Tl1 : Devices.H2;
         var family = which == "tl" ? ScreenFamilyInfo.TlLcd : ScreenFamilyInfo.H2;
-        await using var rig = new Rig(Rig.AllOutput, device);
+        await using var rig = new Rig(null, Rig.AllOutput, new ManualTime(Now), device);
+        await rig.Manager.GetPcTelemetryAsync(); // establish CPU deltas before either image; clock and fake metrics then stay fixed
         var a = new ScreenAssignmentDto(device.Id, BackgroundColor: "#203040", Overlay: overlay, AccentColor: "#FF0000", Fps: 10);
         await rig.Manager.SetScreenSceneAsync(Images.Scene(a));
         rig.Manager.Start();

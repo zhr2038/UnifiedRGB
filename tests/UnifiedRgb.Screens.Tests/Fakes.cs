@@ -246,12 +246,17 @@ internal sealed class Rig : IAsyncDisposable
     }
 
     public Rig(IFanLcdGroupRecovery? lcdRecovery, Action<ScreensOptions>? configure, params ScreenDeviceInfo[] devices)
+        : this(lcdRecovery, configure, TimeProvider.System, devices)
+    {
+    }
+
+    public Rig(IFanLcdGroupRecovery? lcdRecovery, Action<ScreensOptions>? configure, TimeProvider time, params ScreenDeviceInfo[] devices)
     {
         Options = new ScreensOptions { BackoffInitialMs = 20, BackoffMaxMs = 80, DiscoveryIntervalMs = 250, NvmlTelemetry = false };
         configure?.Invoke(Options);
         Enumerator = new FakeEnumerator(devices);
         DataDirectory = Path.Combine(Path.GetTempPath(), "urgb-screens-tests", System.Guid.NewGuid().ToString("N"));
-        Platform = new ScreenPlatform(Enumerator, Opener, Contention, Os, null, TimeProvider.System);
+        Platform = new ScreenPlatform(Enumerator, Opener, Contention, Os, null, time);
         Manager = new ScreenManager(Options, DataDirectory, Platform, lcdRecovery: lcdRecovery);
     }
 

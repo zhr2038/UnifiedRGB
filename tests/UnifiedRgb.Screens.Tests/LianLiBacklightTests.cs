@@ -58,8 +58,11 @@ public sealed class LianLiBacklightTests
             await UntilAsync(async () => (await awake.ListScreensAsync()).Single().State == ScreenStates.Running);
             var wake = opener.Last.Writes.ToArray();
             if (family == ScreenFamily.H2) Header(family, wake[0])[0].Should().Be(102, "clear the independent PNG layer while still dark");
-            Header(family, wake[^2])[0].Should().Be(101); Header(family, wake[^1])[0].Should().Be(14);
-            Header(family, wake[^1])[8].Should().Be(78);
+            var imageIndex = family == ScreenFamily.H2 ? 1 : 0;
+            wake.Length.Should().BeGreaterThanOrEqualTo(imageIndex + 2);
+            Header(family, wake[imageIndex])[0].Should().Be(101);
+            Header(family, wake[imageIndex + 1])[0].Should().Be(14, "restore backlight immediately after the first completed image; later frames may already be queued");
+            Header(family, wake[imageIndex + 1])[8].Should().Be(78);
         }
         finally { Directory.Delete(dir, true); }
     }
