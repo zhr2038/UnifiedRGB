@@ -172,7 +172,7 @@ public class LianLiLoopTests
 
     /// <summary>WP-12 §9: the long vendor loops (Meteor 153, Stacking 792 frames per TL slice since WP-15) through the size policy.</summary>
     [Theory]
-    [InlineData("Meteor", 153, 2)]
+    [InlineData("Meteor", 200, 2)]
     [InlineData("Stacking", 792, 6)]
     public void Long_vendor_loops_decimate_preserving_the_period_and_flag_a_static_fallback(string effect, int frames, int ratio)
     {

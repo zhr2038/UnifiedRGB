@@ -4,12 +4,12 @@ using UnifiedRgb.Devices;
 namespace UnifiedRgb.Core.Effects.LianLi;
 
 /// <summary>
-/// One Lian Li per-family mode (e.g. SLv3Mode5) resolved to a shared generator and preset. Where the vendor IL pins it
+/// One per-family compatibility mode resolved to an application generator and preset. Historical metadata
 /// (M10: TL, H2): <c>VendorMode</c> is the vendor's enum value, <c>VendorFrames</c> the frame count L-Connect generates for
 /// 1..4 fans (one value = independent of the fan count) and <c>VendorIntervalBaseMs</c> its per-frame base (× SpeedType).
 /// <c>VendorName</c> is the vendor enum name (WP-12: H2 from <c>slv3.models.H2Effects</c>; enum value = <c>Index</c>, body =
-/// <c>VendorMode</c>, e.g. H2 9 Voice → H2Mode10) and <c>VendorSelected</c> whether LConnectLoops actually plays that body;
-/// when false the entry's <c>EffectId</c> is only a generic stand-in and no vendor body is claimed.
+/// <c>VendorMode</c>, e.g. H2 9 Voice → H2Mode10). <c>VendorSelected</c> now selects the procedural uploaded-loop route,
+/// not manufacturer pixel content. Historical frame counts describe the reference only, never current encoded output.
 /// </summary>
 public sealed record FamilyMode(string Family, int Index, string EffectId, EffectParams Preset, LayoutKind LayoutHint,
     int? VendorMode = null, IReadOnlyList<int>? VendorFrames = null, double? VendorIntervalBaseMs = null,

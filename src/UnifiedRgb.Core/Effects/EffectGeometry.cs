@@ -46,7 +46,7 @@ public static class EffectGeometry
         ["Breathing"] = U,
         ["Runway"] = Low,
         ["Meteor"] = Low,
-        ["ColorCycle"] = Low,
+        ["ColorCycle"] = U,
         ["CoverCycle"] = Low,
         ["Wave"] = Low,
         ["MeteorShower"] = Low,

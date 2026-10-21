@@ -42,9 +42,9 @@ public class LConnectStackingMixedTests
 
     private static int Extent(LConnectZone z) => z.Family switch { "TL" => z.Fans * 12, "H2" => 24, _ => StreamedExtent[z.LedCount] };
 
-    private static int[] Starts(IReadOnlyList<int> extents)
+    private static int[] Starts(int[] extents)
     {
-        var s = new int[extents.Count];
+        var s = new int[extents.Length];
         for (var i = 1; i < s.Length; i++)
         {
             s[i] = s[i - 1] + extents[i - 1];
@@ -62,7 +62,7 @@ public class LConnectStackingMixedTests
 
     private static byte[,] UiRed()
     {
-        var ui = new byte[6, 3];
+        var ui = new byte[1, 3];
         var c = LConnectLoops.CapColour(Red, LConnectLoops.RgbMax);
         (ui[0, 0], ui[0, 1], ui[0, 2]) = (c.R, c.G, c.B);
         return ui;
@@ -95,7 +95,7 @@ public class LConnectStackingMixedTests
     /// sub-extent is band p becomes lit (none for an H2/streamed band); lit fans never un-light; the final frame is fully lit.
     /// Returns the violations (empty = holds) so the negative control can show the check detects the defect.
     /// </summary>
-    private static List<string> Violations(IReadOnlyList<LConnectZone> zones, int[] extents, IReadOnlyList<byte[]> rgb, Direction dir)
+    private static List<string> Violations(LConnectZone[] zones, int[] extents, byte[][] rgb, Direction dir)
     {
         var v = new List<string>();
         var dots = extents.Sum();
@@ -107,7 +107,7 @@ public class LConnectStackingMixedTests
             var f = PassEnd(dots, p);
             var (b0, b1) = Band(dots, p, dir);
             (int Zone, int Fan)? expected = null;
-            for (var z = 0; z < zones.Count; z++)
+            for (var z = 0; z < zones.Length; z++)
             {
                 if (zones[z].Family == "TL" && b0 >= starts[z] && b1 <= starts[z] + extents[z] && (b0 - starts[z]) % 12 == 0)
                 {
@@ -117,7 +117,7 @@ public class LConnectStackingMixedTests
             }
 
             var now = new HashSet<(int Zone, int Fan)>();
-            for (var z = 0; z < zones.Count; z++)
+            for (var z = 0; z < zones.Length; z++)
             {
                 for (var fan = 0; zones[z].Family == "TL" && fan < zones[z].Fans; fan++)
                 {
@@ -149,7 +149,7 @@ public class LConnectStackingMixedTests
             lit = now;
         }
 
-        for (var z = 0; z < zones.Count; z++)
+        for (var z = 0; z < zones.Length; z++)
         {
             var n = LitIn(rgb[z], zones[z].LedCount, frames - 1, 0, zones[z].LedCount);
             if (n != zones[z].LedCount)
@@ -317,7 +317,7 @@ public class LConnectStackingMixedTests
     {
         var zones = Live();
         var plan = LConnectLoops.TryPlan("Stacking", P(dir), [Red], zones)!;
-        plan.Variant.Should().Be("L-Connect Quick/Sync UiMode7, fan-aligned Stacking over 132 source dots" + RingSuffix);
+        plan.Variant.Should().Be("UnifiedRgb uploaded UiMode7, fan-aligned Stacking over 132 source dots" + RingSuffix);
         plan.Summary.Should().Be($"792 frames × 36 ms = {28.512:0.###} s");
         plan.Zones.Should().OnlyContain(z => z.Frames == 792 && z.IntervalMs == 36.0);
 
@@ -419,7 +419,7 @@ public class LConnectStackingMixedTests
         var zones = Live().Append(Mapped(leds)).ToArray();
         var dots = 132 + extent;
         var plan = LConnectLoops.TryPlan("Stacking", P(Direction.Forward), [Red], zones)!;
-        plan.Variant.Should().Be($"L-Connect Quick/Sync UiMode7, fan-aligned Stacking over {dots} source dots, 1 streamed zone(s) padded to 12-dot deposits{RingSuffix}");
+        plan.Variant.Should().Be($"UnifiedRgb uploaded UiMode7, fan-aligned Stacking over {dots} source dots, 1 streamed zone(s) padded to 12-dot deposits{RingSuffix}");
         var raw = Raw(7, dots, Direction.Forward);
         var mapped = plan.Zones[4];
         mapped.Frames.Should().Be(raw.Count);
@@ -454,7 +454,7 @@ public class LConnectStackingMixedTests
         })
         {
             var plan = LConnectLoops.TryPlan("Stacking", P(Direction.Reverse, speed), [Red], [.. Live(), .. st])!;
-            plan.Variant.Should().Be($"L-Connect Quick/Sync UiMode7, fan-aligned Stacking over {dots} source dots, 4 streamed zone(s) padded to 12-dot deposits{RingSuffix}");
+            plan.Variant.Should().Be($"UnifiedRgb uploaded UiMode7, fan-aligned Stacking over {dots} source dots, 4 streamed zone(s) padded to 12-dot deposits{RingSuffix}");
             plan.Zones.Should().HaveCount(8).And.OnlyContain(z => z.Frames == frames && z.IntervalMs == interval);
             plan.Synchronous.Should().BeTrue();
             plan.Summary.Should().Be($"{frames} frames × {interval:0.##} ms = {frames * interval / 1000:0.###} s");
@@ -471,7 +471,7 @@ public class LConnectStackingMixedTests
     {
         var zones = Live().Concat([Point(), Point(), Point(), Point()]).ToArray();
         var meteor = LConnectLoops.TryPlan("Meteor", P(dir), [Red], zones)!;
-        meteor.Variant.Should().StartWith("L-Connect Quick/Sync UiMode6 over 145 dots").And.NotContain("padded").And.NotContain("fan-aligned");
+        meteor.Variant.Should().StartWith("UnifiedRgb uploaded UiMode6 over 145 dots").And.NotContain("padded").And.NotContain("fan-aligned");
         var raw = Raw(6, 145, dir);
         for (var i = 0; i < 4; i++)
         {
@@ -511,7 +511,7 @@ public class LConnectStackingMixedTests
     public void Beyond_the_vendor_scratch_the_planner_refuses_and_the_assignment_runs_as_program_with_the_reason()
     {
         LConnectLoops.TryPlan("Stacking", P(Direction.Forward), [Red], [.. Live(), Mapped(180)], out var reason).Should().BeNull();
-        reason.Should().Be("UiMode7 over 312 dots needs 4212 frames, beyond the vendor's 4096-frame scratch");
+        reason.Should().Be("UiMode7 over 312 dots exceeds the 4096-frame compatibility budget.");
         var accepted = LConnectLoops.TryPlan("Stacking", P(Direction.Forward), [Red], [.. Live(), Mapped(170)])!;
         accepted.Variant.Should().Contain("over 300 source dots, 1 streamed zone(s) padded to 12-dot deposits");
         accepted.Zones.Should().OnlyContain(z => z.Frames == 3900);
@@ -545,7 +545,7 @@ public class LConnectStackingMixedTests
         var p = P(dir);
         loop.SetScene(new Scene([Assignment.ForGroup("g", targets, "Stacking", p)]));
         loop.LastLoopCompile!.Variants!.Single().Should()
-            .Contain("Vendor:Stacking L-Connect Quick/Sync UiMode7, fan-aligned Stacking over 144 source dots, 1 streamed zone(s) padded to 12-dot deposits");
+            .Contain("Vendor:Stacking UnifiedRgb uploaded UiMode7, fan-aligned Stacking over 144 source dots, 1 streamed zone(s) padded to 12-dot deposits");
         loop.PlayedSliceCount.Should().Be(1);
 
         var expected = LConnectLoops.TryPlan("Stacking", p, [Red], [.. Live(), Point()])!;

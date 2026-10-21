@@ -38,10 +38,10 @@ public class LConnectFixtureTests
         return (loop.Rgb[o], loop.Rgb[o + 1], loop.Rgb[o + 2]);
     }
 
-    private static int[] StartsOf(IReadOnlyList<LConnectZone> zones)
+    private static int[] StartsOf(LConnectZone[] zones)
     {
-        var starts = new int[zones.Count];
-        for (var i = 1; i < zones.Count; i++)
+        var starts = new int[zones.Length];
+        for (var i = 1; i < zones.Length; i++)
         {
             starts[i] = starts[i - 1] + Shape(zones[i - 1]).Width;
         }
@@ -50,29 +50,6 @@ public class LConnectFixtureTests
     }
 
     // ---- ColorCycle (§3) --------------------------------------------------------------------------------------------
-
-    /// <summary>The literal 48-position UiColourCycle pattern: colour 1 ×6, black ×10, colour 2 ×6, black ×10, colour 3 ×6, black ×10.</summary>
-    private static int PatternSlot(int q) => q switch
-    {
-        < 6 => 0,
-        >= 16 and < 22 => 1,
-        >= 32 and < 38 => 2,
-        _ => -1,
-    };
-
-    /// <summary>§3.1: Reverse ON reads P[(f + d % 48) % 48]; Reverse OFF reads P[(f + 47 − d % 48) % 48].</summary>
-    private static (byte, byte, byte) ColourCycleExpected(int d, int f, Direction dir, Rgb[] colors)
-    {
-        var q = dir == Direction.Reverse ? (f + (d % 48)) % 48 : (f + 47 - (d % 48)) % 48;
-        var slot = PatternSlot(q);
-        if (slot < 0 || slot >= colors.Length)
-        {
-            return (0, 0, 0);
-        }
-
-        var c = colors[slot];
-        return ((byte)(c.R * 255 >> 8), (byte)(c.G * 255 >> 8), (byte)(c.B * 255 >> 8));
-    }
 
     public static TheoryData<Direction, bool> Directions() => new()
     {
@@ -84,87 +61,30 @@ public class LConnectFixtureTests
 
     [Theory]
     [MemberData(nameof(Directions))]
-    public void Colour_cycle_matches_the_literal_pattern_on_every_dot_and_row(Direction dir, bool reverseTl120)
+    public void Uniform_colour_cycle_ignores_chain_reversal_and_device_count(Direction dir, bool reverseTl120)
     {
-        Rgb[] rgb = [Red, Green, Blue];
-        var zones = Group(reverseTl120);
-        var starts = StartsOf(zones);
-        starts.Should().Equal(0, 39, 78, 102);
-        var plan = LConnectLoops.TryPlan("ColorCycle", P(rgb, dir), rgb, zones)!;
-        plan.Zones.Should().OnlyContain(z => z.Frames == 48);
-        var counts = new int[141, 4];
-        for (var z = 0; z < zones.Length; z++)
+        Rgb[] colors=[Red,Green,Blue];
+        var zones=Group(reverseTl120);
+        var plan=LConnectLoops.TryPlan("ColorCycle",P(colors,dir),colors,zones)!;
+        var reference=LConnectLoops.TryPlan("ColorCycle",P(colors,dir),colors,[new("H2",1,24),new("H2",1,24)])!;
+        for(var f=0;f<200;f++)
         {
-            var (width, rows) = Shape(zones[z]);
-            for (var f = 0; f < 48; f++)
-            {
-                for (var row = 0; row < rows; row++)
-                {
-                    for (var p = 0; p < width; p++)
-                    {
-                        var d = GlobalDot(zones[z], starts[z], p);
-                        var expected = ColourCycleExpected(d, f, dir, rgb);
-                        Px(plan.Zones[z], zones[z], f, row, p).Should().Be(expected, $"{dir} zone {z} row {row} pos {p} (dot {d}) frame {f}");
-                        if (row == 0)
-                        {
-                            counts[d, expected switch { (Full, 0, 0) => 0, (0, Full, 0) => 1, (0, 0, Full) => 2, _ => 3 }]++;
-                        }
-                    }
-                }
-            }
-        }
-
-        for (var d = 0; d < 141; d++)
-        {
-            (counts[d, 0], counts[d, 1], counts[d, 2], counts[d, 3]).Should().Be((6, 6, 6, 30), $"dot {d}: six frames per colour, 30 black");
-        }
-
-        // boundary identities: the last dot of one slice and the first of the next are adjacent pattern phases
-        var step = dir == Direction.Reverse ? 1 : -1;
-        foreach (var (a, za, zb) in new[] { (38, 0, 1), (77, 1, 2), (101, 2, 3) })
-        {
-            // position of dot a (last of za) and a + 1 (first of zb); a reversed TL120 holds dot 39 at 38 and dot 77 at 0
-            var pa = a - starts[za];
-            var pb = 0;
-            (pa, pb) = (reverseTl120 && za == 1 ? 0 : pa, reverseTl120 && zb == 1 ? 38 : pb);
-
-            for (var f = 0; f < 48; f++)
-            {
-                Px(plan.Zones[za], zones[za], f, 0, pa).Should().Be(ColourCycleExpected(a, f, dir, rgb), $"dot {a}");
-                Px(plan.Zones[zb], zones[zb], f, 0, pb).Should().Be(ColourCycleExpected(a + 1, f, dir, rgb), $"dot {a + 1}");
-                Px(plan.Zones[zb], zones[zb], f, 0, pb).Should().Be(ColourCycleExpected(a, (f + step + 48) % 48, dir, rgb), $"dot {a + 1} leads dot {a} by one frame");
-            }
-        }
-
-        for (var f = 0; f < 48; f++)
-        {
-            Px(plan.Zones[3], zones[3], f, 1, 38).Should().Be(ColourCycleExpected(140, f, dir, rgb), "dot 140 is the LCD chain's last position");
+            var pixel=reference.Zones[0].Rgb.AsSpan(f*72,3).ToArray();
+            for(var z=0;z<zones.Length;z++) plan.Zones[z].Rgb.AsSpan(f*zones[z].LedCount*3,zones[z].LedCount*3).ToArray().Chunk(3)
+                .Should().OnlyContain(px=>px.SequenceEqual(pixel));
         }
     }
 
     [Theory]
     [InlineData(Direction.Forward)]
     [InlineData(Direction.Reverse)]
-    public void Colour_cycle_with_one_colour_lights_six_frames_per_dot_and_explicit_black_stays_black(Direction dir)
+    public void Single_palette_colour_remains_stable_and_explicit_black_stays_black(Direction dir)
     {
-        var zones = Group();
-        var one = LConnectLoops.TryPlan("ColorCycle", P([Green], dir), [Green], zones)!;
-        for (var z = 0; z < 4; z++)
-        {
-            var (width, rows) = Shape(zones[z]);
-            for (var row = 0; row < rows; row++)
-            {
-                for (var p = 0; p < width; p++)
-                {
-                    var lit = Enumerable.Range(0, 48).Select(f => Px(one.Zones[z], zones[z], f, row, p)).ToArray();
-                    lit.Count(px => px == (0, Full, 0)).Should().Be(6, $"zone {z} row {row} pos {p}");
-                    lit.Count(px => px == (0, 0, 0)).Should().Be(42);
-                }
-            }
-        }
-
-        var black = LConnectLoops.TryPlan("ColorCycle", P([new Rgb(0, 0, 0)], dir), [new Rgb(0, 0, 0)], zones)!;
-        black.Zones.Should().OnlyContain(z => z.Rgb.All(b => b == 0), "explicit black is honoured, not replaced by a default");
+        Rgb[] colors=[Green];
+        var plan=LConnectLoops.TryPlan("ColorCycle",P(colors,dir),colors,Group())!;
+        plan.Zones.SelectMany(z=>z.Rgb.Chunk(3)).Should().OnlyContain(px=>px[0]==0&&px[1]==254&&px[2]==0);
+        Rgb[] black=[Rgb.Black];
+        LConnectLoops.TryPlan("ColorCycle",P(black,dir),black,Group())!.Zones.SelectMany(z=>z.Rgb).Should().OnlyContain(b=>b==0);
     }
 
     // ---- Slicing markers ----------------------------------------------------------------------------------------------
@@ -181,18 +101,21 @@ public class LConnectFixtureTests
         Rgb[] rgb = [Red, Green, Blue];
         foreach (var dir in new[] { Direction.Forward, Direction.Reverse })
         {
-            var plan = LConnectLoops.TryPlan("ColorCycle", P(rgb, dir), rgb, zones)!;
-            plan.Variant.Should().Be("L-Connect Quick/Sync UiMode9 over 102 dots");
+            var plan = LConnectLoops.TryPlan("Meteor", P(rgb, dir), rgb, zones)!;
+            plan.Variant.Should().Be("UnifiedRgb uploaded UiMode6 over 102 dots");
+            byte[,] palette = { {255,0,0}, {0,255,0}, {0,0,255} };
+            var source = LConnectLoops.UiModeFrames(6,102,255,dir == Direction.Reverse ? 1 : 0,palette,out _)!;
             for (var z = 0; z < zones.Length; z++)
             {
                 var (width, rows) = Shape(zones[z]);
-                for (var f = 0; f < 48; f++)
+                for (var f = 0; f < source.Count; f++)
                 {
                     for (var row = 0; row < rows; row++)
                     {
                         for (var p = 0; p < width; p++)
                         {
-                            Px(plan.Zones[z], zones[z], f, row, p).Should().Be(ColourCycleExpected(GlobalDot(zones[z], starts[z], p), f, dir, rgb), $"{dir} zone {z} row {row} pos {p} frame {f}");
+                            var offset=GlobalDot(zones[z],starts[z],p)*3;
+                            Px(plan.Zones[z], zones[z], f, row, p).Should().Be((source[f][offset],source[f][offset+1],source[f][offset+2]), $"{dir} zone {z} row {row} pos {p} frame {f}");
                         }
                     }
                 }
@@ -216,16 +139,14 @@ public class LConnectFixtureTests
     [Theory]
     [InlineData("Meteor")]
     [InlineData("CoverCycle")]
-    public void Tl120_fan_onsets_match_the_debug_session_table(string effect)
+    public void Tl120_chain_reversal_preserves_the_row_and_swaps_its_physical_endpoints(string effect)
     {
-        foreach (var row in new[] { 0, 1 })
+        foreach(var row in new[]{0,1})
         {
-            Onsets(effect, Direction.Forward, false, row).Should().Equal([40, 53, 66], $"{effect} forward, edge {row}");
-            Onsets(effect, Direction.Reverse, false, row).Should().Equal([90, 77, 64], $"{effect} effect Reverse, edge {row}");
-
-            // whole-chain reversal (vendor directions[i] = 1) reverses fan-entry order
-            Onsets(effect, Direction.Reverse, true, row).Should().Equal([64, 77, 90], $"{effect} effect Reverse + chain reversed, edge {row}");
-            Onsets(effect, Direction.Forward, true, row).Should().Equal([66, 53, 40], $"{effect} forward + chain reversed, edge {row}");
+            var normal=LConnectLoops.TryPlan(effect,P([Red,Green],Direction.Forward),[Red,Green],Group())!;
+            var reversed=LConnectLoops.TryPlan(effect,P([Red,Green],Direction.Forward),[Red,Green],Group(true))!;
+            for(var f=0;f<normal.Zones[1].Frames;f++)
+                Px(normal.Zones[1],Group()[1],f,row,0).Should().Be(Px(reversed.Zones[1],Group(true)[1],f,row,38));
         }
     }
 

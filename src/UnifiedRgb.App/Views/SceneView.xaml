@@ -65,7 +65,7 @@
                 <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
                     <TextBlock Text="Content" Width="60" VerticalAlignment="Center" />
                     <ComboBox ItemsSource="{Binding Strategies}" SelectedItem="{Binding GroupStrategy}" Width="200"
-                              ToolTip="Vendor: L-Connect's own bodies where known. Program: the generator itself." />
+                              ToolTip="路径循环与程序生成均使用光域的数学内容，旧场景标识继续兼容。" />
                 </StackPanel>
                 <Button Content="Apply group" Command="{Binding ApplyGroupCommand}" HorizontalAlignment="Left" Margin="0,8,0,0" Padding="12,2" />
             </StackPanel>

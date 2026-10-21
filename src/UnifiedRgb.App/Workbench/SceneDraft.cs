@@ -93,7 +93,7 @@ public sealed class SceneDraft : ObservableObject
 
     public SceneDraft()
     {
-        Strategies = [new("Vendor", "原厂曲线"), new("Program", "程序生成"), new("Frames", "保留帧动画")];
+        Strategies = [new("Vendor", "路径循环"), new("Program", "程序生成"), new("Frames", "保留帧动画")];
         _strategy = Strategies[0];
         Stages.CollectionChanged += (_, _) => { Changed(); OnPropertyChanged(nameof(PathSummary)); };
     }
@@ -105,7 +105,7 @@ public sealed class SceneDraft : ObservableObject
     public bool CanUseVendor => !UseSpatialPath || !LConnectLoops.IsPerDeviceGroupRoute(Effect?.Id ?? "");
     public bool CanUseSpatial => Strategy?.Id != "Frames";
     public string StrategyHint => UseSpatialPath && LConnectLoops.IsPerDeviceGroupRoute(Effect?.Id ?? "")
-        ? "此效果使用程序生成，以保持整机路径和共享节奏。" : "原厂曲线与程序效果都由光域独立生成和发送。";
+        ? "此效果使用程序生成，以保持整机路径和共享节奏。" : "路径循环和程序效果均使用光域的数学生成器，不含厂商动画表。";
     public ObservableCollection<DraftStage> Stages { get; } = [];
     public bool Dirty { get => _dirty; private set { if (SetProperty(ref _dirty, value)) OnPropertyChanged(nameof(DraftState)); } }
     public string DraftState => Dirty ? "有未应用的修改" : "与已读取场景一致";
@@ -258,7 +258,7 @@ public sealed class SceneDraft : ObservableObject
         LoopReturnDto? tail = null;
         if (ReturnEnabled)
         {
-            if (!CanReturn) throw new InvalidOperationException("波浪回退仅适用于“原厂曲线”的“堆积”效果。请关闭回退或切回该组合。");
+            if (!CanReturn) throw new InvalidOperationException("波浪回退仅适用于“路径循环”的“堆积”效果。请关闭回退或切回该组合。");
             if (!UseSpatialPath) throw new InvalidOperationException("波浪回退需要启用分段空间路径。");
             if (!double.IsFinite(ReturnSeconds) || ReturnSeconds is < 1 or > 20 || !double.IsFinite(HoldSeconds) || HoldSeconds is < 0 or > 2 || WaveWidth is < 2 or > 96 || !double.IsFinite(WaveStrength) || WaveStrength is < 0 or > 50) throw new InvalidOperationException("回退范围：1～20 秒、停留 0～2 秒、羽化 2～96 灯位、波纹 0～50%。");
             tail = new(ReturnSeconds * 1000, HoldSeconds * 1000, WaveWidth, WaveStrength / 100);

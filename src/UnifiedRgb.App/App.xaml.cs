@@ -53,9 +53,17 @@ public partial class App : Application
     {
         ArgumentNullException.ThrowIfNull(e);
         base.OnStartup(e);
+        using var maintenance = InstallationGate.TryEnter();
+        if (maintenance is null)
+        {
+            MessageBox.Show("光域正在安装或更新，请完成后重新打开。", "光域", MessageBoxButton.OK, MessageBoxImage.Information);
+            Shutdown();
+            return;
+        }
         _single = new Mutex(true, @"Local\UnifiedRgb.App", out var first);
         if (!first)
         {
+            maintenance.Dispose();
             _ = EnsureHostForExistingAppAsync();
             return;
         }
@@ -108,6 +116,7 @@ public partial class App : Application
                 Log.Warning("{Error}", vm.Error);
             }
         };
+        maintenance.Dispose(); // the visible App now blocks an upgrade; task startup may proceed
         _client.Start();
         _ = EnsureHostAsync();
         if (!e.Args.Contains("--minimized", StringComparer.OrdinalIgnoreCase))

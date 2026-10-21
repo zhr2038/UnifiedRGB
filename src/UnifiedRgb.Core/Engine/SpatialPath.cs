@@ -37,7 +37,7 @@ public sealed record SpatialPath
     /// <summary>Longest stage and longest total path, in source dots.</summary>
     public const int MaxLength = 720;
 
-    private readonly IReadOnlyList<SpatialStage> _stages = [];
+    private readonly SpatialStage[] _stages = [];
 
     public SpatialPath(IReadOnlyList<SpatialStage> stages) => Stages = stages;
 
@@ -59,14 +59,14 @@ public sealed record SpatialPath
     public void Validate(IReadOnlyList<ZoneRef> targets)
     {
         ArgumentNullException.ThrowIfNull(targets);
-        if (_stages.Count == 0)
+        if (_stages.Length == 0)
         {
             throw new ArgumentException("A spatial path needs at least one stage.", nameof(targets));
         }
 
         var bound = new HashSet<ZoneRef>();
         var total = 0;
-        for (var i = 0; i < _stages.Count; i++)
+        for (var i = 0; i < _stages.Length; i++)
         {
             var s = _stages[i] ?? throw new ArgumentException($"Spatial stage {i} is null.", nameof(targets));
             if (s.Length is < 1 or > MaxLength)
@@ -165,11 +165,11 @@ public sealed record SpatialPath
         string.Join(" | ", _stages.Select(s => $"{s.Length}:[{string.Join(" ‖ ", s.Bindings.Select(b => (name?.Invoke(b.Target) ?? b.Target.ToString()) + (b.Reverse ? "~" : string.Empty)))}]"));
 
     public bool Equals(SpatialPath? other) =>
-        other is not null && _stages.Count == other._stages.Count
+        other is not null && _stages.Length == other._stages.Length
         && _stages.Zip(other._stages).All(p => p.First is not null && p.Second is not null && p.First.Length == p.Second.Length
             && p.First.Bindings is not null && p.Second.Bindings is not null && p.First.Bindings.SequenceEqual(p.Second.Bindings));
 
-    public override int GetHashCode() => HashCode.Combine(_stages.Count, TotalLength);
+    public override int GetHashCode() => HashCode.Combine(_stages.Length, TotalLength);
 
     private static SpatialStage[] Copy(IReadOnlyList<SpatialStage>? stages) =>
         stages is null

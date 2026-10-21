@@ -35,12 +35,12 @@ public sealed partial class ScenePackageService
         try
         {
             var package = await RequireAsync(request.ContentId, ct).ConfigureAwait(false);
-            IReadOnlyList<string> blockers = [];
+            string[] blockers = [];
             var detached = await Task.Run(() => SceneStateFiles.Coordinate(Store.DataRoot, () =>
             {
                 ct.ThrowIfCancellationRequested();
                 blockers = PackageReferences(package.ContentId);
-                if (blockers.Count > 0) return ((string Trash, long Bytes, IReadOnlySet<string> Owned)?)null;
+                if (blockers.Length > 0) return ((string Trash, long Bytes, IReadOnlySet<string> Owned)?)null;
                 var removed = Store.Detach(package);
                 _source.Forget(package.ContentId); _timeline.Forget(package.ContentId);
                 return removed;

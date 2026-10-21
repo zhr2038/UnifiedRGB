@@ -966,7 +966,7 @@ public sealed partial class LianLiAdapter : ILoopUploadAdapter, IDeviceClockProv
                     throw;
                 }
 
-                LogSender(info.Path, master.Mac.ToString());
+                LogSender(info.Path, master.Mac);
                 _senders[info.Path] = r;
                 if (_startKeepAliveTimer) { _keepAlive ??= new Timer(_ => KeepAlive(), null, TimeSpan.Zero, TimeSpan.FromMilliseconds(250)); }
             }
@@ -1023,7 +1023,7 @@ public sealed partial class LianLiAdapter : ILoopUploadAdapter, IDeviceClockProv
     }
 
     [LoggerMessage(EventId = 5001, Level = LogLevel.Information, Message = "Lian Li RF sender {Path} opened (master MAC {Mac})")]
-    private partial void LogSender(string path, string mac);
+    private partial void LogSender(string path, RfMac mac);
 
     [LoggerMessage(EventId = 5002, Level = LogLevel.Warning, Message = "Lian Li keep-alive failed on {Path}")]
     private partial void LogKeepAliveFailed(string path, Exception ex);

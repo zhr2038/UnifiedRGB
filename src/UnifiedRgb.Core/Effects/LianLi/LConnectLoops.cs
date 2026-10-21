@@ -57,21 +57,9 @@ public sealed record LConnectPlan(string Variant, IReadOnlyList<LConnectZoneLoop
 }
 
 /// <summary>
-/// L-Connect-faithful loop generation for wireless TL / H2 zones (WP-11, WP-12; DEBUG-SESSION-1 §2.5, DEBUG-SESSION-2),
-/// ported line by line from lianli.slv3.dll (analysis/il/il-RgbEffect.cs): the vendor RGB tables, the shift-by-one temporal
-/// model, <c>channel × bright &gt;&gt; 8</c> brightness, spatial write reversal for direction, per-edge (Up/Down) rendering
-/// combined as <c>CombingTLRgbData</c> does, the vendor frame counts and <c>SpeedType × interval_base</c> intervals.
-/// <list type="bullet">
-/// <item>One target → the per-device path: TL <c>TLMode1..7/19/29</c> (×11 ms), H2 <c>H2Mode1..8</c> (base 20/11 ms).</item>
-/// <item>Several targets → the Quick/Sync path (<c>RFController.SetUIEffect</c>): one <c>UiMode</c> loop over all logical dots
-/// (TL 13 per fan, H2 24), sliced with <c>GetTL</c>/<c>GetH2</c> (both TL edges show the same dot), SpeedType × 12 ms (× 18
-/// for UIEffect 27..30); so a shared group keeps one period. UIEffect 2 (RainbowMorph) and 8 (Twinkle) are per-device in
-/// the vendor too: each device gets its own family body (<see cref="GroupRoutes"/>).</item>
-/// <item>Deliberate exception (WP-15): shared Stacking (UiMode7) keeps the unchanged vendor body but runs it over 12 source
-/// dots per TL fan (H2 24) and expands each fan's 12 dots onto its 13 columns, so every retained deposit fills one whole
-/// fan instead of straddling two. This placement is not the vendor's byte-exact <c>GetTL</c> slicing.</item>
-/// </list>
-/// Anything else returns null with a reason and the caller keeps the generic generator (SELF_AUDIT WP-11/WP-12).
+/// Uploaded-loop compatibility routing and physical projection. Persisted route identifiers and measured interval
+/// units are retained for interoperability. Animation pixels come from UnifiedRgb's procedural generators and
+/// IndependentLoopBodies, not the historical translated manufacturer bodies. See SOURCE-PROVENANCE.md.
 /// </summary>
 public static partial class LConnectLoops
 {
@@ -101,7 +89,7 @@ public static partial class LConnectLoops
 
     public const int H2RgbMax = 570;
 
-    /// <summary>TL bodies lianli.slv3.dll generates itself (<c>GetTLEffect</c>: TLEffect ≤ 7, 19, 29), all ported here.</summary>
+    /// <summary>TL bodies lianli.slv3.dll generates itself (<c>GetTLEffect</c>: TLEffect ≤ 7, 19, 29), compatibility identifiers.</summary>
     public static IReadOnlyList<int> TlModes { get; } = [1, 2, 3, 4, 5, 6, 7, 19, 29];
 
     /// <summary>
@@ -143,7 +131,6 @@ public static partial class LConnectLoops
         ["Ripple"] = 30,
     };
 
-    private static readonly Lazy<byte[]> Twinkle = new(() => LoadTable("UnifiedRgb.Core.tl-twinkle.bin", 200 * 174));
 
     /// <summary>
     /// <c>LWirelessUtils.ValueToRFLampEffectSpeedType</c>: GUI 0/25/50/75/100 → L1..L5 = 7/6/5/4/3 (DEBUG-SESSION-1 §6).
@@ -241,13 +228,13 @@ public static partial class LConnectLoops
         {
             reason = string.IsNullOrEmpty(bad.Family)
                 ? "zone has no Lian Li family tag"
-                : $"{bad.Family} zone ({bad.Fans} fans, {bad.LedCount} LEDs) has no L-Connect body (TL 1..4 fans, bare H2 block only)";
+                : $"{bad.Family} zone ({bad.Fans} fans, {bad.LedCount} LEDs) has no uploaded-loop route (TL 1..4 fans, bare H2 block only)";
             return null;
         }
 
         if (zones.All(z => z.Family == Streamed))
         {
-            reason = "no Lian Li zone carries a vendor body";
+            reason = "no Lian Li zone carries an uploaded loop";
             return null;
         }
 
@@ -304,7 +291,7 @@ public static partial class LConnectLoops
             }
 
             var bodies = ui == 2 ? "TLMode2/H2Mode2" : "TLMode29/H2Mode8";
-            return new LConnectPlan($"L-Connect Quick/Sync UIEffect {ui} (per-device {bodies}){RingSuffix(zones, null)}", loops);
+            return new LConnectPlan($"UnifiedRgb uploaded UIEffect {ui} (per-device {bodies}){RingSuffix(zones, null)}", loops);
         }
 
         // WP-15: shared Stacking deposits 12 dots per pass, so it gets a 12-dot-per-fan source extent (fan-aligned placement)
@@ -323,7 +310,7 @@ public static partial class LConnectLoops
             return null;
         }
 
-        var interval = speed * UiIntervalBaseFor(ui);
+        var interval = speed * UiIntervalBaseFor(ui) * ProceduralStride(effectId);
         var result = new LConnectZoneLoop[zones.Count];
         var start = 0;
         var fill = EffectGeometry.Of(effectId);
@@ -334,7 +321,7 @@ public static partial class LConnectLoops
             start += Extent(zones[z]);
         }
 
-        var label = aligned ? $"L-Connect Quick/Sync UiMode{ui}, fan-aligned Stacking over {dots} source dots" : $"L-Connect Quick/Sync UiMode{ui} over {dots} dots";
+        var label = aligned ? $"UnifiedRgb uploaded UiMode{ui}, fan-aligned Stacking over {dots} source dots" : $"UnifiedRgb uploaded UiMode{ui} over {dots} dots";
         var padded = aligned ? zones.Count(z => z.Family == Streamed) : 0;
         if (padded > 0)
         {
@@ -380,7 +367,7 @@ public static partial class LConnectLoops
             return null;
         }
 
-        var interval = speed * UiIntervalBaseFor(ui);
+        var interval = speed * UiIntervalBaseFor(ui) * ProceduralStride(effectId);
         var tail = string.Empty;
         if (loopReturn is not null)
         {
@@ -421,7 +408,7 @@ public static partial class LConnectLoops
         }
 
         var stages = spans.Select(sp => sp.Start).Distinct().Count();
-        var label = $"L-Connect Quick/Sync UiMode{ui} over an explicit spatial path of {total} source dots ({stages} stage(s) bound here){(aligned ? ", fan-aligned Stacking" : string.Empty)}";
+        var label = $"UnifiedRgb uploaded UiMode{ui} over an explicit spatial path of {total} source dots ({stages} stage(s) bound here){(aligned ? ", fan-aligned Stacking" : string.Empty)}";
         return new LConnectPlan(label + tail + RingSuffix(zones, fill, sampling), result);
     }
 
@@ -515,280 +502,6 @@ public static partial class LConnectLoops
         return filled.Family is null
             ? "; H2 ring"
             : $"; H2 vertical-fill (bottom={shape!.Value.Bottom}{(filled.HalfStep ? ", half-step" : string.Empty)}{(sampling == RingSampling.Linear ? ", interpolated" : string.Empty)})";
-    }
-
-    /// <summary>The frames lianli.slv3.dll generates for TL mode <paramref name="mode"/>, in layout order (row 0 = Up edge).</summary>
-    public static byte[][]? TlFrames(int mode, int fans, int bright, int direction, IReadOnlyList<Rgb> colors)
-    {
-        if (fans is < 1 or > 4 || !TlModes.Contains(mode))
-        {
-            return null;
-        }
-
-        if (mode == 29)
-        {
-            var table = Twinkle.Value;
-            var w0 = TlMode29(fans, bright, Slv3UserColour(0, colors, RgbMax), table);
-            var w1 = TlMode29(fans, bright, Slv3UserColour(1, colors, RgbMax), table);
-            return w0.Select((f, i) => WireHalvesToLayout(f, w1[i], fans)).ToArray();
-        }
-
-        // Up = tb 0, Down = tb 1; CombingTLRgbData takes each edge from its own render (equal frame counts)
-        var up = TlChain(mode, 0, fans, bright, direction, Slv3UserColour(0, colors, RgbMax));
-        var down = TlChain(mode, 1, fans, bright, direction, Slv3UserColour(1, colors, RgbMax));
-        var num = fans * 13;
-        var frames = new byte[up.Count][];
-        for (var i = 0; i < up.Count; i++)
-        {
-            var f = new byte[2 * num * 3];
-            up[i].AsSpan(0, num * 3).CopyTo(f);
-            down[i].AsSpan(0, num * 3).CopyTo(f.AsSpan(num * 3));
-            frames[i] = f;
-        }
-
-        return frames;
-    }
-
-    /// <summary>The frames lianli.slv3.dll generates for H2 mode 1..8 on the block's 24 LEDs.</summary>
-    public static byte[][]? H2Frames(int mode, int bright, int direction, IReadOnlyList<Rgb> colors)
-    {
-        if (mode is < 1 or > 8)
-        {
-            return null;
-        }
-
-        if (mode == 8)
-        {
-            return H2Twinkle(bright); // fixed palette: H2Mode8 ignores the user colours and iDir
-        }
-
-        var uc = Slv3UserColour(0, colors, H2RgbMax);
-        direction = direction > 1 ? 0 : direction;
-        var frames = new List<byte[]>();
-        var arr = new byte[24 * 3];
-        switch (mode)
-        {
-            case 1:
-                for (var i = 0; i < 24; i++)
-                {
-                    var n = i;
-                    for (var j = 0; j < 24; j++)
-                    {
-                        var pos = direction == 0 ? 24 - j - 1 : j;
-                        Put(arr, pos, Rainbow24[0][n] * bright >> 8, Rainbow24[1][n] * bright >> 8, Rainbow24[2][n] * bright >> 8);
-                        n = n + 1 >= 24 ? n + 1 - 24 : n + 1;
-                    }
-
-                    frames.Add((byte[])arr.Clone());
-                }
-
-                break;
-            case 2:
-                return Morph(24).Where((_, i) => i % 2 == 0).Take(127).Select(c => Fill(24, c.R * bright >> 8, c.G * bright >> 8, c.B * bright >> 8)).ToArray();
-            case 3:
-                for (var i = 0; i < 30; i++)
-                {
-                    frames.Add(Fill(24, uc[0, 0] * bright >> 8, uc[0, 1] * bright >> 8, uc[0, 2] * bright >> 8));
-                }
-
-                break;
-            case 4:
-                {
-                    var num = 0;
-                    for (var i = 0; i < 170; i++)
-                    {
-                        var b = (num * 3) & 0xFF;
-                        frames.Add(Fill(24, (uc[0, 0] * b >> 8) * bright >> 8, (uc[0, 1] * b >> 8) * bright >> 8, (uc[0, 2] * b >> 8) * bright >> 8));
-                        num = i >= 85 ? num - 1 : num + 1;
-                    }
-
-                    break;
-                }
-
-            case 5:
-                for (var i = 0; i < 2; i++)
-                {
-                    for (var j = 0; j < 27; j++)
-                    {
-                        for (var k = 0; k < 24; k++)
-                        {
-                            var c = k <= j && k + 3 > j ? 0 : 1;
-                            Put(arr, i != 0 ? 24 - k - 1 : k, uc[c, 0] * bright >> 8, uc[c, 1] * bright >> 8, uc[c, 2] * bright >> 8);
-                        }
-
-                        frames.Add((byte[])arr.Clone());
-                    }
-                }
-
-                break;
-            case 6:
-                {
-                    for (var i = 0; i < 4; i++)
-                    {
-                        for (var j = 0; j < 36; j++)
-                        {
-                            var n2 = 0;
-                            for (var k = 0; k < 24; k++)
-                            {
-                                int r = 0, g = 0, b = 0;
-                                if (k <= j && k + 12 > j)
-                                {
-                                    r = uc[i, 0] * H2Tail[n2] >> 8;
-                                    g = uc[i, 1] * H2Tail[n2] >> 8;
-                                    b = uc[i, 2] * H2Tail[n2] >> 8;
-                                    n2++;
-                                }
-
-                                Put(arr, direction != 0 ? 24 - k - 1 : k, r * bright >> 8, g * bright >> 8, b * bright >> 8);
-                            }
-
-                            frames.Add((byte[])arr.Clone());
-                        }
-                    }
-
-                    var kept = (int)(frames.Count / 2.4);
-                    return Enumerable.Range(0, kept).Select(l => frames[(int)(l * 2.4)]).ToArray();
-                }
-
-            case 7:
-                for (var i = 0; i < 24; i++)
-                {
-                    var n2 = i;
-                    for (var j = 0; j < 24; j++)
-                    {
-                        var c = n2 >= 12 ? 1 : 0;
-                        Put(arr, direction == 0 ? 24 - j - 1 : j, (uc[c, 0] * H2Comet[n2] >> 8) * bright >> 8,
-                            (uc[c, 1] * H2Comet[n2] >> 8) * bright >> 8, (uc[c, 2] * H2Comet[n2] >> 8) * bright >> 8);
-                        n2 = n2 + 1 >= 24 ? n2 + 1 - 24 : n2 + 1;
-                    }
-
-                    frames.Add((byte[])arr.Clone());
-                }
-
-                break;
-        }
-
-        return [.. frames];
-    }
-
-    /// <summary>Header interval of an H2 mode: SpeedType × <c>GetH2Effect</c>'s interval_base.</summary>
-    public static int H2IntervalMs(int mode, int speedType) => speedType * H2IntervalBase[mode - 1];
-
-    /// <summary><c>UiMode1/3/4</c> over <paramref name="dots"/> logical dots (frame-major, R,G,B per dot).</summary>
-    public static IReadOnlyList<byte[]> UiFrames(int mode, int dots, int bright, int direction, byte[,] ui)
-    {
-        ArgumentNullException.ThrowIfNull(ui);
-        direction = direction > 1 ? 0 : direction;
-        var frames = new List<byte[]>();
-        switch (mode)
-        {
-            case 1:
-                var row = new byte[24 * 3];
-                for (var i = 0; i < 24; i++)
-                {
-                    var n = i;
-                    for (var j = 0; j < 24; j++)
-                    {
-                        Put(row, direction == 0 ? 24 - j - 1 : j, Rainbow24[0][n] * bright >> 8, Rainbow24[1][n] * bright >> 8, Rainbow24[2][n] * bright >> 8);
-                        n = n + 1 >= 24 ? n + 1 - 24 : n + 1;
-                    }
-
-                    var f = new byte[dots * 3];
-                    for (var d = 0; d < dots; d++)
-                    {
-                        row.AsSpan((d % 24) * 3, 3).CopyTo(f.AsSpan(d * 3));
-                    }
-
-                    frames.Add(f);
-                }
-
-                break;
-            case 3:
-                frames.Add(Fill(dots, ui[0, 0] * bright >> 8, ui[0, 1] * bright >> 8, ui[0, 2] * bright >> 8));
-                break;
-            case 4:
-                var num2 = 0;
-                for (var i = 0; i < 170; i++)
-                {
-                    var b = (byte)(num2 * 3);
-                    frames.Add(Fill(dots, (byte)(ui[0, 0] * b >> 8) * bright >> 8, (byte)(ui[0, 1] * b >> 8) * bright >> 8, (byte)(ui[0, 2] * b >> 8) * bright >> 8));
-                    num2 = i >= 85 ? num2 - 1 : num2 + 1;
-                }
-
-                break;
-            default:
-                throw new ArgumentOutOfRangeException(nameof(mode));
-        }
-
-        return frames;
-    }
-
-    /// <summary><c>GetRgb</c>: while R+G+B exceeds <paramref name="max"/>, scale every channel by 0.95 (truncating).</summary>
-    public static Rgb CapColour(Rgb c, int max)
-    {
-        var (r, g, b) = (c.R, c.G, c.B);
-        while (r + g + b > max)
-        {
-            (r, g, b) = ((byte)(r * 0.95), (byte)(g * 0.95), (byte)(b * 0.95));
-        }
-
-        return new Rgb(r, g, b);
-    }
-
-    /// <summary>
-    /// <c>Slv3UserColour[tb, 0..3]</c> after <c>initUserColor</c>: the static per-row defaults, overwritten by the first four
-    /// (capped) user colours when their total is non-zero.
-    /// </summary>
-    public static byte[,] Slv3UserColour(int tb, IReadOnlyList<Rgb> colors, int max)
-    {
-        ArgumentNullException.ThrowIfNull(colors);
-        var uc = new byte[4, 3];
-        for (var j = 0; j < 4; j++)
-        {
-            for (var c = 0; c < 3; c++)
-            {
-                uc[j, c] = DefaultUserColour[tb, j, c];
-            }
-        }
-
-        var capped = colors.Select(c => CapColour(c, max)).ToArray();
-        if (capped.Sum(c => c.R + c.G + c.B) > 0)
-        {
-            for (var j = 0; j < capped.Length && j < 4; j++)
-            {
-                (uc[j, 0], uc[j, 1], uc[j, 2]) = (capped[j].R, capped[j].G, capped[j].B);
-            }
-        }
-
-        return uc;
-    }
-
-    private static LConnectZoneLoop? PerDevice(LConnectZone zone, string effectId, int speed, int bright, int dir, IReadOnlyList<Rgb> colors,
-        out string variant, out string reason)
-    {
-        variant = string.Empty;
-        reason = string.Empty;
-        if (zone.Family == Tl)
-        {
-            var mode = TlModeFor(effectId);
-            if (mode is not { } m || TlFrames(m, zone.Fans, bright, dir, colors) is not { } frames)
-            {
-                reason = $"TL {effectId} is not a lianli.slv3.dll body (TLMode1..7/19/29); other TL effects come from WitmodLightings.GetTLEffect, not recovered";
-                return null;
-            }
-
-            variant = $"L-Connect TL per-chain TLMode{m}";
-            return new LConnectZoneLoop(frames.Length, speed * TlIntervalBase, Concat(frames));
-        }
-
-        if (H2ModeFor(effectId) is not { } h2 || H2Frames(h2, bright, dir, colors) is not { } h2Frames)
-        {
-            reason = $"H2 has no {effectId} body (H2Effects 1..8: Rainbow, RainbowMorph, StaticColor, Breathing, Runway, Meteor, Taichi, Twinkle)";
-            return null;
-        }
-
-        variant = $"L-Connect H2 H2Mode{h2}";
-        return new LConnectZoneLoop(h2Frames.Length, H2IntervalMs(h2, speed), Concat(h2Frames));
     }
 
     private static int? VendorModeFor(string family, string effectId, IReadOnlyList<int> allowed) =>
@@ -942,7 +655,7 @@ public static partial class LConnectLoops
     /// <summary><c>GetUIeEffect</c>'s <c>array[6, 3]</c>: up to six user colours, each capped (RGBMax 600), the rest black.</summary>
     private static byte[,] UiColours(IReadOnlyList<Rgb> colors)
     {
-        var ui = new byte[6, 3];
+        var ui = new byte[Math.Clamp(colors.Count, 1, 6), 3];
         for (var i = 0; i < colors.Count && i < 6; i++)
         {
             var c = CapColour(colors[i], RgbMax);
@@ -952,386 +665,5 @@ public static partial class LConnectLoops
         return ui;
     }
 
-    /// <summary>
-    /// One TL edge (<paramref name="tb"/>) of <c>TLModeN</c>: per frame the <c>array[3, 104]</c> chain positions 0..fans·13−1
-    /// that the body copies onto that edge of every fan. The scratch array persists across frames as in the IL (Stacking
-    /// relies on it).
-    /// </summary>
-    private static List<byte[]> TlChain(int mode, int tb, int fans, int bright, int direction, byte[,] uc)
-    {
-        direction = direction > 1 ? 0 : direction;
-        var num = fans * 13;
-        var arr = new byte[104 * 3];
-        var frames = new List<byte[]>();
-        void Emit() => frames.Add(arr.AsSpan(0, num * 3).ToArray());
 
-        switch (mode)
-        {
-            case 1:
-                {
-                    var table = fans switch { 1 => Rainbow15, 2 => Rainbow27, 3 => Rainbow39, _ => Rainbow54 };
-                    var len = table[0].Length;
-                    for (var i = 0; i < num; i++)
-                    {
-                        var n3 = i;
-                        for (var j = 0; j < num; j++)
-                        {
-                            Put(arr, direction == 0 ? num - j - 1 : j, table[0][n3] * bright >> 8, table[1][n3] * bright >> 8, table[2][n3] * bright >> 8);
-                            n3 = n3 + 1 >= len ? n3 + 1 - len : n3 + 1;
-                        }
-
-                        Emit();
-                    }
-
-                    break;
-                }
-
-            case 2:
-                {
-                    var i = 0;
-                    foreach (var c in Morph(num))
-                    {
-                        if (i % 2 == 0 && i / 2 < 127)
-                        {
-                            for (var j = 0; j < num; j++)
-                            {
-                                Put(arr, j, c.R * bright >> 8, c.G * bright >> 8, c.B * bright >> 8);
-                            }
-
-                            Emit();
-                        }
-
-                        i++;
-                    }
-
-                    break;
-                }
-
-            case 3:
-                for (var i = 0; i < 4; i++)
-                {
-                    for (var j = i * 13; j < (i + 1) * 13; j++)
-                    {
-                        Put(arr, j, uc[i, 0] * bright >> 8, uc[i, 1] * bright >> 8, uc[i, 2] * bright >> 8);
-                    }
-                }
-
-                for (var f = 0; f < 30; f++)
-                {
-                    Emit();
-                }
-
-                break;
-            case 4:
-                {
-                    var num3 = 0;
-                    for (var i = 0; i < 170; i++)
-                    {
-                        var num4 = (num3 * 3) & 0xFF;
-                        for (var j = 0; j < num; j++)
-                        {
-                            var c = j < 13 ? 0 : j < 26 ? 1 : j < 39 ? 2 : 3;
-                            Put(arr, j, (uc[c, 0] * num4 >> 8) * bright >> 8, (uc[c, 1] * num4 >> 8) * bright >> 8, (uc[c, 2] * num4 >> 8) * bright >> 8);
-                        }
-
-                        num3 = i >= 85 ? num3 - 1 : num3 + 1;
-                        Emit();
-                    }
-
-                    break;
-                }
-
-            case 5:
-                for (var i = 0; i < 2; i++)
-                {
-                    for (var j = 0; j < num + fans + fans - 1; j++)
-                    {
-                        for (var k = 0; k < num; k++)
-                        {
-                            var c = k <= j && k + fans + fans > j ? 0 : 1;
-                            Put(arr, i != 0 ? num - k - 1 : k, uc[c, 0] * bright >> 8, uc[c, 1] * bright >> 8, uc[c, 2] * bright >> 8);
-                        }
-
-                        Emit();
-                    }
-                }
-
-                break;
-            case 6:
-                for (var i = 0; i < 4; i++)
-                {
-                    for (var j = 0; j < num + fans + fans - 1; j++)
-                    {
-                        var n3 = 0;
-                        for (var k = 0; k < num; k++)
-                        {
-                            int r = 0, g = 0, b = 0;
-                            if (k <= j && k + fans + fans > j)
-                            {
-                                var t = TlTail[fans - 1, n3];
-                                (r, g, b) = (uc[i, 0] * t >> 8, uc[i, 1] * t >> 8, uc[i, 2] * t >> 8);
-                                n3++;
-                            }
-
-                            Put(arr, direction != 0 ? num - k - 1 : k, r * bright >> 8, g * bright >> 8, b * bright >> 8);
-                        }
-
-                        Emit();
-                    }
-                }
-
-                break;
-            case 7:
-                {
-                    var seg = new byte[104 * 3];
-                    int n2, n3 = 0;
-                    for (var i = 0; i < 3; i++)
-                    {
-                        n2 = n3;
-                        n3 += ColourCycleLength[fans - 1];
-                        for (var j = n2; j < n3; j++)
-                        {
-                            Put(seg, j, uc[i, 0], uc[i, 1], uc[i, 2]);
-                        }
-
-                        n2 = n3;
-                        n3 += ColourCycleGap[fans - 1];
-                        for (var j = n2; j < n3; j++)
-                        {
-                            Put(seg, j, 0, 0, 0);
-                        }
-
-                        if (tb == 0 && (fans == 1 || fans == 4))
-                        {
-                            n3--;
-                        }
-
-                        if (tb == 0 && fans == 2)
-                        {
-                            n2 = n3;
-                            n3++;
-                            Put(seg, n2, 0, 0, 0);
-                        }
-                    }
-
-                    for (var k = 0; k < num; k++)
-                    {
-                        var n5 = k;
-                        for (var j = 0; j < num; j++)
-                        {
-                            Put(arr, direction == 0 ? num - j - 1 : j, seg[3 * n5] * bright >> 8, seg[(3 * n5) + 1] * bright >> 8, seg[(3 * n5) + 2] * bright >> 8);
-                            n5 = n5 + 1 >= num ? 0 : n5 + 1;
-                        }
-
-                        Emit();
-                    }
-
-                    break;
-                }
-
-            case 19:
-                for (var i = 0; i < 4; i++)
-                {
-                    frames.Clear(); // the IL resets num4 = 0 per colour: each colour overwrites frames 0.., only colour 3 survives (104·fans frames)
-                    var n5 = 0;
-                    for (var n6 = 0; n6 < 13; n6++)
-                    {
-                        for (var j = 0; j < num - n5; j++)
-                        {
-                            for (var k = 0; k < num - n5; k++)
-                            {
-                                var lit = k <= j && k + fans > j;
-                                Put(arr, direction != 0 ? num - k - 1 : k, lit ? uc[i, 0] * bright >> 8 : 0, lit ? uc[i, 1] * bright >> 8 : 0, lit ? uc[i, 2] * bright >> 8 : 0);
-                            }
-
-                            Emit();
-                        }
-
-                        n5 += fans;
-                    }
-
-                    for (var j = 0; j < num; j++)
-                    {
-                        for (var k = 0; k < num; k++)
-                        {
-                            var lit = k > j;
-                            Put(arr, direction != 0 ? num - k - 1 : k, lit ? uc[i, 0] * bright >> 8 : 0, lit ? uc[i, 1] * bright >> 8 : 0, lit ? uc[i, 2] * bright >> 8 : 0);
-                        }
-
-                        Emit();
-                    }
-                }
-
-                break;
-        }
-
-        return frames;
-    }
-
-    /// <summary><c>TLMode29</c>: writes all fans·26 wire LEDs directly (not per edge), 200 frames.</summary>
-    private static List<byte[]> TlMode29(int fans, int bright, byte[,] uc, byte[] twinkle)
-    {
-        var num = fans * 26;
-        var frames = new List<byte[]>(200);
-        for (var i = 0; i < 200; i++)
-        {
-            var f = new byte[num * 3];
-            for (var j = 0; j < num; j++)
-            {
-                var c = TwinkleColour[j];
-                var t = twinkle[(i * 174) + j];
-                Put(f, j, (byte)(uc[c, 0] * t >> 8) * bright >> 8, (byte)(uc[c, 1] * t >> 8) * bright >> 8, (byte)(uc[c, 2] * t >> 8) * bright >> 8);
-            }
-
-            frames.Add(f);
-        }
-
-        return frames;
-    }
-
-    /// <summary>Combines Up (wire top halves) and Down (wire bottom halves) wire frames into the TL Matrix(13F, 2) layout.</summary>
-    private static byte[] WireHalvesToLayout(byte[] up, byte[] down, int fans)
-    {
-        var width = fans * 13;
-        var dst = new byte[2 * width * 3];
-        for (var row = 0; row < 2; row++)
-        {
-            var src = row == 0 ? up : down;
-            for (var col = 0; col < width; col++)
-            {
-                var wire = ((col / 13) * 26) + (row * 13) + (col % 13);
-                src.AsSpan(wire * 3, 3).CopyTo(dst.AsSpan(((row * width) + col) * 3));
-            }
-        }
-
-        return dst;
-    }
-
-    /// <summary>TLMode2/H2Mode2/UiMode2: 255 hue steps, the colour written before the update.</summary>
-    private static IEnumerable<(int R, int G, int B)> Morph(int unused)
-    {
-        _ = unused;
-        int r = 255, g = 0, b = 0;
-        for (var i = 0; i < 255; i++)
-        {
-            yield return (r, g, b);
-            if (i < 85)
-            {
-                (r, g, b) = (r - 3, g + 3, 0);
-            }
-            else if (i < 170)
-            {
-                (r, g, b) = (0, g - 3, b + 3);
-            }
-            else
-            {
-                (r, g, b) = (r + 3, 0, b - 3);
-            }
-        }
-    }
-
-    private static void Put(byte[] a, int led, int r, int g, int b) => (a[3 * led], a[(3 * led) + 1], a[(3 * led) + 2]) = ((byte)r, (byte)g, (byte)b);
-
-    private static byte[] Fill(int leds, int r, int g, int b)
-    {
-        var f = new byte[leds * 3];
-        for (var i = 0; i < leds; i++)
-        {
-            Put(f, i, r, g, b);
-        }
-
-        return f;
-    }
-
-    private static byte[] Concat(IReadOnlyList<byte[]> frames)
-    {
-        var dst = new byte[frames.Sum(f => f.Length)];
-        var o = 0;
-        foreach (var f in frames)
-        {
-            f.CopyTo(dst, o);
-            o += f.Length;
-        }
-
-        return dst;
-    }
-
-    /// <summary>Whether the TLMode29 brightness table is embedded (always, since WP-12 the build requires it).</summary>
-    public static bool HasTwinkleTable => Twinkle.Value.Length == 200 * 174;
-
-    // ---- vendor tables (il-RgbEffect.cs) ----
-
-    /// <summary>RgbEffect.Slv3UserColour initializer (rows tb 0..3, four colours each).</summary>
-    private static readonly byte[,,] DefaultUserColour =
-    {
-        { { 255, 0, 0 }, { 0, 0, 255 }, { 0, 255, 0 }, { 255, 255, 0 } },
-        { { 255, 0, 0 }, { 0, 255, 0 }, { 0, 0, 255 }, { 255, 255, 0 } },
-        { { 255, 0, 0 }, { 255, 255, 0 }, { 255, 0, 255 }, { 255, 255, 0 } },
-        { { 255, 0, 255 }, { 0, 0, 255 }, { 0, 255, 0 }, { 255, 255, 0 } },
-    };
-
-    private static readonly byte[][] Rainbow15 =
-    [
-        [255, 204, 153, 102, 51, 0, 0, 0, 0, 0, 0, 51, 102, 153, 204],
-        [0, 51, 102, 153, 204, 255, 204, 153, 102, 51, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 51, 102, 153, 204, 255, 204, 153, 102, 51],
-    ];
-
-    private static readonly byte[][] Rainbow27 =
-    [
-        [255, 226, 197, 168, 139, 110, 81, 52, 23, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 23, 52, 81, 110, 139, 168, 197, 226],
-        [0, 23, 52, 81, 110, 139, 168, 197, 226, 255, 226, 197, 168, 139, 110, 81, 52, 23, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 23, 52, 81, 110, 139, 168, 197, 226, 255, 226, 197, 168, 139, 110, 81, 52, 23],
-    ];
-
-    private static readonly byte[][] Rainbow39 =
-    [
-        [255, 235, 215, 195, 175, 155, 135, 115, 95, 75, 55, 35, 15, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15, 35, 55, 75, 95, 115, 135, 155, 175, 195, 215, 235],
-        [0, 15, 35, 55, 75, 95, 115, 135, 155, 175, 195, 215, 235, 255, 235, 215, 195, 175, 155, 135, 115, 95, 75, 55, 35, 15, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15, 35, 55, 75, 95, 115, 135, 155, 175, 195, 215, 235, 255, 235, 215, 195, 175, 155, 135, 115, 95, 75, 55, 35, 15],
-    ];
-
-    private static readonly byte[][] Rainbow54 =
-    [
-        [255, 241, 227, 213, 199, 185, 171, 157, 143, 129, 115, 101, 87, 73, 59, 45, 31, 17, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 17, 31, 45, 59, 73, 87, 101, 115, 129, 143, 157, 171, 185, 199, 213, 227, 241],
-        [0, 17, 31, 45, 59, 73, 87, 101, 115, 129, 143, 157, 171, 185, 199, 213, 227, 241, 255, 241, 227, 213, 199, 185, 171, 157, 143, 129, 115, 101, 87, 73, 59, 45, 31, 17, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 17, 31, 45, 59, 73, 87, 101, 115, 129, 143, 157, 171, 185, 199, 213, 227, 241, 255, 241, 227, 213, 199, 185, 171, 157, 143, 129, 115, 101, 87, 73, 59, 45, 31, 17],
-    ];
-
-    /// <summary>UiMode1 / H2Mode1's 24-position table.</summary>
-    private static readonly byte[][] Rainbow24 =
-    [
-        [255, 224, 192, 160, 128, 96, 64, 32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 32, 64, 96, 128, 160, 192, 224],
-        [0, 32, 64, 96, 128, 160, 192, 224, 255, 224, 192, 160, 128, 96, 64, 32, 0, 0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0, 0, 0, 32, 64, 96, 128, 160, 192, 224, 255, 224, 192, 160, 128, 96, 64, 32],
-    ];
-
-    /// <summary>TLMode6 tail, row fans − 1.</summary>
-    private static readonly byte[,] TlTail =
-    {
-        { 32, 255, 0, 0, 0, 0, 0, 0 },
-        { 16, 64, 128, 255, 0, 0, 0, 0 },
-        { 8, 16, 32, 64, 128, 255, 0, 0 },
-        { 6, 10, 16, 32, 64, 96, 168, 255 },
-    };
-
-    /// <summary>TLMode7 <c>array3</c> (colour length) and <c>array2</c> (gap) by fans − 1.</summary>
-    private static readonly byte[] ColourCycleLength = [1, 2, 5, 8];
-
-    private static readonly byte[] ColourCycleGap = [3, 6, 8, 9];
-
-    private static readonly byte[] H2Tail = [6, 8, 16, 24, 32, 48, 64, 96, 120, 150, 200, 255];
-
-    private static readonly byte[] H2Comet = [255, 230, 205, 180, 155, 130, 105, 80, 55, 30, 20, 10, 255, 230, 205, 180, 155, 130, 105, 80, 55, 30, 20, 10];
-
-    /// <summary>TLMode29 <c>array2</c>: user colour index per wire LED.</summary>
-    private static readonly byte[] TwinkleColour =
-    [
-        1, 0, 2, 3, 1, 2, 1, 0, 2, 3, 0, 3, 1, 0, 1, 2, 0, 2, 1, 0, 3, 1, 3, 0, 1, 0, 2, 0, 1, 3,
-        1, 2, 3, 1, 2, 1, 0, 2, 1, 2, 0, 2, 0, 1, 3, 0, 2, 3, 1, 0, 1, 2, 3, 0, 1, 2, 1, 3, 0, 3,
-        2, 1, 0, 3, 0, 2, 1, 0, 3, 0, 1, 2, 0, 3, 2, 1, 0, 1, 2, 3, 0, 1, 2, 1, 3, 2, 1, 0, 1, 3,
-        2, 0, 2, 1, 0, 1, 3, 2, 1, 0, 2, 3, 0, 1, 3, 0, 2, 3, 1, 2, 0, 3, 1, 2, 3, 2, 0, 1, 2, 3,
-        1, 2, 1, 2, 0, 1, 2, 0, 1, 3, 0, 2, 3, 1, 2, 0, 1, 2, 3, 2, 1, 2, 0, 1, 3, 0, 1, 2, 1, 2,
-        3, 2, 0, 2, 3, 0, 1, 3, 0, 2, 0, 1, 3, 0, 1, 3, 2, 0, 1, 3, 0, 2, 1, 0,
-    ];
 }

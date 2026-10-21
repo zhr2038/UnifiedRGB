@@ -8,8 +8,8 @@ namespace UnifiedRgb.Core.Engine;
 public enum ContentStrategy
 {
     /// <summary>
-    /// The L-Connect body of the selected effect (former <see cref="LoopPolicy.LConnect"/>): uploaded-loop zones get the vendor
-    /// loop as before; streamed zones join a shared route as plain linear dots of the same plan and are played by the streamed
+    /// Compatibility token for the procedural path-loop planner (former <see cref="LoopPolicy.LConnect"/>).
+    /// Uploaded-loop zones get independently generated content; streamed zones join the same shared route and are played by the streamed
     /// loop player; per-device routes give streamed zones the Program equivalent live (<c>+program(N)</c>, §7.3).
     /// </summary>
     Vendor = 0,

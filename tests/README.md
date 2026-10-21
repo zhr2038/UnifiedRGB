@@ -1,13 +1,13 @@
 # 回归测试
 
-在 Windows x64 / .NET 8 SDK 环境从仓库根目录执行：
+在 Windows x64 / .NET 10 SDK 环境从仓库根目录执行：
 
 ```powershell
 dotnet build src/UnifiedRgb.sln -c Release -warnaserror
 dotnet test src/UnifiedRgb.sln -c Release --no-build -m:1
 ```
 
-五个测试项目分别覆盖 Core、Devices、Safety、Host 和 Screens。测试默认使用 fake 传输和合成数据，不启动第二个真实设备后台。
+六个测试项目分别覆盖 Core、Devices、Safety、Host、Screens 与 Setup。测试默认使用 fake 传输和合成数据，不启动第二个真实设备后台。
 
 `-m:1` 将测试程序集串行执行，减少实时调度测试与其他程序集的 WPF 编码负载相互干扰；没有放宽计时阈值或像素断言。
 

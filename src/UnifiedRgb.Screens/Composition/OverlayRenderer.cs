@@ -219,7 +219,7 @@ internal sealed class OverlayRenderer(Func<DrawingVisual, int, int, PixelFrame>?
         dc.DrawText(ft, new Point((w - ft.Width) / 2, h - (barH / 2.0) - (ft.Height / 2) + (barH / 28.0)));
     }
 
-    private static void DrawDashboard(DrawingContext dc, int w, int h, Color accent, IReadOnlyList<(string Label, string Value)> values)
+    private static void DrawDashboard(DrawingContext dc, int w, int h, Color accent, List<(string Label, string Value)> values)
     {
         var wide = w >= h * 2;
         var cols = wide ? 4 : 2;

@@ -197,7 +197,7 @@ public class LConnectStackingAlignmentTests
     {
         var normal = LConnectLoops.TryPlan("Stacking", P(dir), [Red], Mixed())!;
         var flipped = LConnectLoops.TryPlan("Stacking", P(dir), [Red], Mixed(reversed))!;
-        normal.Variant.Should().Be("L-Connect Quick/Sync UiMode7, fan-aligned Stacking over 120 source dots");
+        normal.Variant.Should().Be("UnifiedRgb uploaded UiMode7, fan-aligned Stacking over 120 source dots");
         var zones = Mixed();
         for (var z = 0; z < 4; z++)
         {
@@ -319,11 +319,11 @@ public class LConnectStackingAlignmentTests
         plan.Zones.Should().OnlyContain(z => z.Frames == 792 && z.IntervalMs == 72.0, "speed .25 = SpeedType 6 × 12 ms");
         plan.Synchronous.Should().BeTrue();
         plan.PeriodSeconds.Should().BeApproximately(57.024, 1e-9);
-        plan.Variant.Should().Be("L-Connect Quick/Sync UiMode7, fan-aligned Stacking over 132 source dots; H2 vertical-fill (bottom=High, interpolated)");
+        plan.Variant.Should().Be("UnifiedRgb uploaded UiMode7, fan-aligned Stacking over 132 source dots; H2 vertical-fill (bottom=High, interpolated)");
         plan.Summary.Should().Be($"792 frames × 72 ms = {57.024:0.###} s");
 
         // other shared bodies keep the contiguous 13-dot slicing and its label
-        LConnectLoops.TryPlan("Meteor", P(Direction.Reverse, speed: 0.25f), [Red], Reported())!.Variant.Should().StartWith("L-Connect Quick/Sync UiMode6 over 141 dots");
+        LConnectLoops.TryPlan("Meteor", P(Direction.Reverse, speed: 0.25f), [Red], Reported())!.Variant.Should().StartWith("UnifiedRgb uploaded UiMode6 over 141 dots");
     }
 
     [Fact]

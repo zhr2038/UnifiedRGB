@@ -152,7 +152,7 @@ public class SpatialPathTests
 
     private static byte[,] UiRed()
     {
-        var ui = new byte[6, 3];
+        var ui = new byte[1, 3];
         var c = LConnectLoops.CapColour(Red, LConnectLoops.RgbMax);
         (ui[0, 0], ui[0, 1], ui[0, 2]) = (c.R, c.G, c.B);
         return ui;

@@ -13,3 +13,6 @@
 *.ico binary
 # Example scene manifests and payloads are content-addressed authoring data.
 assets/scenes/examples/** -text
+# Preserve the fixed upstream source bytes and their original license headers.
+tools/pawnio/include/** -text whitespace=-blank-at-eol
+tools/pawnio/sleepmode.inc -text whitespace=-blank-at-eol

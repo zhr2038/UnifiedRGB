@@ -12,22 +12,22 @@ permissions:
 jobs:
   build-and-test:
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
         with:
-          dotnet-version: 8.0.x
+          dotnet-version: 10.0.402
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.11'
       - name: Restore
         run: dotnet restore src/UnifiedRgb.sln
-      - name: Verify .NET 8 SDK
+      - name: Verify .NET 10 SDK
         shell: pwsh
         run: |
           $version = dotnet --version
-          if ($LASTEXITCODE -ne 0 -or $version -notmatch '^8\.') { throw "Expected .NET 8 SDK, got $version" }
+          if ($LASTEXITCODE -ne 0 -or $version -notmatch '^10\.') { throw "Expected .NET 10 SDK, got $version" }
           Write-Output "Selected SDK: $version"
       - name: Build
         run: dotnet build src/UnifiedRgb.sln -c Release --no-restore -warnaserror
@@ -44,6 +44,27 @@ jobs:
       - name: Installation lifecycle (PowerShell 7, fake platform)
         shell: pwsh
         run: ./tools/windows/installation-qa/Invoke-InstallationQa.ps1 -WorkRoot (Join-Path ([IO.Path]::GetTempPath()) 'urgb-installation-qa-ps7')
+      - name: Build self-contained Windows installer
+        shell: pwsh
+        run: ./tools/packaging/Build-Windows.ps1 -Output .artifacts-windows-release
+      - name: Real elevated install, upgrade and uninstall (disposable runner)
+        shell: pwsh
+        run: |
+          $installers = @(Get-ChildItem .artifacts-windows-release -Filter '*Setup.exe' -File)
+          if ($installers.Count -ne 1) { throw 'Expected exactly one installer' }
+          ./tools/packaging/Test-RealInstaller.ps1 -Installer $installers[0].FullName
+      - name: Preserve installer and lifecycle evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: Guangyu-Windows-x64
+          path: |
+            .artifacts-windows-release/*Setup.exe
+            .artifacts-windows-release/SHA256SUMS
+            .artifacts-windows-release/payload-sha256.json
+            .artifacts-windows-release/payload/DEPENDENCIES.json
+            InstallerResults/
+            TestResults/
       - name: Report test counts
         if: always()
         shell: pwsh

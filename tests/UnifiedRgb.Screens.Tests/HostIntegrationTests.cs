@@ -401,7 +401,9 @@ public sealed class HostIntegrationTests
         var pipe = new NamedPipeClientStream(".", host.PipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
         await pipe.ConnectAsync(5000);
         using var rpc = new JsonRpc(new HeaderDelimitedMessageHandler(pipe, pipe, PipeServer.CreateFormatter()));
+#pragma warning disable StreamJsonRpc0003 // deliberately model the old, unannotated reflection-based client contract
         var legacy = rpc.Attach<ILegacyScreenService>();
+#pragma warning restore StreamJsonRpc0003
         rpc.StartListening();
         (await legacy.ListScreensAsync()).Should().ContainSingle();
         await legacy.StopScreensAsync();

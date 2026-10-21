@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="../../src/UnifiedRgb.Setup.Core/UnifiedRgb.Setup.Core.csproj" />
+    <!-- only to prove planned JSON binds into the Host's real options and the adapter's own discovery -->
+    <ProjectReference Include="../../src/UnifiedRgb.Host/UnifiedRgb.Host.csproj" />
+  </ItemGroup>
+</Project>

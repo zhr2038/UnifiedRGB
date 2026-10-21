@@ -26,7 +26,7 @@ $script:ConfigName = 'appsettings.json'
 $script:TaskName = 'UnifiedRgb Host'
 $script:RunKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 $script:RunValueName = 'UnifiedRgb'
-$script:ProcessNames = @('UnifiedRgb.Host', 'UnifiedRgb.App', 'urgb')
+$script:ProcessNames = @('UnifiedRgb.Host', 'UnifiedRgb.App', 'UnifiedRgb.Setup', 'urgb')
 $script:FileKinds = @('program', 'config', 'preserved-config')
 $script:VersionPattern = '^v-[0-9]{8}T[0-9]{6}-[0-9a-f]{8}$'
 $script:MaxFiles = 20000
@@ -1110,7 +1110,11 @@ function New-UrgbWindowsPlatform {
             if ($null -eq $item) { return $null }
             [string]$item.PSObject.Properties[$script:RunValueName].Value
         }
-        SetRunValue = { param([string]$Value) Set-ItemProperty -LiteralPath $script:RunKey -Name $script:RunValueName -Value $Value }
+        SetRunValue = {
+            param([string]$Value)
+            if (-not (Test-Path -LiteralPath $script:RunKey)) { $null = New-Item -Path $script:RunKey }
+            Set-ItemProperty -LiteralPath $script:RunKey -Name $script:RunValueName -Value $Value
+        }
         RemoveRunValue = { Remove-ItemProperty -LiteralPath $script:RunKey -Name $script:RunValueName }
         EnsureDataDirectory = {
             param([string]$Path)

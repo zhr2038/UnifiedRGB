@@ -11,7 +11,7 @@ public sealed class HostSubsystemTests
         var bin = new DirectoryInfo(AppContext.BaseDirectory).Parent?.Parent;
         var hostDir = bin is { Name: "bin" } && bin.Parent?.Parent?.FullName == root
             ? Path.Combine(bin.FullName, "UnifiedRgb.Host", new DirectoryInfo(AppContext.BaseDirectory).Name)
-            : Path.Combine(root, "src", "UnifiedRgb.Host", "bin", new DirectoryInfo(AppContext.BaseDirectory).Parent!.Name, "net8.0-windows");
+            : Path.Combine(root, "src", "UnifiedRgb.Host", "bin", new DirectoryInfo(AppContext.BaseDirectory).Parent!.Name, "net10.0-windows");
         SubsystemOf(Path.Combine(hostDir, "UnifiedRgb.Host.exe")).Should().Be(Subsystem.WindowsGui);
         SubsystemOf(typeof(HostLogging).Assembly.Location).Should().Be(Subsystem.WindowsGui);
         SubsystemOf(typeof(UnifiedRgb.Cli.CliApp).Assembly.Location).Should().Be(Subsystem.WindowsCui);

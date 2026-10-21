@@ -18,6 +18,7 @@ public partial class ForbiddenIdentifierScanTests
         "UnifiedRgb.Devices.LianLi.dll", "UnifiedRgb.Devices.MsiGpu.dll", "UnifiedRgb.Devices.OpenRgbSdk.dll",
         "UnifiedRgb.Devices.AsusAura.dll", "UnifiedRgb.Devices.EneDram.dll",
         "UnifiedRgb.Devices.Virtual.dll", "UnifiedRgb.Contracts.dll", "UnifiedRgb.Host.dll", "UnifiedRgb.App.dll", "urgb.dll",
+        "UnifiedRgb.Screens.dll", "UnifiedRgb.Setup.Core.dll", "UnifiedRgb.Setup.dll",
     ];
 
     [GeneratedRegex("FwErase|FwUpload|FwVerify|FwReboot|UpdatePre|UpdateData|UpdateAio|UpdateFW|FWRescue")]

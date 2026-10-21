@@ -55,7 +55,7 @@ public class LianLiStackingAlignmentCodecTests
         foreach (var dir in new[] { Direction.Reverse, Direction.Forward })
         {
             var plan = LConnectLoops.TryPlan("Stacking", new EffectParams(red, 0.25f, 1f, dir), red, zones)!;
-            plan.Variant.Should().StartWith("L-Connect Quick/Sync UiMode7, fan-aligned Stacking over 132 source dots");
+            plan.Variant.Should().StartWith("UnifiedRgb uploaded UiMode7, fan-aligned Stacking over 132 source dots");
             for (var i = 0; i < 4; i++)
             {
                 var z = plan.Zones[i];

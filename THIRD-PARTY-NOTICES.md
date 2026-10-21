@@ -8,8 +8,11 @@
 
 | 包 | 固定版本 | 许可 |
 | --- | --- | --- |
-| StreamJsonRpc | 2.20.20 | MIT |
-| Serilog | 4.1.0 | Apache-2.0 |
+| StreamJsonRpc | 2.26.150 | MIT |
+| MessagePack / MessagePack.Annotations | 2.5.307 | MIT |
+| Serilog | 4.3.0 | Apache-2.0 |
+| Microsoft.Extensions / ServiceController | 10.0.13 | MIT |
+| Serilog.Extensions.Hosting / Configuration | 10.0.0 / 10.0.1 | Apache-2.0 |
 | Serilog.Sinks.File | 6.0.0 | Apache-2.0 |
 | xUnit | 2.9.2 | Apache-2.0 |
 | FluentAssertions（测试依赖） | 6.12.2 | Apache-2.0 |
@@ -27,6 +30,8 @@
 
 `tools/pawnio/SmbusPIIX4.bin` 来自官方 PawnIO.Modules 0.2.11，SHA256 固定。保留对应 `SmbusPIIX4.p` 源文件、`COPYING`、`SHA256SUMS` 和 `PROVENANCE.md`，模块许可为 LGPL-2.1-or-later。来源及对应构建文件链接见该目录。
 
+安装载荷还附带同一固定源码 commit 的 `sleepmode.inc` 与 `include/`，其中 PawnIO Headers 保留 0BSD 原始声明。不把模块及头文件的授权表述为对整个应用的授权。
+
 PawnIO 系统驱动和 PawnIOLib.dll 是独立安装的依赖，不在本仓库分发。
 
 ## 联力压缩组件与协议研究材料
@@ -40,3 +45,10 @@ PawnIO 系统驱动和 PawnIOLib.dll 是独立安装的依赖，不在本仓库�
 ## 图形与场景素材
 
 公开示例为通用极光场景；测试中的完整机箱包由 `tests/Fixtures/generate_scene_package.py` 通过合成 RGB / GIF 生成，不含用户图片、私有主题或设备绑定。本机主题制作目录和原始照片不随本仓库上传。
+
+## .NET 自包含载荷与安装器
+
+Windows 安装包包含 .NET 10 / WindowsDesktop 运行库，不包含 SDK。`DEPENDENCIES.json`、`Licenses/NuGet/` 中的原始包元数据、许可和通知随安装载荷分发；不把这些库称为项目原创代码。
+安装器使用 NSIS 3.11 的标准 MUI2 / nsExec 与 zlib 压缩，相关 zlib/libpng 许可全文随包保留在 `Licenses/NSIS/COPYING`。NSIS 是构建工具，不是运行程序的外部前提。
+
+历史厂商动画体及采样表的移除、兼容标识与新数学内容的界限见 [SOURCE-PROVENANCE.md](SOURCE-PROVENANCE.md)。不声称 clean room，不重写已有 Git 历史。

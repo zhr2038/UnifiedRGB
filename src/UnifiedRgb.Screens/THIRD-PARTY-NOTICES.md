@@ -4,8 +4,8 @@
 
 MP4/H.264 processing uses the Windows inbox media components through Vortice.MediaFoundation/DirectX **3.6.2**,
 Vortice.Mathematics **1.9.2**, and SharpGen.Runtime/Runtime.COM **2.2.0-beta** (all MIT).
-The binding version is pinned to retain the existing .NET 8/System.Text.Json runtime; it does not pull System.Text.Json 9
-into the Host/RPC/persistence stack. The transitive SharpGen version is explicitly a beta dependency, covered by the local
+The binding version is kept during the .NET 10 migration to avoid combining a media-binding API change with a runtime upgrade.
+The transitive SharpGen version is explicitly a beta dependency, covered by the local
 interop and regression tests, not described as a separately certified Microsoft component.
 
 Copyright (c) Amer Koleci and Contributors; SharpGen attribution is in `Licenses/SharpGen-LICENSE.txt`.

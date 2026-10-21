@@ -2,7 +2,7 @@
 
 这是开发工具，**不属于安装包或运行时**。它直接承载主程序的 WPF 页面和主窗口，但仅注入内存中的 `FakeScreenRpc`；不引用或启动 Host，不创建 PipeClient，不访问 USB，不读取本机生产配置。工具的“应用”和“保存”只记录不同的模拟 RPC 调用。
 
-从仓库根目录使用 .NET 8 SDK：
+从仓库根目录使用 .NET 10 SDK：
 
 ```powershell
 dotnet build tools/windows/ui-qa/UnifiedRgb.UiQa.csproj --artifacts-path .artifacts-ui-m1-20261019 -warnaserror

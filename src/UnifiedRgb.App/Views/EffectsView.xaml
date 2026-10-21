@@ -67,7 +67,7 @@
             <StackPanel Orientation="Horizontal" Margin="0,0,0,6" Visibility="{Binding ShowStrategy, Converter={StaticResource Vis}}">
                 <TextBlock Text="Content" Width="100" VerticalAlignment="Center" />
                 <ComboBox ItemsSource="{Binding Strategies}" SelectedItem="{Binding Strategy}" Width="120"
-                          ToolTip="Vendor: L-Connect's own frames and interval where the vendor body is known (Lian Li TL/H2). Program: the generator itself." />
+                          ToolTip="路径循环：光域数学内容与设备路径投影。程序生成：通用生成器。旧场景的 Vendor 标识继续兼容。" />
             </StackPanel>
             <TextBlock Text="{Binding LoopSummary}" Margin="100,0,0,6" Foreground="{StaticResource MutedBrush}" />
             <TextBlock Text="Preview" Margin="0,6,0,2" />

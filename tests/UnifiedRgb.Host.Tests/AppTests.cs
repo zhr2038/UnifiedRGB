@@ -438,7 +438,7 @@ public sealed class GuiAgainstHostTests
         PreviewRenderer.VendorPlanFor(gen, p, [tl[0] with { Family = null, Units = 0 }], Core.Engine.LoopPolicy.LConnect).Should().BeNull();
 
         var preview = new PreviewRenderer(gen, [ZoneLayout.Matrix(39, 2)], p, vendor: plan);
-        (preview.Loop!.Timing.Frames, preview.Loop.Timing.IntervalMs).Should().Be((39, 55.0));
+        (preview.Loop!.Timing.Frames, preview.Loop.Timing.IntervalMs).Should().Be((200, 55.0));
         var px = preview.Render((5 + 0.5) * 0.055);
         for (var i = 0; i < 78; i++)
         {

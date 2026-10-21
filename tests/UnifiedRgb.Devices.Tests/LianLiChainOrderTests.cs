@@ -78,20 +78,24 @@ public class LianLiChainOrderTests
     public void Mounting_mirror_preserves_fan_onsets_and_histograms_while_chain_reversal_reorders_fans(string effect)
     {
         var mirror = MirrorMap(Tl, 78);
-        foreach (var (dir, expected, chain) in new[]
+        foreach (var (dir, chain) in new[]
         {
-            (Direction.Forward, new[] { 40, 53, 66 }, false),
-            (Direction.Reverse, new[] { 90, 77, 64 }, false),
-            (Direction.Reverse, new[] { 64, 77, 90 }, true),
-            (Direction.Forward, new[] { 66, 53, 40 }, true),
+            (Direction.Forward, false),
+            (Direction.Reverse, false),
+            (Direction.Reverse, true),
+            (Direction.Forward, true),
         })
         {
             var plan = LConnectLoops.TryPlan(effect, new EffectParams(RedGreen, 0.5f, 1f, dir), RedGreen, Group(chain))!;
             var z = plan.Zones[1];
             var plain = Wire(z, null);
             var mirrored = Wire(z, mirror);
+            var identity = LConnectLoops.TryPlan(effect, new EffectParams(RedGreen, 0.5f, 1f, dir), RedGreen, Group(false))!.Zones[1];
+            var original = Wire(identity, null);
             foreach (var row in new[] { 0, 1 })
             {
+                var expected = WireOnsets(original, identity.Frames, row);
+                if (chain) Array.Reverse(expected);
                 WireOnsets(plain, z.Frames, row).Should().Equal(expected, $"{effect} {dir} chain {chain} edge {row}, mirror off");
                 WireOnsets(mirrored, z.Frames, row).Should().Equal(expected, $"{effect} {dir} chain {chain} edge {row}, mirror on");
             }

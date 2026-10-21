@@ -32,7 +32,7 @@ public sealed class StackingAlignmentHostTests
         var host = LConnectLoops.TryPlan("Stacking", p, p.Colors,
             [new("TL", 3, 78), new("TL", 3, 78), new("TL", 3, 78, ReverseChain: true), new("H2", 1, 24, FaceOnFill: true)])!;
 
-        preview.Variant.Should().Be(host.Variant).And.Be("L-Connect Quick/Sync UiMode7, fan-aligned Stacking over 132 source dots; H2 vertical-fill (bottom=High, interpolated)");
+        preview.Variant.Should().Be(host.Variant).And.Be("UnifiedRgb uploaded UiMode7, fan-aligned Stacking over 132 source dots; H2 vertical-fill (bottom=High, interpolated)");
         preview.Summary.Should().Be(host.Summary);
         preview.PeriodSeconds.Should().BeApproximately(57.024, 1e-9);
         preview.Zones.Should().OnlyContain(z => z.Frames == 792 && z.IntervalMs == 72.0);

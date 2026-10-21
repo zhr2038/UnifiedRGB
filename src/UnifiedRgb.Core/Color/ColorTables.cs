@@ -3,8 +3,8 @@ using UnifiedRgb.Devices;
 namespace UnifiedRgb.Core.Color;
 
 /// <summary>
-/// Shared color tables and user-color mapping (port targets: GenerateRainbowColorTable, mapUserColor,
-/// StaticColorTypes from analysis 05 §2/§4). All tables are built once; lookups never allocate.
+/// Application palette and hue sampling, derived from uniform HSV sectors. All tables are built once;
+/// lookups never allocate. StaticColorTypes retains the persisted palette index contract.
 /// </summary>
 public static class ColorTables
 {

@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <!-- Backend of the elevated first-run setup executable: read-only inspection, pure planning, atomic config publication. -->
+    <RootNamespace>UnifiedRgb.Setup</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../UnifiedRgb.Devices.Abstractions/UnifiedRgb.Devices.Abstractions.csproj" />
+    <ProjectReference Include="../UnifiedRgb.Transports.Win/UnifiedRgb.Transports.Win.csproj" />
+    <ProjectReference Include="../UnifiedRgb.Devices.LianLi/UnifiedRgb.Devices.LianLi.csproj" />
+    <ProjectReference Include="../UnifiedRgb.Devices.MsiGpu/UnifiedRgb.Devices.MsiGpu.csproj" />
+    <ProjectReference Include="../UnifiedRgb.Devices.AsusAura/UnifiedRgb.Devices.AsusAura.csproj" />
+    <ProjectReference Include="../UnifiedRgb.Devices.EneDram/UnifiedRgb.Devices.EneDram.csproj" />
+    <ProjectReference Include="../UnifiedRgb.Screens/UnifiedRgb.Screens.csproj" />
+  </ItemGroup>
+</Project>

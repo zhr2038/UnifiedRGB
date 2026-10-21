@@ -487,8 +487,8 @@ public class StackingReturnTests
         (3900 + max.HoldFrames(36) + max.ReturnFrames(36)).Should().Be(4878).And.BeLessThanOrEqualTo(LoopReturn.MaxExtendedFrames);
         LConnectLoops.LoopReturnRefusal(1f, 300, max).Should().BeNull();
         LConnectLoops.LoopReturnRefusal(1f, 12, max).Should().BeNull("outside the vendor range the plan itself falls back, as without a return");
-        LConnectLoops.UiModeRefusal(7, 12).Should().Be("UiMode7 clamps 12 dots to 24 (vendor range 24..720): not reproduced");
-        LConnectLoops.UiModeRefusal(7, 312).Should().Be("UiMode7 over 312 dots needs 4212 frames, beyond the vendor's 4096-frame scratch");
+        LConnectLoops.UiModeRefusal(7, 12).Should().Be("UiMode7 source dots must be in 24..720 (requested 12).");
+        LConnectLoops.UiModeRefusal(7, 312).Should().Be("UiMode7 over 312 dots exceeds the 4096-frame compatibility budget.");
         LConnectLoops.UiModeRefusal(7, 144).Should().BeNull();
     }
 

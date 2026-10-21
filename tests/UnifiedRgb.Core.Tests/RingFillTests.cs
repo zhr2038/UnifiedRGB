@@ -250,7 +250,7 @@ public class RingFillTests
     private static int Dot(byte[] frame, int j)
     {
         var (r, g, b) = (frame[j * 3], frame[(j * 3) + 1], frame[(j * 3) + 2]);
-        return r + g + b == 0 ? 0 : r >= g && r >= b ? 1 : g >= b ? 2 : 3;
+        return r + g + b < 64 ? 0 : r >= g && r >= b ? 1 : g >= b ? 2 : 3;
     }
 
     /// <summary>

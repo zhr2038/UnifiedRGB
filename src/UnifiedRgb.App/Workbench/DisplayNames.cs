@@ -41,7 +41,7 @@ public static class DisplayNames
 
     public static string Strategy(string? id) => id switch
     {
-        "Vendor" => "原厂曲线", "Program" => "程序生成", "Frames" => "帧动画", _ => id ?? "原厂曲线",
+        "Vendor" => "路径循环", "Program" => "程序生成", "Frames" => "帧动画", _ => id ?? "路径循环",
     };
 
     public static string Effect(string id) => id switch

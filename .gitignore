@@ -7,6 +7,7 @@
 !/NuGet.Config
 !/global.json
 !/THIRD-PARTY-NOTICES.md
+!/SOURCE-PROVENANCE.md
 !/src/
 !/tests/
 !/tools/
@@ -20,6 +21,7 @@
 !/design/FIVE-SCREEN-MP4-AND-H2-NATIVE-20261021.zh-CN.md
 !/design/TL-SCREEN-60FPS-AND-DETAIL-20261021.zh-CN.md
 !/design/AUDIT-REMEDIATION-20261021.zh-CN.md
+!/design/NET10-WINDOWS-DELIVERY-20261022.zh-CN.md
 !/design/WINDOWS-APPLICATION.md
 !/design/ITERATION-I2-RESULTS-20261020.zh-CN.md
 !/design/MANAGED-RF-CODEC-20261020.zh-CN.md
@@ -73,5 +75,4 @@
 **/*.key
 **/AGENTS.md
 # First-run setup is being developed independently; publish after its review.
-/src/UnifiedRgb.Setup.Core/
-/tests/UnifiedRgb.Setup.Tests/
+!/tools/packaging/

@@ -26,8 +26,8 @@ public class LConnectLoopTests
         plan.Should().NotBeNull();
         plan.Variant.Should().Contain("TLMode1");
         var z = plan.Zones.Should().ContainSingle().Subject;
-        (z.Frames, z.IntervalMs, z.Rgb.Length).Should().Be((39, 55.0, 39 * 78 * 3));
-        plan.PeriodSeconds.Should().BeApproximately(2.145, 1e-9);
+        (z.Frames, z.IntervalMs, z.Rgb.Length).Should().Be((200, 55.0, 200 * 78 * 3));
+        plan.PeriodSeconds.Should().BeApproximately(11.0, 1e-9);
     }
 
     [Theory]
@@ -41,18 +41,17 @@ public class LConnectLoopTests
         {
             var frames = LConnectLoops.TlFrames(m.VendorMode!.Value, fans, 255, 0, Four);
             frames.Should().NotBeNull($"TLMode{m.VendorMode}");
-            frames!.Length.Should().Be(m.VendorFramesFor(fans), $"TLMode{m.VendorMode} {m.EffectId} × {fans} fans");
+            frames!.Length.Should().BeInRange(1, 200, "the new procedural content has a bounded frame budget");
             frames.Should().OnlyContain(f => f.Length == fans * 26 * 3);
         }
     }
 
     [Fact]
-    public void Stacking_keeps_only_the_last_colours_pass()
+    public void Single_chain_stacking_fills_complete_fans_and_keeps_the_selected_colour()
     {
-        var frames = LConnectLoops.TlFrames(19, 2, 255, 0, Four)!;
-        frames.Should().HaveCount(208, "104 × fans: num4 restarts per colour, so colour 4 overwrites the earlier passes");
-        var lit = frames.SelectMany(f => f.Chunk(3)).Where(c => c.Any(b => b != 0)).ToArray();
-        lit.Should().NotBeEmpty().And.OnlyContain(c => c[0] == (200 * 255 >> 8) && c[1] == (100 * 255 >> 8) && c[2] == 0, "colour 4 at bright 255 (c·b ≫ 8)");
+        var frames=LConnectLoops.TlFrames(19,2,255,0,Four)!;
+        frames.Should().HaveCount(36,"two 12-dot deposits travel 24 then 12 positions");
+        frames[^1].Chunk(3).Should().OnlyContain(c=>c[0]==254&&c[1]==0&&c[2]==0,"the completed stack retains the chosen first colour");
     }
 
     [Fact]
@@ -60,7 +59,7 @@ public class LConnectLoopTests
     {
         var plan = LConnectLoops.TryPlan("Rainbow", new EffectParams([], Speed: 0.5f), [], [new LConnectZone("H2", 1, 24)])!;
         var z = plan.Zones.Single();
-        (z.Frames, z.IntervalMs).Should().Be((24, 100.0));
+        (z.Frames, z.IntervalMs).Should().Be((200, 100.0));
         LConnectLoops.H2IntervalMs(2, 3).Should().Be(33);
     }
 
@@ -70,9 +69,9 @@ public class LConnectLoopTests
         var zones = new[] { new LConnectZone("TL", 2, 52), new LConnectZone("H2", 1, 24) };
         var plan = LConnectLoops.TryPlan("Rainbow", new EffectParams([], Speed: 0.5f), [], zones)!;
         plan.Variant.Should().Contain("UiMode1");
-        plan.Zones.Should().HaveCount(2).And.OnlyContain(z => z.Frames == 24 && z.IntervalMs == 60.0);
-        plan.Zones[0].Rgb.Length.Should().Be(24 * 52 * 3);
-        plan.Zones[1].Rgb.Length.Should().Be(24 * 24 * 3);
+        plan.Zones.Should().HaveCount(2).And.OnlyContain(z => z.Frames == 200 && z.IntervalMs == 60.0);
+        plan.Zones[0].Rgb.Length.Should().Be(200 * 52 * 3);
+        plan.Zones[1].Rgb.Length.Should().Be(200 * 24 * 3);
 
         // both TL edges show the same dot
         var f0 = plan.Zones[0].Rgb.AsSpan(0, 52 * 3);
@@ -85,13 +84,13 @@ public class LConnectLoopTests
         var zones = new[] { new LConnectZone("TL", 1, 26), new LConnectZone("TL", 1, 26) };
         LConnectLoops.TryPlan("StaticColor", new EffectParams([new Rgb(10, 20, 30)]), [new Rgb(10, 20, 30)], zones)!.Zones
             .Should().OnlyContain(z => z.Frames == 1);
-        LConnectLoops.TryPlan("Breathing", new EffectParams([]), [new Rgb(255, 0, 0)], zones)!.Zones.Should().OnlyContain(z => z.Frames == 170);
+        LConnectLoops.TryPlan("Breathing", new EffectParams([]), [new Rgb(255, 0, 0)], zones)!.Zones.Should().OnlyContain(z => z.Frames == 200);
         LConnectLoops.TryPlan("RainbowMorph", new EffectParams([], Speed: 1f), [], zones)!.Zones
-            .Should().OnlyContain(z => z.Frames == 127 && z.IntervalMs == 33.0);
+            .Should().OnlyContain(z => z.Frames == 200 && z.IntervalMs == 33.0);
         var meteor = LConnectLoops.TryPlan("Meteor", new EffectParams([]), Four, zones)!;
         meteor.Should().NotBeNull("WP-12: UIEffect 6 is the shared UiMode6 body");
         meteor.Variant.Should().Contain("UiMode6 over 26 dots");
-        meteor.Zones.Should().OnlyContain(z => z.Frames == 26 + 12 && z.IntervalMs == 60.0);
+        meteor.Zones.Should().OnlyContain(z => z.Frames == 200 && z.IntervalMs == 60.0);
     }
 
     [Fact]
@@ -176,7 +175,7 @@ public class LConnectRenderLoopTests
         loop.SetControllers([tl]);
         loop.SetScene(new Scene([Assignment.ForZone(Z(tl), "Rainbow", new EffectParams([], Speed: 0.5f))]));
         var l = Take(bus, tl);
-        (l.Frames, l.IntervalMs, l.LedCount).Should().Be((39, 55.0, 78));
+        (l.Frames, l.IntervalMs, l.LedCount).Should().Be((200, 55.0, 78));
         loop.LastLoopCompile!.Variants!.Should().ContainSingle().Which.Should().Contain("TLMode1");
     }
 

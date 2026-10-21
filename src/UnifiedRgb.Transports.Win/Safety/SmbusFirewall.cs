@@ -172,9 +172,9 @@ public sealed partial class SmbusFirewall
                 first = _logged.Add(reason);
             }
 
-            if (first)
+            if (first && _logger.IsEnabled(LogLevel.Critical))
             {
-                LogBlocked(_logger, c.ToString(), reason);
+                LogBlocked(_logger, c, reason);
             }
         }
 
@@ -248,5 +248,5 @@ public sealed partial class SmbusFirewall
     }
 
     [LoggerMessage(EventId = 9006, Level = LogLevel.Critical, Message = "Blocked SMBus compound {Compound}: {Reason}")]
-    private static partial void LogBlocked(ILogger logger, string compound, string reason);
+    private static partial void LogBlocked(ILogger logger, SmbusCompound compound, string reason);
 }

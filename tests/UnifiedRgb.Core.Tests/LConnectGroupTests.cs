@@ -21,28 +21,28 @@ public class LConnectGroupTests
     private static EffectParams P(Direction dir = Direction.Forward, float speed = 0.5f, float bright = 1f) => new(Four, speed, bright, dir);
 
     [Theory]
-    [InlineData("Rainbow", 1, 24, 60.0)]
+    [InlineData("Rainbow", 1, 200, 60.0)]
     [InlineData("StaticColor", 3, 1, 60.0)]
-    [InlineData("Breathing", 4, 170, 60.0)]
-    [InlineData("Runway", 5, 304, 60.0)]
-    [InlineData("Meteor", 6, 153, 60.0)]
-    [InlineData("ColorCycle", 9, 48, 60.0)]
-    [InlineData("CoverCycle", 10, 282, 60.0)]
-    [InlineData("Wave", 11, 24, 60.0)]
-    [InlineData("MeteorShower", 12, 48, 60.0)]
-    [InlineData("Tide", 13, 142, 60.0)]
-    [InlineData("MopUp", 15, 596, 60.0)]
-    [InlineData("Disco", 16, 12, 60.0)]
-    [InlineData("Warning", 22, 148, 60.0)]
-    [InlineData("Echo", 26, 179, 60.0)]
-    [InlineData("HeartBeat", 27, 400, 90.0)]
-    [InlineData("Ripple", 30, 294, 90.0)]
+    [InlineData("Breathing", 4, 200, 60.0)]
+    [InlineData("Runway", 5, 200, 60.0)]
+    [InlineData("Meteor", 6, 200, 60.0)]
+    [InlineData("ColorCycle", 9, 200, 60.0)]
+    [InlineData("CoverCycle", 10, 200, 60.0)]
+    [InlineData("Wave", 11, 100, 120.0)]
+    [InlineData("MeteorShower", 12, 200, 60.0)]
+    [InlineData("Tide", 13, 100, 120.0)]
+    [InlineData("MopUp", 15, 200, 60.0)]
+    [InlineData("Disco", 16, 200, 60.0)]
+    [InlineData("Warning", 22, 200, 60.0)]
+    [InlineData("Echo", 26, 200, 60.0)]
+    [InlineData("HeartBeat", 27, 200, 90.0)]
+    [InlineData("Ripple", 30, 100, 180.0)]
     public void Four_chain_group_parity_per_shared_route(string effect, int ui, int frames, double interval)
     {
         var plan = LConnectLoops.TryPlan(effect, P(), Four, Group, out var why);
         plan.Should().NotBeNull(why);
         LConnectLoops.GroupRoutes[effect].Should().Be(ui);
-        plan!.Variant.Should().Be($"L-Connect Quick/Sync UiMode{ui} over 141 dots");
+        plan!.Variant.Should().Be($"UnifiedRgb uploaded UiMode{ui} over 141 dots");
         plan.Zones.Should().HaveCount(4);
         plan.Synchronous.Should().BeTrue("a shared UiMode body keeps one period for the group");
         for (var z = 0; z < 4; z++)
@@ -61,7 +61,7 @@ public class LConnectGroupTests
         var plan = LConnectLoops.TryPlan("Stacking", P(), Four, Group, out var why);
         plan.Should().NotBeNull(why);
         LConnectLoops.GroupRoutes["Stacking"].Should().Be(7);
-        plan!.Variant.Should().Be("L-Connect Quick/Sync UiMode7, fan-aligned Stacking over 132 source dots");
+        plan!.Variant.Should().Be("UnifiedRgb uploaded UiMode7, fan-aligned Stacking over 132 source dots");
         plan.Synchronous.Should().BeTrue();
         for (var z = 0; z < 4; z++)
         {
@@ -89,10 +89,11 @@ public class LConnectGroupTests
     [Fact]
     public void Acceptance_four_chain_counts_at_speed_half()
     {
-        var expected = new Dictionary<string, int> { ["Runway"] = 304, ["Meteor"] = 153, ["ColorCycle"] = 48, ["Stacking"] = 792, ["CoverCycle"] = 282, ["Wave"] = 24 };
+        var expected = new Dictionary<string, int> { ["Runway"] = 200, ["Meteor"] = 200, ["ColorCycle"] = 200, ["Stacking"] = 792, ["CoverCycle"] = 200, ["Wave"] = 100 };
         foreach (var (effect, frames) in expected)
         {
-            LConnectLoops.TryPlan(effect, P(), Four, Group)!.Zones.Should().OnlyContain(z => z.Frames == frames && z.IntervalMs == 60.0, effect);
+            var interval = effect == "Wave" ? 120 : 60;
+            LConnectLoops.TryPlan(effect, P(), Four, Group)!.Zones.Should().OnlyContain(z => z.Frames == frames && z.IntervalMs == interval, effect);
         }
     }
 
@@ -126,39 +127,26 @@ public class LConnectGroupTests
     }
 
     [Fact]
-    public void Runway_marker_reaches_each_zone_start_at_its_slice_offset_and_follows_member_order()
+    public void Runway_head_traverses_the_whole_shared_strip()
     {
-        // UiMode5: the colour-1 bar's head enters dot k at frame k, so each zone's first LED first turns red at its start dot
-        static int[] FirstRed(LConnectPlan plan) => plan.Zones.Select(z =>
-        {
-            var leds = z.Rgb.Length / 3 / z.Frames;
-            return Enumerable.Range(0, z.Frames).First(f => z.Rgb[f * leds * 3] == 254 && z.Rgb[(f * leds * 3) + 1] == 0);
-        }).ToArray();
-
-        FirstRed(LConnectLoops.TryPlan("Runway", P(), Four, Group)!).Should().Equal(0, 39, 78, 102);
-        LConnectZone[] reordered = [Group[2], Group[0], Group[1], Group[3]];
-        FirstRed(LConnectLoops.TryPlan("Runway", P(), Four, reordered)!).Should().Equal(0, 24, 63, 102);
+        var raw = LConnectLoops.UiModeFrames(5, 141, 255, 0, Ui(Four), out _)!;
+        var peaks = raw.Select(frame => Enumerable.Range(0,141).MaxBy(i => frame[i*3]+frame[(i*3)+1]+frame[(i*3)+2])).ToArray();
+        peaks.Min().Should().BeLessThan(10);
+        peaks.Max().Should().BeGreaterThan(130);
+        peaks.Distinct().Count().Should().BeGreaterThan(40, "the moving head must traverse the case, rather than pulse a fixed location");
     }
 
     [Fact]
-    public void Runway_sweeps_forward_then_back_and_meteor_tail_and_direction_follow_the_il()
+    public void Procedural_travel_curves_are_bounded_and_direction_is_an_exact_spatial_mirror()
     {
-        var run = LConnectLoops.UiModeFrames(5, 141, 255, 0, Ui(Four), out _)!;
-        run.Should().HaveCount(2 * (141 + 11));
-        Lit(run[11], 141, 255, 0, 0).Should().Equal(Enumerable.Range(0, 12), "bar = 12 dots ending at the head");
-        Lit(run[152 + 11], 141, 255, 0, 0).Should().Equal(Enumerable.Range(129, 12), "second pass runs from the far end");
-        Lit(run[20], 141, 0, 255, 0).Should().HaveCount(141 - 12, "the rest shows colour 2");
-
-        var fwd = LConnectLoops.UiModeFrames(6, 141, 255, 0, Ui(Four), out _)!;
-        var rev = LConnectLoops.UiModeFrames(6, 141, 255, 1, Ui(Four), out _)!;
-        fwd.Should().HaveCount(153);
-        var levels = new[] { 12, 16, 20, 24, 32, 40, 48, 64, 96, 128, 192, 255 }.Select(t => (255 * t >> 8) * 255 >> 8).ToHashSet();
-        fwd.Sum(f => f.Chunk(3).Count(c => c[0] != 0)).Should().BeGreaterThan(0);
-        for (var f = 0; f < fwd.Count; f++)
+        foreach (var mode in new[] { 5, 6 })
         {
-            fwd[f].Chunk(3).Select(c => (int)c[0]).Where(r => r != 0).All(levels.Contains).Should().BeTrue($"frame {f}: only tail levels (colour 1 × tail ≫ 8, × 255 ≫ 8)");
-            fwd[f].Chunk(3).Should().OnlyContain(c => c[1] == 0 && c[2] == 0);
-            fwd[f].Chunk(3).Reverse().SelectMany(c => c).ToArray().Should().Equal(rev[f], "iDir 1 is the spatial mirror");
+            var forward = LConnectLoops.UiModeFrames(mode,141,255,0,Ui(Four),out _)!;
+            var reverse = LConnectLoops.UiModeFrames(mode,141,255,1,Ui(Four),out _)!;
+            forward.Should().HaveCount(200);
+            forward.SelectMany(f=>f).Max().Should().BeGreaterThan(200);
+            for(var frame=0;frame<forward.Count;frame++)
+                forward[frame].Chunk(3).Reverse().SelectMany(p=>p).Should().Equal(reverse[frame]);
         }
     }
 
@@ -168,73 +156,49 @@ public class LConnectGroupTests
     [InlineData(4, 0)]
     [InlineData(4, 1)]
     [InlineData(8, 1)]
-    public void Runway_and_meteor_frame_counts_follow_the_group_size(int tlFans, int h2)
+    public void Procedural_travel_budget_does_not_grow_with_the_group_size(int tlFans, int h2)
     {
-        // several TL chains (≤ 4 fans each) plus optional H2 blocks; D = 13 per fan + 24 per block
         var zones = new List<LConnectZone>();
-        for (var left = tlFans; left > 0; left -= 4)
+        for(var left=tlFans;left>0;left-=4) {var fans=Math.Min(4,left);zones.Add(new("TL",fans,fans*26));}
+        for(var i=0;i<h2;i++) zones.Add(new("H2",1,24));
+        if(zones.Count<2) zones.Add(new("TL",1,26));
+        foreach(var effect in new[]{"Runway","Meteor"})
         {
-            var fans = Math.Min(4, left);
-            zones.Add(new LConnectZone("TL", fans, fans * 26));
-        }
-
-        for (var i = 0; i < h2; i++)
-        {
-            zones.Add(new LConnectZone("H2", 1, 24));
-        }
-
-        if (zones.Count < 2)
-        {
-            zones.Add(new LConnectZone("TL", 1, 26));
-            tlFans++;
-        }
-
-        var dots = (tlFans * 13) + (h2 * 24);
-        LConnectLoops.TryPlan("Runway", P(), Four, zones)!.Zones.Should().OnlyContain(z => z.Frames == 2 * (dots + 11));
-        LConnectLoops.TryPlan("Meteor", P(), Four, zones)!.Zones.Should().OnlyContain(z => z.Frames == dots + 12);
-
-        // Meteor wraps: the head returns to dot 0 after dots + 12 frames (the loop closes without a seam)
-        var raw = LConnectLoops.UiModeFrames(6, dots, 255, 0, Ui(Four), out _)!;
-        raw.Count.Should().Be(dots + 12);
-        raw.Select(f => f.Chunk(3).Count(c => c[0] != 0)).Should().Contain(12, "the full 12-dot tail is on the strip at some frame");
-    }
-
-    [Fact]
-    public void Tl_twinkle_pure_colours_on_both_edges_follow_the_table()
-    {
-        var table = Resource("tl-twinkle.bin");
-        Rgb[] pure = [new(255, 0, 0), new(0, 255, 0), new(0, 0, 255), new(255, 255, 0)];
-        foreach (var bright in new[] { 64, 192, 255 })
-        {
-            var frames = LConnectLoops.TlFrames(29, 2, bright, 0, pure)!;
-            for (var f = 0; f < 200; f++)
-            {
-                for (var row = 0; row < 2; row++)
-                {
-                    for (var col = 0; col < 26; col++)
-                    {
-                        var wire = ((col / 13) * 26) + (row * 13) + (col % 13);
-                        var level = (byte)(255 * table[(f * 174) + wire] >> 8) * bright >> 8;
-                        var o = ((row * 26) + col) * 3;
-                        var px = frames[f].AsSpan(o, 3).ToArray();
-                        px.Should().OnlyContain(v => v == 0 || v == level, $"bright {bright} frame {f} row {row} col {col}: pure channel × table ≫ 8 × bright ≫ 8");
-                        px.Count(v => v != 0).Should().BeLessThanOrEqualTo(2);
-                    }
-                }
-            }
+            var plan=LConnectLoops.TryPlan(effect,P(),Four,zones)!;
+            plan.Synchronous.Should().BeTrue();
+            plan.Zones.Should().OnlyContain(z=>z.Frames==200);
+            for(var i=0;i<zones.Count;i++) plan.Zones[i].Rgb.Length.Should().Be(200*zones[i].LedCount*3);
         }
     }
 
     [Fact]
-    public void Colour_cycle_hard_cuts_between_palette_colours_and_black()
+    public void Procedural_twinkle_is_deterministic_and_reaches_both_edges()
     {
-        var plan = LConnectLoops.TryPlan("ColorCycle", P(), Four, Group)!;
-        var allowed = new HashSet<(byte, byte, byte)> { (0, 0, 0), (254, 0, 0), (0, 254, 0), (0, 0, 254) };
-        plan.Zones.SelectMany(z => z.Rgb.Chunk(3)).Select(c => (c[0], c[1], c[2])).Should().OnlyContain(c => allowed.Contains(c), "no blends: palette or black");
+        Rgb[] palette=[new(255,0,0),new(0,255,0),new(0,0,255)];
+        var first=LConnectLoops.TlFrames(29,2,255,0,palette)!;
+        var second=LConnectLoops.TlFrames(29,2,255,0,palette)!;
+        first.Should().HaveCount(200);
+        for(var frame=0;frame<first.Length;frame++)
+        {
+            first[frame].Should().Equal(second[frame],"random-looking content must be deterministic");
+            first[frame][..78].Should().Equal(first[frame][78..],"both fan edges share their logical strip");
+        }
+        first.Select(f=>Convert.ToHexString(f)).Distinct().Count().Should().BeGreaterThan(20);
+    }
 
-        var tl = LConnectLoops.TryPlan("ColorCycle", P(), Four, [new LConnectZone("TL", 3, 78)])!;
-        tl.Variant.Should().Contain("TLMode7");
-        tl.Zones[0].Frames.Should().Be(39);
+    [Fact]
+    public void Colour_cycle_is_uniform_across_devices_and_cross_fades()
+    {
+        var plan=LConnectLoops.TryPlan("ColorCycle",P(),Four,Group)!;
+        plan.Zones.Should().OnlyContain(z=>z.Frames==200);
+        for(var frame=0;frame<200;frame++)
+        {
+            var expected=plan.Zones[0].Rgb.AsSpan(frame*Group[0].LedCount*3,3).ToArray();
+            for(var zone=0;zone<Group.Length;zone++)
+                plan.Zones[zone].Rgb.AsSpan(frame*Group[zone].LedCount*3,Group[zone].LedCount*3).ToArray().Chunk(3)
+                    .Should().OnlyContain(px=>px.SequenceEqual(expected));
+        }
+        plan.Zones[0].Rgb.Chunk(3).Should().Contain(px=>px[0]>0&&px[1]>0,"cross-fades are intentional in the new curve");
     }
 
     [Theory]
@@ -260,7 +224,7 @@ public class LConnectGroupTests
     public void Twinkle_group_is_per_device_with_unequal_periods()
     {
         var plan = LConnectLoops.TryPlan("Twinkle", P(), Four, Group)!;
-        plan.Variant.Should().Be("L-Connect Quick/Sync UIEffect 8 (per-device TLMode29/H2Mode8)");
+        plan.Variant.Should().Be("UnifiedRgb uploaded UIEffect 8 (per-device TLMode29/H2Mode8)");
         (plan.Zones[0].Frames, plan.Zones[0].IntervalMs).Should().Be((200, 55.0));
         (plan.Zones[2].Frames, plan.Zones[2].IntervalMs).Should().Be((200, 100.0));
         plan.Zones[2].Rgb.Length.Should().Be(200 * 24 * 3);
@@ -270,57 +234,27 @@ public class LConnectGroupTests
 
         var morph = LConnectLoops.TryPlan("RainbowMorph", P(), Four, Group)!;
         morph.Variant.Should().Contain("UIEffect 2 (per-device TLMode2/H2Mode2)");
-        morph.Zones.Should().OnlyContain(z => z.Frames == 127 && z.IntervalMs == 55.0);
+        morph.Zones.Should().OnlyContain(z => z.Frames == 200 && z.IntervalMs == 55.0);
         morph.Synchronous.Should().BeTrue();
     }
 
     [Theory]
-    [InlineData("tl-twinkle.bin", "private static byte[,] TwinkleArr = new byte[200, 174]", null, 34800, "a4965538555254a7c98b13b876d64e60be3d715d1b5077a0ac01bb19ff714c57")]
-    [InlineData("h2-twinkle.bin", "byte[,] array4 = new byte[200, 24]", "public int H2Mode8(int bright, int direction)", 4800, "e046a91cf21cbf926242b7b7d6bc76d6f9354bb6be841d49b0d768473e7b0d2c")]
-    [InlineData("ui-ripple.bin", "byte[,] array5 = new byte[34, 48]", "public static Dictionary<int, byte[,,]> UiMode30(", 1632, "00d275c8df78e004633ae7b62ec671fe6febd72fd52ecab1e9fe5492c4875535")]
-    public void Embedded_tables_match_the_pinned_reference_hashes(string name, string decl, string? method, int length, string sha)
+    [InlineData("tl-twinkle.bin")]
+    [InlineData("h2-twinkle.bin")]
+    [InlineData("ui-ripple.bin")]
+    public void Manufacturer_sampling_tables_are_absent_from_the_product(string name)
     {
-        using var s = typeof(LConnectLoops).Assembly.GetManifestResourceStream($"UnifiedRgb.Core.{name}")!;
-        s.Should().NotBeNull();
-        using var ms = new MemoryStream();
-        s.CopyTo(ms);
-        var bytes = ms.ToArray();
-        bytes.Should().HaveCount(length);
-        Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant().Should().Be(sha);
-
-        var reference = Path.Combine(TestSupport.RepoRoot(), "analysis", "il", "il-RgbEffect.cs");
-        if (!File.Exists(reference))
-        {
-            Console.WriteLine("Pinned embedded length/SHA verified. Additional private IL provenance comparison is unavailable.");
-            return;
-        }
-
-        var il = File.ReadAllText(reference);
-        var start = il.IndexOf(decl, method is null ? 0 : il.IndexOf(method, StringComparison.Ordinal), StringComparison.Ordinal);
-        start.Should().BeGreaterThan(0);
-        var open = il.IndexOf('{', start);
-        var (depth, i) = (0, open);
-        do
-        {
-            depth += il[i] == '{' ? 1 : il[i] == '}' ? -1 : 0;
-            i++;
-        }
-        while (depth > 0);
-        Regex.Matches(il[open..i], @"\d+").Select(m => byte.Parse(m.Value)).ToArray().Should().Equal(bytes, "the asset is the IL table, byte for byte");
+        typeof(LConnectLoops).Assembly.GetManifestResourceStream($"UnifiedRgb.Core.{name}").Should().BeNull();
+        LConnectLoops.HasTwinkleTable.Should().BeFalse();
     }
 
     [Theory]
-    [InlineData(195, 0, 255, 0)]
-    [InlineData(195, 5, 255, 2)]
-    [InlineData(195, 255, 255, 193)]
-    [InlineData(195, 255, 192, 145)]
-    [InlineData(195, 255, 128, 97)]
-    [InlineData(195, 255, 64, 48)]
-    [InlineData(195, 255, 0, 0)]
-    [InlineData(255, 255, 255, 253)]
-    [InlineData(255, 5, 128, 2)]
-    public void Twinkle_truncates_twice_like_the_il(int colour, int intensity, int bright, int expected) =>
-        ((byte)(colour * intensity >> 8) * bright >> 8).Should().Be(expected);
+    [InlineData(600, 200)]
+    [InlineData(570, 190)]
+    public void Proportional_white_cap_preserves_neutrality(int cap, byte channel)
+    {
+        LConnectLoops.CapColour(Rgb.White, cap).Should().Be(new Rgb(channel, channel, channel));
+    }
 
     [Theory]
     [InlineData(0)]
@@ -328,32 +262,16 @@ public class LConnectGroupTests
     [InlineData(128)]
     [InlineData(192)]
     [InlineData(255)]
-    public void Twinkle_bodies_apply_the_two_shifts_to_the_table(int bright)
+    public void Procedural_twinkle_brightness_is_monotonic_and_zero_is_black(int bright)
     {
-        LConnectLoops.CapColour(Rgb.White, LConnectLoops.RgbMax).Should().Be(new Rgb(195, 195, 195), "TL caps white at 600");
-        LConnectLoops.CapColour(Rgb.White, LConnectLoops.H2RgbMax).Should().Be(new Rgb(185, 185, 185), "H2 caps white at 570");
-
-        var table = Resource("tl-twinkle.bin");
-        var tl = LConnectLoops.TlFrames(29, 1, bright, 0, [Rgb.White, Rgb.White, Rgb.White, Rgb.White])!;
-        tl.Should().HaveCount(200);
-        for (var f = 0; f < 200; f++)
-        {
-            for (var col = 0; col < 13; col++)
-            {
-                // fan 0 Up edge: wire LEDs 0..12 (layout row 0)
-                var t = table[(f * 174) + col];
-                tl[f][col * 3].Should().Be((byte)((byte)(195 * t >> 8) * bright >> 8), $"frame {f} LED {col}");
-            }
-        }
-
-        var h2Table = Resource("h2-twinkle.bin");
-        var h2 = LConnectLoops.H2Twinkle(bright);
-        h2.Should().HaveCount(200).And.OnlyContain(f => f.Length == 72);
-        for (var f = 0; f < 200; f++)
-        {
-            var lit = Enumerable.Range(0, 24).Max(j => (int)h2Table[(f * 24) + j]);
-            h2[f].Max().Should().Be((byte)((byte)(255 * lit >> 8) * bright >> 8), $"H2 frame {f}: fixed palette (255) × table ≫ 8 × bright ≫ 8");
-        }
+        var dark=LConnectLoops.TlFrames(29,1,0,0,[Rgb.White])!;
+        dark.SelectMany(f=>f).Should().OnlyContain(b=>b==0);
+        var full=LConnectLoops.TlFrames(29,1,255,0,[Rgb.White])!;
+        var dim=LConnectLoops.TlFrames(29,1,bright,0,[Rgb.White])!;
+        for(var frame=0;frame<full.Length;frame++)
+            for(var i=0;i<full[frame].Length;i++)
+                Math.Abs(dim[frame][i]-(full[frame][i]*bright/255.0)).Should().BeLessThanOrEqualTo(1);
+        LConnectLoops.H2Twinkle(bright).Should().HaveCount(200).And.OnlyContain(f=>f.Length==72);
     }
 
     [Fact]
@@ -442,9 +360,9 @@ public class LConnectGroupTests
         LConnectLoops.TryPlan("Fire", P(), Four, Group, out var fire).Should().BeNull();
         fire.Should().Contain("no Quick/Sync UIEffect").And.Contain("Fire");
         LConnectLoops.TryPlan("Wave", P(), Four, [new LConnectZone("TL", 3, 78)], out var wave).Should().BeNull();
-        wave.Should().Contain("WitmodLightings");
+        wave.Should().Contain("compatibility route");
         LConnectLoops.TryPlan("Wave", P(), Four, [new LConnectZone("H2", 1, 24)], out var h2).Should().BeNull();
-        h2.Should().Contain("H2 has no Wave body");
+        h2.Should().Contain("compatibility route");
     }
 
     [Fact]
@@ -454,7 +372,7 @@ public class LConnectGroupTests
         small.Should().Contain("24..720");
         LConnectLoops.UiModeFrames(27, 521, 255, 0, Ui(Four), out var beat).Should().BeNull();
         beat.Should().Contain("24..520");
-        LConnectLoops.UiModeFrames(27, 520, 255, 0, Ui(Four), out _).Should().HaveCount(400);
+        LConnectLoops.UiModeFrames(27, 520, 255, 0, Ui(Four), out _).Should().HaveCount(200);
         LConnectLoops.UiStackFrames(141).Should().Be(900);
         LConnectLoops.UiModeFrames(7, 400, 255, 0, Ui(Four), out var stack).Should().BeNull();
         stack.Should().Contain("4096");
@@ -472,10 +390,10 @@ public class LConnectGroupTests
     }
 
     /// <summary>GetUIeEffect's colour array as TryPlan builds it (capped at 600).</summary>
-    private static byte[,] Ui(IReadOnlyList<Rgb> colors)
+    private static byte[,] Ui(Rgb[] colors)
     {
-        var ui = new byte[6, 3];
-        for (var i = 0; i < colors.Count && i < 6; i++)
+        var ui = new byte[colors.Length, 3];
+        for (var i = 0; i < colors.Length && i < 6; i++)
         {
             var c = LConnectLoops.CapColour(colors[i], LConnectLoops.RgbMax);
             (ui[i, 0], ui[i, 1], ui[i, 2]) = (c.R, c.G, c.B);
@@ -509,7 +427,7 @@ public class LConnectGroupRenderLoopTests
         new([Assignment.ForGroup("g", c.Select(x => new ZoneRef(x.Id, new ZoneId(0))).ToArray(), effect, new EffectParams([new Rgb(255, 0, 0), new Rgb(0, 0, 255)], Speed: 0.5f))]);
 
     [Theory]
-    [InlineData("Meteor", 153, "UiMode6 over 141 dots")]
+    [InlineData("Meteor", 200, "UiMode6 over 141 dots")]
     [InlineData("Stacking", 792, "UiMode7, fan-aligned Stacking over 132 source dots")]
     [InlineData("Twinkle", 200, "per-device TLMode29/H2Mode8")]
     public void Four_chain_group_publishes_the_vendor_plan_once(string effect, int frames, string variant)

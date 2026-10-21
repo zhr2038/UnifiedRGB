@@ -8,8 +8,7 @@ namespace UnifiedRgb.Core.Engine;
 public enum LoopPolicy
 {
     /// <summary>
-    /// Default. When every target is a Lian Li TL/H2 uploaded-loop zone and the effect has an IL-pinned L-Connect body, the
-    /// loop is L-Connect's own frames, frame count and interval (<see cref="Effects.LianLi.LConnectLoops"/>); otherwise the
+    /// Legacy token for the procedural path-loop planner (<see cref="Effects.LianLi.LConnectLoops"/>); otherwise the
     /// generic path below.
     /// </summary>
     LConnect = 0,

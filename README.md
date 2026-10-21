@@ -6,9 +6,11 @@
 
 光域是面向 Windows 的机箱控制程序：使用原生设备后端管理风扇灯光、冷头灯环、显卡、主板、内存和 LCD，将灯效编排、屏幕动画与电脑信息放在同一个工作台中。
 
-项目采用 **C# / .NET 8 / WPF**。Python 仅用于场景包制作工具，运行主程序不需要 Python。
+项目采用 **C# / .NET 10 LTS / WPF**。Python 仅用于场景包制作工具，运行主程序不需要 Python。
 
-> 当前发布的是开发预览源码。可构建的 Windows 安装程序、首次设备配置向导和完整的分发依赖正在整理，**目前还没有“下载后直接安装使用”的正式安装包**。请勿将本仓库的源码压缩包当作安装包。
+Windows x64 自包含安装包通过 [GitHub Releases](https://github.com/zhr2038/UnifiedRGB/releases) 分发。选择 `Guangyu-…-win-x64-Setup.exe`，无需另装 .NET 或 Python；源码 ZIP 不是安装包。安装包未做商业代码签名，Windows 可能显示未知发布者提示。
+
+安装后从开始菜单打开“光域 · 设备配置”，选择演示或本机硬件，核对变更后保存，再启动“光域”。驱动、硬件型号、设备控制验证和场景绑定仍须针对本机完成，不承诺支持任意品牌型号。当前安装模型为同一 Windows 账户的管理员后台与普通权限界面，多用户及使用另一管理员账户凭据安装尚未验收。
 
 ## 已有功能
 
@@ -54,9 +56,9 @@
 
 ## 从源码构建
 
-需要 Windows x64、.NET 8 SDK 和 Git。首次还原依赖需要访问 NuGet。命令在仓库根目录执行：
+需要 Windows x64、.NET 10 SDK 和 Git。首次还原依赖需要访问 NuGet。命令在仓库根目录执行：
 
-`global.json` 将构建 SDK 限制在8.x，并允许使用已安装的较新8.x功能带，避免多SDK环境自动选用其他主版本。
+`global.json` 以 SDK 10.0.402 为基线，在 .NET 10 内允许较新功能带，不切换到其他主版本。WPF、MVVM、AsyncCommand、Host 和 RPC 架构保留。
 
 ```powershell
 git clone https://github.com/zhr2038/UnifiedRGB.git
@@ -73,11 +75,11 @@ dotnet test .\src\UnifiedRgb.sln -c Release --no-build -m:1
 
 ```powershell
 # 后台负责硬件访问；界面验证连接到同一用户的管理员后台。
-Start-Process .\src\UnifiedRgb.Host\bin\Release\net8.0-windows\UnifiedRgb.Host.exe -Verb RunAs
-Start-Process .\src\UnifiedRgb.App\bin\Release\net8.0-windows\UnifiedRgb.App.exe
+Start-Process .\src\UnifiedRgb.Host\bin\Release\net10.0-windows\UnifiedRgb.Host.exe -Verb RunAs
+Start-Process .\src\UnifiedRgb.App\bin\Release\net10.0-windows\UnifiedRgb.App.exe
 ```
 
-请勿在同一台电脑同时启动两个硬件后台，也不要将源码默认配置覆盖到已有安装。真实设备启用、驱动准备、控制验证和场景绑定仍需要针对本机完成；通用首次配置与标准安装交付尚未完成。
+请勿在同一台电脑同时启动两个硬件后台，也不要将源码默认配置覆盖到已有安装。真实设备启用、驱动准备、控制验证和场景绑定仍需要针对本机完成。安装包构建与隔离生命周期验证入口见 [Windows 打包工具](tools/packaging/README.md)。
 
 配置入口是 Host 目录的 `appsettings.json`。设备类开关、协议身份、驱动/模块路径和控制验证是不同设置；不要为了消除“未就绪”提示而批量将校验字段改成 `true`。
 
@@ -89,7 +91,7 @@ Start-Process .\src\UnifiedRgb.App\bin\Release\net8.0-windows\UnifiedRgb.App.exe
 - 建议按上述命令串行运行测试程序集，避免调度计时测试与其他进程的 WPF 编码测试争用资源；计时测试仍保留原有2ms阈值。
 - 托管压缩器的通用特效预算、堆积回退、参考向量及异常输入测试不依赖私有资源，公开 CI 同样执行。涉及原厂 DLL 的额外交叉解码、历史固定预算及原始厂商记录是**条件测试**；缺少资源明确跳过，不等同于实机验证。
 - `URGB_YUZ_DLL` 可指定本机合法取得的压缩组件；部分历史预算测试还要求本机固定 SHA 的私有资源。这些文件不会被 CI 自动下载。
-- 内嵌效果数据始终核对固定长度和 SHA；额外的私有反编译原文对照仅在本机原始材料存在时执行。
+- 34 个通用生成器保留原有数学金样；厂商采样表和移植动画体已从当前产品移除。旧版厂商逐字节对照不再冒充新内容的验收，路径、堆积、回退、方向和预算继续回归。
 - 独立 Windows CI 会从公开源码执行构建与回归。通过软件测试不等于所有型号均已完成物理播放验收。
 
 场景包工具的测试可单独执行，需要 Python 3.10+，仅使用标准库：
@@ -164,7 +166,7 @@ flowchart LR
 
 ## 后续交付
 
-屏幕性能与原生视频的研究见 [五屏画质与 MP4 研究](design/SCREEN-QUALITY-AND-VIDEO-20261021.zh-CN.md)，代码和实机结果见 [原生视频实现记录](design/NATIVE-VIDEO-IMPLEMENTATION-20261021.zh-CN.md) 及 [五屏 MP4 与冷头协议续作](design/FIVE-SCREEN-MP4-AND-H2-NATIVE-20261021.zh-CN.md)。MP4 使用原有统一时间轴选帧，长屏 H.264 独立关键帧路径保留实时电脑信息 PNG 叠加，不调用厂商程序。冷头 H.264 已在本机完成 5 秒通信和 60 秒限时试验，用户确认画面、黑位和同步正常；测试后恢复熄灯，未自动切换常用策略。冷头电脑信息可合入整幅视频画面，当前场景未启用该层，实机信息叠加仍未测。三块无线风扇屏已用 MP4 素材实测 JPEG 传输，尚无已验证的原生视频入口。原生策略默认关闭，只向单独完成对应验证的设备开放；本机限时验收不代表所有固件兼容或相机实测帧率。
+屏幕原生视频代码和实机结果见 [原生视频实现记录](design/NATIVE-VIDEO-IMPLEMENTATION-20261021.zh-CN.md) 及 [五屏 MP4 与冷头协议续作](design/FIVE-SCREEN-MP4-AND-H2-NATIVE-20261021.zh-CN.md)。MP4 使用原有统一时间轴选帧，长屏 H.264 独立关键帧路径保留实时电脑信息 PNG 叠加，不调用厂商程序。冷头 H.264 已在本机完成 5 秒通信和 60 秒限时试验，用户确认画面、黑位和同步正常；测试后恢复熄灯，未自动切换常用策略。冷头电脑信息可合入整幅视频画面，当前场景未启用该层，实机信息叠加仍未测。三块无线风扇屏已用 MP4 素材实测 JPEG 传输，尚无已验证的原生视频入口。原生策略默认关闭，只向单独完成对应验证的设备开放；本机限时验收不代表所有固件兼容或相机实测帧率。
 
 风扇屏的后续实测见 [60fps 与 JPEG 细节优先记录](design/TL-SCREEN-60FPS-AND-DETAIL-20261021.zh-CN.md)：960 幅独立画面/16 秒的 MP4 经程序实际导入，三屏约 59.56 次主机事务/秒，用户确认流畅。当前 R23 仍是 30fps，未改写或插帧；要增加动作画面，需要真正的 60fps 素材并在 v3 包中设置 `fps: 60`。可选 `jpeg-detail-v1` 已完成原素材对照，用户确认细节改善；默认、现场场景和本机选择保持原样。新界面文件已准备，当前窗口草稿保留，重开界面后才出现新选项。
 

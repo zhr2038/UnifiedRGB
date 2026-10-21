@@ -37,7 +37,7 @@
                 <TextBlock Style="{StaticResource FieldLabel}"><Run Text="亮度"/><Run Text="{Binding Brightness, StringFormat='  {0:0}%'}"/></TextBlock><Slider Minimum="0" Maximum="100" Value="{Binding Brightness}"/>
                 <CheckBox Content="反向播放效果" IsEnabled="{Binding UsesDirection}" IsChecked="{Binding Reverse}" Margin="0,15,0,0"/><CheckBox Content="使用分段空间路径" IsEnabled="{Binding CanUseSpatial}" IsChecked="{Binding UseSpatialPath}"/>
                 <Border Height="1" Background="{StaticResource LineBrush}" Margin="0,20,0,14"/><CheckBox Content="堆满后波浪回退" IsEnabled="{Binding CanReturn}" IsChecked="{Binding ReturnEnabled}"/>
-                <TextBlock Text="原厂堆积专用，沿光条原路径倒流。" Style="{StaticResource Caption}" FontSize="12" Margin="0,3,0,10"/>
+                <TextBlock Text="路径堆积专用，沿光条原路径倒流。" Style="{StaticResource Caption}" FontSize="12" Margin="0,3,0,10"/>
                 <StackPanel IsEnabled="{Binding ReturnEnabled}"><Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions>
                     <StackPanel Margin="0,0,8,0"><TextBlock Text="回退 / 秒" Style="{StaticResource Caption}" Margin="0,0,0,6"/><TextBox Text="{Binding ReturnSeconds}"/></StackPanel>
                     <StackPanel Grid.Column="1"><TextBlock Text="堆满停留 / 秒" Style="{StaticResource Caption}" Margin="0,0,0,6"/><TextBox Text="{Binding HoldSeconds}"/></StackPanel>

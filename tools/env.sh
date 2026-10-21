@@ -3,7 +3,9 @@
 export MSBUILDDISABLENODEREUSE=1 DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_NOLOGO=1 DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1
 dn() {
   local urgb_sdk="${URGB_DOTNET:-dotnet}"
-  if [[ -z "${URGB_DOTNET:-}" && -x "$HOME/dotnet-sdk/dotnet.exe" ]]; then
+  if [[ -z "${URGB_DOTNET:-}" && -x "$HOME/dotnet10-sdk/dotnet.exe" ]]; then
+    urgb_sdk="$HOME/dotnet10-sdk/dotnet.exe"
+  elif [[ -z "${URGB_DOTNET:-}" && -x "$HOME/dotnet-sdk/dotnet.exe" ]]; then
     urgb_sdk="$HOME/dotnet-sdk/dotnet.exe"
   fi
   env 'ProgramFiles(x86)=C:\Program Files (x86)' 'ProgramFiles=C:\Program Files' 'ProgramData=C:\ProgramData' \

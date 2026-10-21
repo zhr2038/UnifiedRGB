@@ -1,8 +1,8 @@
 # PawnIO SMBus module asset
 
 SmbusPIIX4.bin is an unmodified official PawnIO.Modules 0.2.11 release asset,
-downloaded 2026-10-17. It was not built by this project and has not yet been
-loaded or tested against the local hardware by this project.
+downloaded 2026-10-17. It was not built by this project. At acquisition it had not yet been
+loaded; subsequent native ENE bring-up on the owner's specific hardware is documented in the project README.
 
 - Project: https://github.com/namazso/PawnIO.Modules
 - Release: https://github.com/namazso/PawnIO.Modules/releases/tag/0.2.11
@@ -17,6 +17,11 @@ loaded or tested against the local hardware by this project.
 - COPYING contains the release project's LGPL license text; SmbusPIIX4.p is
   included as the corresponding module source file, with its own header intact.
   The source repository above also provides the required includes/build files.
+
+For Windows distribution, `sleepmode.inc` and the complete `include/` directory from the SAME source commit are included
+alongside `SmbusPIIX4.p`, with their original headers. SHA256SUMS records these unmodified source inputs as well as the binary.
+Use upstream PawnIO's Pawn compiler/build instructions with that include directory; this project does not provide a rebuilt
+or re-signed module, or claim that the independent application license replaces the module's LGPL terms.
 
 The downloaded module matches by SHA256 the reference module at OpenRGB commit
 8e16de27858cf2be6af54a33ce003df74cb9fd3e. Our asset is sourced from the official
