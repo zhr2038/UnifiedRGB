@@ -19,4 +19,6 @@ NSIS portable URL: https://downloads.sourceforge.net/project/nsis/NSIS%203/3.11/
 
 SHA256: C7D27F780DDB6CFFB4730138CD1591E841F4B7EDB155856901CDF5F214394FA1
 
+项目的 [构建工具镜像](https://github.com/zhr2038/UnifiedRGB/releases/tag/build-tools-nsis-3.11) 保留同一原始 ZIP、COPYING 与完整 v311 源码。用于云端上游下载响应异常时的复现，下载仍强制匹配相同 SHA；不是光域应用安装包，不进入应用运行时。
+
 许可证：https://nsis.sourceforge.io/License 。不使用 LZMA 插件或外部插件。

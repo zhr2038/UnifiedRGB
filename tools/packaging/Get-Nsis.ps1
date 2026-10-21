@@ -8,6 +8,8 @@ if (Test-Path -LiteralPath $archive) {
     if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash -ne $expected) { throw 'Cached NSIS archive SHA256 mismatch. Not executed.' }
 } else {
     $urls=@(
+        # Byte-identical upstream archive, mirrored with COPYING + complete v311 source. Same fixed hash, no replacement tool.
+        'https://github.com/zhr2038/UnifiedRGB/releases/download/build-tools-nsis-3.11/nsis-3.11.zip',
         'https://downloads.sourceforge.net/project/nsis/NSIS%203/3.11/nsis-3.11.zip?download=1',
         'https://master.dl.sourceforge.net/project/nsis/NSIS%203/3.11/nsis-3.11.zip?viasf=1',
         'https://pilotfiber.dl.sourceforge.net/project/nsis/NSIS%203/3.11/nsis-3.11.zip',
