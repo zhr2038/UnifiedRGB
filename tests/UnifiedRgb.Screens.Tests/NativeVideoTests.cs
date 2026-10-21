@@ -180,7 +180,8 @@ public sealed class NativeVideoTests
         await using var rig=new Rig(Rig.AllOutput,Devices.Turzx);
         await FluentActions.Awaiting(()=>rig.Manager.SetScreenDeviceSettingsAsync(new(Devices.Turzx.Id,0,ScreenEncodingPolicies.NativeH264IntraV1)))
             .Should().ThrowAsync<ArgumentException>().WithMessage("*verified*");
-        await FluentActions.Awaiting(()=>rig.Manager.BeginNativeVideoTrialAsync(new(Devices.H2.Id))).Should().ThrowAsync<ArgumentException>();
+        await FluentActions.Awaiting(()=>rig.Manager.BeginNativeVideoTrialAsync(new(Devices.Tl1.Id))).Should().ThrowAsync<ArgumentException>();
+        await FluentActions.Awaiting(()=>rig.Manager.BeginNativeVideoTrialAsync(new(Devices.H2.Id))).Should().ThrowAsync<InvalidOperationException>();
         await FluentActions.Awaiting(()=>rig.Manager.BeginNativeVideoTrialAsync(new(Devices.Turzx.Id))).Should().ThrowAsync<InvalidOperationException>();
         rig.Opener.Opens.Should().Be(0);
     }

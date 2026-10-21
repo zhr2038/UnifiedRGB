@@ -56,3 +56,18 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+## lian-li-linux: H2 native video protocol cross-check
+
+The independently implemented H2 volatile video stream was cross-checked against the original locally retained
+`WinUsbH2.PlayH264/GetBaseCmdBuf/Encrypt` static evidence and these MIT sources:
+
+- Repository: https://github.com/sgtaziz/lian-li-linux
+- Pinned commit: f55f3e5423820be4216df5fea30e6197a772ba87
+- `crates/lianli-devices/src/crypto.rs`: WinUSB framing, StartPlay, QueueBlock, StopPlay, frame cadence
+- `crates/lianli-devices/src/winusb/lcd/h2_lcd.rs` and `core.rs`: H2 family mapping, I/O bounds and buffer feedback
+
+Copyright (c) 2026 sgtaziz. The full MIT text is shipped in `Licenses/lian-li-linux-LICENSE.txt`.
+The Rust daemon, its fan/pump/RGB controllers, startup-image storage, recovery/reset and FFmpeg runtime are not
+incorporated or invoked. Our typed H2 API exposes only stream data, bounded queue status, cadence and StopPlay.
+Wireless TL PID0006 is a different framing family; these H2/Flex video facts do not establish its H.264 support.

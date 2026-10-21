@@ -355,7 +355,7 @@ public sealed partial class ScreenManager : IScreenService, IScreenSceneBinding,
             _previewCompositor ??= new ScreenCompositor(_assets, PreviewCacheBytes);
             _previewCompositor.ClearCache();
             var video = encoding.Quality == Encoding.ScreenEncodingPolicies.NativeH264IntraV1;
-            var composed = _previewCompositor.Compose(family, video ? shownAssignment with { Overlay = "none", OverlayLayout = null } : shownAssignment, 0, telemetry, now);
+            var composed = _previewCompositor.Compose(family, video && family.Family == ScreenFamily.Turzx ? shownAssignment with { Overlay = "none", OverlayLayout = null } : shownAssignment, 0, telemetry, now);
             if (video)
             {
                 var preview = ScreenWorker.PreviewVideo(family, shownAssignment, composed.Canvas, telemetry, now, rotation);

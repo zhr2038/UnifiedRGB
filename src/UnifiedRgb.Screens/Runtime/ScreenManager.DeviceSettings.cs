@@ -83,7 +83,7 @@ public sealed partial class ScreenManager : IScreenDeviceSettingsService
         }
 
         if (settings.EncodingQuality == ScreenEncodingPolicies.NativeH264IntraV1 && !NativeVideoVerified(id))
-            throw new ArgumentException("Native H.264 is available only for an individually verified TURZX with clock/loop/live-overlay acceptance. Nothing was changed.", nameof(settings));
+            throw new ArgumentException("Native H.264 is available only for an individually verified H2/TURZX with clock/loop/live-information acceptance. Nothing was changed.", nameof(settings));
 
         var wanted = new ScreenDeviceSetting(settings.Rotation, settings.EncodingQuality);
         await EnterMutationAsync(ct).ConfigureAwait(false);

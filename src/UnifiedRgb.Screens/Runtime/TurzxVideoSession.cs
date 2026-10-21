@@ -6,7 +6,7 @@ using UnifiedRgb.Screens.Usb;
 namespace UnifiedRgb.Screens.Runtime;
 
 /// <summary>One worker's existing channel, one access unit in flight. No independent file player or local playback clock.</summary>
-internal sealed class TurzxVideoSession(IScreenUsbChannel channel, ScreenTimestamp stamp, Func<bool> stopped)
+internal sealed class TurzxVideoSession(IScreenUsbChannel channel, ScreenTimestamp stamp, Func<bool> stopped) : INativeVideoSession
 {
     private bool _entered;
     private readonly byte[] _reply = new byte[512];

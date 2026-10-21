@@ -414,9 +414,10 @@ internal sealed partial class ScreenWorker : IDisposable
                         var nativeVideo = encoding.Quality == Encoding.ScreenEncodingPolicies.NativeH264IntraV1 && blocked is null;
                         if (cachedEncoding != encoding) { animationCache.Clear(); cachedEncoding = encoding; }
                         // A cache hit NEVER bypasses a blocked/missing timeline, missing media or live telemetry.
-                        var cacheAsset = blocked is null && (nativeVideo || renderAssignment.Overlay == "none" && renderAssignment.OverlayLayout is null)
-                            && renderAssignment.BackgroundAssetId is { } id ? _ctx.Assets.Find(id) : null;
-                        var frameIndex = cacheAsset?.FrameAt(elapsed) ?? 0;
+                        var separateVideoOverlay = nativeVideo && family.Family == ScreenFamily.Turzx;
+                        var sourceAsset = blocked is null && renderAssignment.BackgroundAssetId is { } id ? _ctx.Assets.Find(id) : null;
+                        var cacheAsset = separateVideoOverlay || renderAssignment.Overlay == "none" && renderAssignment.OverlayLayout is null ? sourceAsset : null;
+                        var frameIndex = sourceAsset?.FrameAt(elapsed) ?? 0;
                         if (nativeVideo) { _videoPosition = elapsed; _videoFrameIndex = frameIndex; }
                         if (cacheAsset is not null && animationCache.Find(cacheAsset.Id, frameIndex) is { } hit)
                         {
@@ -426,7 +427,7 @@ internal sealed partial class ScreenWorker : IDisposable
                         {
                             var composeStart = _ctx.Time.GetTimestamp();
                             var composed = blocked is null
-                                ? compositor.Compose(family, nativeVideo ? renderAssignment with { Overlay = "none", OverlayLayout = null } : renderAssignment,
+                                ? compositor.Compose(family, separateVideoOverlay ? renderAssignment with { Overlay = "none", OverlayLayout = null } : renderAssignment,
                                     elapsed, _ctx.Telemetry(), _ctx.Time.GetUtcNow())
                                 : ScreenCompositor.ComposeBlocked(family, blocked);
                             warning = composed.Warning;
