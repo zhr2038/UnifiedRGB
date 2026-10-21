@@ -61,7 +61,13 @@ try {
 $uninstaller = Join-Path $root 'Uninstall.exe'
 $remove = Start-Process -FilePath $uninstaller -ArgumentList '/S' -WindowStyle Hidden -PassThru
 if (-not $remove.WaitForExit(180000) -or $remove.ExitCode -ne 0) { throw 'Uninstall failed.' }
-Start-Sleep -Seconds 2
+# NSIS relocates the uninstaller into its temporary directory. The launching process may exit before that child;
+# wait for the actual ownership/registration result instead of accepting the launcher exit as completion.
+$deadline=[DateTime]::UtcNow.AddSeconds(180)
+while ((Test-Path 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\UnifiedRgb') -or (Get-ScheduledTask -TaskName 'UnifiedRgb Host' -ErrorAction SilentlyContinue)) {
+    if([DateTime]::UtcNow-ge$deadline){throw 'The real uninstaller did not complete within its bound.'}
+    Start-Sleep -Milliseconds 250
+}
 if (Get-ScheduledTask -TaskName 'UnifiedRgb Host' -ErrorAction SilentlyContinue) { throw 'Owned task survived uninstall.' }
 if (Test-Path 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\UnifiedRgb') { throw 'Application registration survived uninstall.' }
 if (-not (Test-Path -LiteralPath $unknown) -or (Get-FileHash -LiteralPath $sentinel).Hash -ne $sentinelSha) { throw 'Uninstall removed unknown files or user data.' }
