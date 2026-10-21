@@ -2,6 +2,9 @@
 param([ValidateSet('Install','Uninstall')][string]$Mode, [Parameter(Mandatory)][string]$InstallRoot,
       [string]$Source, [string]$Receipt, [switch]$NoStart)
 $ErrorActionPreference = 'Stop'
+# The installer may be launched from PowerShell 7. Do not inherit its module search path into Windows PowerShell 5.1,
+# especially for elevated ACL/task operations. This changes this short-lived process only, never user/machine settings.
+$env:PSModulePath=[IO.Path]::Combine($PSHOME,'Modules')
 $logPath=Join-Path ([IO.Path]::GetTempPath()) ('UnifiedRgb-Setup-'+[Guid]::NewGuid().ToString('N')+'.log')
 Start-Transcript -LiteralPath $logPath -NoClobber | Out-Null
 try {
