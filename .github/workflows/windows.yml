@@ -21,11 +21,6 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.11'
-      - name: Resolve hash-pinned installer tool before the long test run
-        shell: pwsh
-        run: |
-          $compiler = ./tools/packaging/Get-Nsis.ps1 -Destination (Join-Path $env:RUNNER_TEMP 'urgb-pinned-nsis')
-          "URGB_NSIS=$compiler" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Restore
         run: dotnet restore src/UnifiedRgb.sln
       - name: Verify .NET 10 SDK
@@ -49,6 +44,37 @@ jobs:
       - name: Installation lifecycle (PowerShell 7, fake platform)
         shell: pwsh
         run: ./tools/windows/installation-qa/Invoke-InstallationQa.ps1 -WorkRoot (Join-Path ([IO.Path]::GetTempPath()) 'urgb-installation-qa-ps7')
+      - name: Preserve software test evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: Guangyu-TestResults
+          path: TestResults/
+      - name: Report test counts
+        if: always()
+        shell: pwsh
+        run: |
+          Get-ChildItem TestResults -Filter *.trx -ErrorAction SilentlyContinue | ForEach-Object {
+            [xml]$result = Get-Content -LiteralPath $_.FullName
+            $counts = $result.TestRun.ResultSummary.Counters
+            $skipped = @($result.TestRun.Results.UnitTestResult | Where-Object outcome -eq 'NotExecuted').Count
+            Write-Output "$($_.Name): total=$($counts.total), passed=$($counts.passed), failed=$($counts.failed), skipped=$skipped"
+          }
+
+  installer-lifecycle:
+    # A separate VM keeps installation feedback independent of the software timing suite. Both jobs must pass.
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
+        with:
+          dotnet-version: 10.0.402
+      - name: Resolve hash-pinned installer tool
+        shell: pwsh
+        run: |
+          $compiler = ./tools/packaging/Get-Nsis.ps1 -Destination (Join-Path $env:RUNNER_TEMP 'urgb-pinned-nsis')
+          "URGB_NSIS=$compiler" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Build self-contained Windows installer
         shell: pwsh
         run: ./tools/packaging/Build-Windows.ps1 -Output .artifacts-windows-release -MakeNsis $env:URGB_NSIS
@@ -69,14 +95,3 @@ jobs:
             .artifacts-windows-release/payload-sha256.json
             .artifacts-windows-release/payload/DEPENDENCIES.json
             InstallerResults/
-            TestResults/
-      - name: Report test counts
-        if: always()
-        shell: pwsh
-        run: |
-          Get-ChildItem TestResults -Filter *.trx -ErrorAction SilentlyContinue | ForEach-Object {
-            [xml]$result = Get-Content -LiteralPath $_.FullName
-            $counts = $result.TestRun.ResultSummary.Counters
-            $skipped = @($result.TestRun.Results.UnitTestResult | Where-Object outcome -eq 'NotExecuted').Count
-            Write-Output "$($_.Name): total=$($counts.total), passed=$($counts.passed), failed=$($counts.failed), skipped=$skipped"
-          }
