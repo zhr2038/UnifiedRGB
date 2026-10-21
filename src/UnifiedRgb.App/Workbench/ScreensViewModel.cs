@@ -473,11 +473,15 @@ public sealed class ScreensViewModel : ObservableObject
                 _savedRotation = value.Rotation; Rotation = value.Rotation;
                 var native = EncodingQualities.FirstOrDefault(q => q.Id == "h264-intra-v1");
                 if (native is not null) EncodingQualities.Remove(native);
+                var jpeg = EncodingQualities.FirstOrDefault(q => q.Id == "jpeg-detail-v1");
+                if (jpeg is not null) EncodingQualities.Remove(jpeg);
+                if (value.JpegDetailSupported)
+                    EncodingQualities.Add(new("jpeg-detail-v1", "JPEG 细节优先 · 容量内提升质量"));
                 if (value.NativeH264Verified || value.EncodingQuality == "h264-intra-v1")
                     EncodingQualities.Add(new("h264-intra-v1", value.NativeH264Verified ? "原生 H.264 · 统一时钟 / 实时叠加" : "原生 H.264 · 本机验证不可用"));
                 EncodingQuality = EncodingQualities.FirstOrDefault(q => q.Id == value.EncodingQuality) ?? EncodingQualities[0];
                 _settingsAvailable = true; DeviceSettingsDirty = false;
-                DeviceSettingsNote = "方向与质量仅保存在本机。保色优先用于长屏 PNG；原生 H.264 仅向实机验证过的长屏开放，仍按统一时钟取帧并叠加实时信息，背景为有损编码。调色板模式仍未开放。";
+                DeviceSettingsNote = "方向与质量仅保存在本机。JPEG 细节优先从 Q100 起步，超预算时有界回退；保色优先用于长屏 PNG。原生 H.264 仅向实机验证过的设备开放，仍按统一时钟取帧并保留信息显示，背景为有损编码。调色板模式仍未开放。";
                 UpdateSettingsState();
             }
             finally { _loading = loading; }

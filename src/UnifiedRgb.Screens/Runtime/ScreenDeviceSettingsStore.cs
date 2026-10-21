@@ -80,7 +80,7 @@ internal sealed partial class ScreenDeviceSettingsStore(string path, ILogger log
     /// </summary>
     public static string? Problem(string? screenId, int rotation, string? quality)
     {
-        if (!ScreenIds.TryParse(screenId, out _, out _))
+        if (!ScreenIds.TryParse(screenId, out var family, out _))
         {
             return $"'{screenId}' is not a screen id (screen:tl-lcd|h2|turzx:<instance>).";
         }
@@ -90,9 +90,12 @@ internal sealed partial class ScreenDeviceSettingsStore(string path, ILogger log
             return $"{screenId}: rotation must be 0, 90, 180 or 270.";
         }
 
+        if (quality == ScreenEncodingPolicies.JpegDetailV1 && family.Codec == ScreenCodec.TurzxPng)
+            return $"{screenId}: JPEG detail is only available for TL/H2 JPEG screens.";
+
         return ScreenEncodingPolicies.IsKnown(quality)
             ? null
-            : $"{screenId}: '{quality}' is not a selectable encoding quality ({ScreenEncodingPolicies.Legacy}, {ScreenEncodingPolicies.LosslessFirstV1}).";
+            : $"{screenId}: '{quality}' is not a selectable encoding quality ({ScreenEncodingPolicies.Legacy}, {ScreenEncodingPolicies.LosslessFirstV1}, {ScreenEncodingPolicies.JpegDetailV1}).";
     }
 
     /// <summary>Deterministic indented JSON (screens sorted by id), UTF-8 without a BOM.</summary>

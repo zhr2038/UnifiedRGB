@@ -92,8 +92,8 @@ public sealed class DeviceSettingsTests
     {
         await using var rig = new Rig(Rig.AllOutput, Devices.H2);
 
-        (await rig.Manager.GetScreenDeviceSettingsAsync("screen:tl-lcd:new0")).Should().Be(new ScreenDeviceSettingsDto("screen:tl-lcd:new0", 0, Legacy, false));
-        (await rig.Manager.GetScreenDeviceSettingsAsync(H2)).Should().Be(new ScreenDeviceSettingsDto(H2, 0, Legacy, false));
+        (await rig.Manager.GetScreenDeviceSettingsAsync("screen:tl-lcd:new0")).Should().Be(new ScreenDeviceSettingsDto("screen:tl-lcd:new0", 0, Legacy, false, JpegDetailSupported: true));
+        (await rig.Manager.GetScreenDeviceSettingsAsync(H2)).Should().Be(new ScreenDeviceSettingsDto(H2, 0, Legacy, false, JpegDetailSupported: true));
         rig.Manager.EncodingOf(H2).Should().BeSameAs(ScreenEncodingSelection.Legacy);
         rig.Opener.Opens.Should().Be(0);
         rig.Enumerator.Calls.Should().Be(0, "reads never enumerate or open a device");
@@ -120,7 +120,7 @@ public sealed class DeviceSettingsTests
             (await second.GetScreenSceneAsync()).Assignments.Select(a => a.Rotation).Should().Equal(90, 0, 270);
             (await second.GetScreenDeviceSettingsAsync(H2)).Rotation.Should().Be(90);
             (await second.GetScreenDeviceSettingsAsync(Turzx)).Rotation.Should().Be(270);
-            (await second.GetScreenDeviceSettingsAsync(Tl)).Should().Be(new ScreenDeviceSettingsDto(Tl, 0, Legacy, false));
+            (await second.GetScreenDeviceSettingsAsync(Tl)).Should().Be(new ScreenDeviceSettingsDto(Tl, 0, Legacy, false, JpegDetailSupported: true));
             ScreenDeviceSettingsStore.Parse(File.ReadAllBytes(path)).Keys.Should().BeEquivalentTo([H2, Turzx], "zero is no preference");
 
             using (var t = await second.BeginSceneAsync(Images.Scene(new ScreenAssignmentDto(H2), new ScreenAssignmentDto(Tl, Rotation: 180))))
@@ -222,14 +222,14 @@ public sealed class DeviceSettingsTests
         await using var rig = new Rig(null, Devices.H2);
         await rig.Manager.SetScreenSceneAsync(Images.Scene(new ScreenAssignmentDto(H2)));
         (await rig.Manager.SetScreenDeviceSettingsAsync(new ScreenDeviceSettingsUpdateDto(H2, 90, Lossless)))
-            .Should().Be(new ScreenDeviceSettingsDto(H2, 90, Lossless, false));
+            .Should().Be(new ScreenDeviceSettingsDto(H2, 90, Lossless, false, JpegDetailSupported: true));
         (await rig.Manager.GetScreenSceneAsync()).Assignments.Single().Rotation.Should().Be(90);
         var path = rig.Manager.DeviceSettingsPath;
         await rig.Manager.DisposeAsync();
         File.ReadAllBytes(path)[0].Should().Be((byte)'{');
 
         await using var second = new ScreenManager(rig.Options, rig.DataDirectory, rig.Platform);
-        (await second.GetScreenDeviceSettingsAsync(H2)).Should().Be(new ScreenDeviceSettingsDto(H2, 90, Lossless, false));
+        (await second.GetScreenDeviceSettingsAsync(H2)).Should().Be(new ScreenDeviceSettingsDto(H2, 90, Lossless, false, JpegDetailSupported: true));
         (await second.GetScreenSceneAsync()).Assignments.Single().Rotation.Should().Be(90);
         second.EncodingOf(H2).Should().Be(new ScreenEncodingSelection(Lossless, false));
     }
@@ -304,7 +304,7 @@ public sealed class DeviceSettingsTests
         var opens = rig.Opener.Opens;
         var writes = Writes(rig, H2) + Writes(rig, Tl);
 
-        (await rig.Manager.SetScreenDeviceSettingsAsync(new ScreenDeviceSettingsUpdateDto(H2, 270))).Should().Be(new ScreenDeviceSettingsDto(H2, 270, Legacy, false));
+        (await rig.Manager.SetScreenDeviceSettingsAsync(new ScreenDeviceSettingsUpdateDto(H2, 270))).Should().Be(new ScreenDeviceSettingsDto(H2, 270, Legacy, false, JpegDetailSupported: true));
         await rig.Manager.SetScreenDeviceSettingsAsync(new ScreenDeviceSettingsUpdateDto(Devices.Tl2.Id, 90)); // unassigned
         await rig.Manager.SetScreenDeviceSettingsAsync(new ScreenDeviceSettingsUpdateDto(Turzx, 180)); // output gate closed
         await rig.Manager.SetScreenDeviceSettingsAsync(new ScreenDeviceSettingsUpdateDto("screen:h2:offline0", 90)); // never seen
@@ -378,7 +378,7 @@ public sealed class DeviceSettingsTests
     {
         await using var rig = new Rig(o => o.Indexed8VerifiedScreenIds = [H2, "not-a-screen", "SCREEN:H2:1D3343B614A38505"]);
 
-        (await rig.Manager.GetScreenDeviceSettingsAsync(H2)).Should().Be(new ScreenDeviceSettingsDto(H2, 0, Legacy, true));
+        (await rig.Manager.GetScreenDeviceSettingsAsync(H2)).Should().Be(new ScreenDeviceSettingsDto(H2, 0, Legacy, true, JpegDetailSupported: true));
         (await rig.Manager.GetScreenDeviceSettingsAsync(Tl)).Indexed8Verified.Should().BeFalse();
         rig.Manager.EncodingOf(H2).Should().Be(new ScreenEncodingSelection(Legacy, true));
         rig.Manager.EncodingOf(Tl).Should().BeSameAs(ScreenEncodingSelection.Legacy);
@@ -389,7 +389,7 @@ public sealed class DeviceSettingsTests
                 .Should().ThrowAsync<ArgumentException>(id);
         }
 
-        (await rig.Manager.SetScreenDeviceSettingsAsync(new ScreenDeviceSettingsUpdateDto(Tl, 0, Lossless))).Should().Be(new ScreenDeviceSettingsDto(Tl, 0, Lossless, false));
+        (await rig.Manager.SetScreenDeviceSettingsAsync(new ScreenDeviceSettingsUpdateDto(Tl, 0, Lossless))).Should().Be(new ScreenDeviceSettingsDto(Tl, 0, Lossless, false, JpegDetailSupported: true));
         rig.Manager.EncodingOf(Tl).Should().Be(new ScreenEncodingSelection(Lossless, false));
         File.ReadAllText(rig.Manager.DeviceSettingsPath).Should().NotContain("palette").And.NotContain("indexed", "the capability is never persisted");
     }
@@ -599,14 +599,14 @@ public sealed class DeviceSettingsRpcTests
             var screens = rpc.Attach<IScreenService>();
             rpc.StartListening();
 
-            (await settings.GetScreenDeviceSettingsAsync(Devices.H2.Id)).Should().Be(new ScreenDeviceSettingsDto(Devices.H2.Id, 0, "legacy", false));
+            (await settings.GetScreenDeviceSettingsAsync(Devices.H2.Id)).Should().Be(new ScreenDeviceSettingsDto(Devices.H2.Id, 0, "legacy", false, JpegDetailSupported: true));
             await screens.SetScreenSceneAsync(new ScreenSceneDto([new ScreenAssignmentDto(Devices.H2.Id, BackgroundColor: "#102030")]));
             (await settings.SetScreenDeviceSettingsAsync(new ScreenDeviceSettingsUpdateDto(Devices.H2.Id, 90, "lossless-first-v1")))
-                .Should().Be(new ScreenDeviceSettingsDto(Devices.H2.Id, 90, "lossless-first-v1", false));
+                .Should().Be(new ScreenDeviceSettingsDto(Devices.H2.Id, 90, "lossless-first-v1", false, JpegDetailSupported: true));
             (await screens.GetScreenSceneAsync()).Assignments.Single().Rotation.Should().Be(90);
 
             var raw = await rpc.InvokeWithCancellationAsync<JsonElement>("GetScreenDeviceSettings", [Devices.H2.Id], CancellationToken.None);
-            raw.EnumerateObject().Select(p => p.Name).Should().Equal("screenId", "rotation", "encodingQuality", "indexed8Verified");
+            raw.EnumerateObject().Select(p => p.Name).Should().Equal("screenId", "rotation", "encodingQuality", "indexed8Verified", "jpegDetailSupported");
 
             // a caller cannot claim the capability: the member is not part of the update and is ignored
             var claimed = await rpc.InvokeWithCancellationAsync<JsonElement>("SetScreenDeviceSettings",

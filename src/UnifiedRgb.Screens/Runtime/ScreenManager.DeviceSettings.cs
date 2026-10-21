@@ -184,7 +184,8 @@ public sealed partial class ScreenManager : IScreenDeviceSettingsService
             : ScreenFrameEncoder.Encode(family, canvas, turzxLandscapeRotation, quality, indexed8Verified);
 
     private ScreenDeviceSettingsDto Dto(string screenId, ScreenDeviceSetting s) =>
-        new(screenId, s.Rotation, s.EncodingQuality, _indexed8Verified.Contains(screenId), NativeVideoVerified(screenId));
+        new(screenId, s.Rotation, s.EncodingQuality, _indexed8Verified.Contains(screenId), NativeVideoVerified(screenId),
+            ScreenIds.TryParse(screenId, out var family, out _) && family.Codec is ScreenCodec.TlJpeg or ScreenCodec.H2Jpeg);
 
     /// <summary>_gate held. Each assignment with a saved setting at that rotation; the same instance when nothing changes.</summary>
     private ScreenSceneDto NormalizeHeld(ScreenSceneDto scene)

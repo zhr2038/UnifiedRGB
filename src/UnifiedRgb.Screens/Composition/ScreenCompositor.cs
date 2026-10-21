@@ -223,6 +223,7 @@ internal sealed record EncodedFrame(byte Command, byte[] Image, PixelFrame Shown
 internal static class ScreenFrameEncoder
 {
     private static readonly int[] JpegQualities = [90, 80, 70, 60, 50, 40];
+    private static readonly int[] DetailJpegQualities = [100, 95, 90, 80, 70, 60, 50, 40];
     private static readonly int[] PngBits = [8, 6, 5];
     private static readonly Encoding.PngFrameCache PngCache = new(96L * 1024 * 1024, 512);
     private static readonly object OptimizationGate = new();
@@ -231,11 +232,13 @@ internal static class ScreenFrameEncoder
         string quality = Encoding.ScreenEncodingPolicies.Legacy, bool indexed8Verified = false)
     {
         if (quality == Encoding.ScreenEncodingPolicies.NativeH264IntraV1)
-            throw new ScreenEncodeException("Native H.264 needs the verified TURZX video renderer; it is not a PNG/JPEG policy.");
+            throw new ScreenEncodeException("Native H.264 needs the verified H2/TURZX video renderer; it is not a PNG/JPEG policy.");
         if (!Encoding.ScreenEncodingPolicies.IsKnown(quality))
             throw new ScreenEncodeException("Unsupported PNG quality policy. Indexed8 remains research-only: firmware acceptance and a quality benefit are unproved.");
         ArgumentNullException.ThrowIfNull(family);
         ArgumentNullException.ThrowIfNull(canvas);
+        if (quality == Encoding.ScreenEncodingPolicies.JpegDetailV1 && family.Codec == ScreenCodec.TurzxPng)
+            throw new ScreenEncodeException("JPEG detail is only available for TL/H2 JPEG screens; the PNG policy was not changed.");
         if (canvas.Width != family.Width || canvas.Height != family.Height)
         {
             throw new ArgumentException($"canvas {canvas.Width}x{canvas.Height} is not the {family.Width}x{family.Height} {family.Token} canvas", nameof(canvas));
@@ -284,7 +287,7 @@ internal static class ScreenFrameEncoder
         }
 
         var best = int.MaxValue;
-        foreach (var q in JpegQualities)
+        foreach (var q in quality == Encoding.ScreenEncodingPolicies.JpegDetailV1 ? DetailJpegQualities : JpegQualities)
         {
             var jpeg = WpfCodec.EncodeJpeg(canvas, q);
             if (jpeg.Length <= max)
