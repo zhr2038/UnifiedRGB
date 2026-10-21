@@ -32,8 +32,15 @@ jobs:
       - name: Build
         run: dotnet build src/UnifiedRgb.sln -c Release --no-restore -warnaserror
       - name: Test
-        # The scheduler benchmark must not compete with the WPF encoding suites in other test processes.
-        run: dotnet test src/UnifiedRgb.sln -c Release --no-build -m:1 --logger trx --results-directory TestResults
+        # Real-clock performance is a separate required quiet step below, not skipped or given a weaker threshold.
+        run: dotnet test src/UnifiedRgb.sln -c Release --no-build -m:1 --filter 'FullyQualifiedName!~UnifiedRgb.Core.Tests.ClockTests' --logger trx --results-directory TestResults
+      - name: Quiet real-clock benchmark (unchanged 2 ms gate)
+        shell: pwsh
+        run: |
+          dotnet build-server shutdown
+          if ($LASTEXITCODE -ne 0) { throw 'Build services did not stop' }
+          dotnet test tests/UnifiedRgb.Core.Tests/UnifiedRgb.Core.Tests.csproj -c Release --no-build --filter 'FullyQualifiedName~UnifiedRgb.Core.Tests.ClockTests' --logger trx --results-directory TestResults/Timing
+          if ($LASTEXITCODE -ne 0) { throw 'The unchanged real-clock benchmark failed' }
       - name: Scene package authoring tools
         run: python -m unittest discover -s tools/scene-packages -p "test_*.py"
       - name: Generic effect generator reproducibility (read-only)
@@ -54,7 +61,7 @@ jobs:
         if: always()
         shell: pwsh
         run: |
-          Get-ChildItem TestResults -Filter *.trx -ErrorAction SilentlyContinue | ForEach-Object {
+          Get-ChildItem TestResults -Filter *.trx -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
             [xml]$result = Get-Content -LiteralPath $_.FullName
             $counts = $result.TestRun.ResultSummary.Counters
             $skipped = @($result.TestRun.Results.UnitTestResult | Where-Object outcome -eq 'NotExecuted').Count
