@@ -402,7 +402,7 @@ public sealed partial class ScenePackageHostTests
         {
             Pkg.Lighting(edit: m => m["format"] = "UnifiedRgb.ScenePackage.Draft"),
             Pkg.Lighting(edit: m => m["playbackContract"] = "rgb24-hold-physical-ms-v1-draft"),
-            Pkg.Lighting(edit: m => m["schemaVersion"] = 4), // 1/2/3 are read; unknown versions still fail closed
+            Pkg.Lighting(edit: m => m["schemaVersion"] = 5), // 1/2/3/4 are read; unknown versions still fail closed
             Pkg.Zip(Pkg.Entries(Pkg.Lighting()).Select(e => e.Name == "data/strip.rgb24" ? (e.Name, new byte[e.Data.Length]) : (e.Name, e.Data))),
         })
         {

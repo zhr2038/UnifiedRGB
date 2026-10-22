@@ -2,6 +2,8 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using UnifiedRgb.Core.Engine;
 using UnifiedRgb.Screens.Runtime;
+using UnifiedRgb.Contracts;
+using UnifiedRgb.Contracts.Dto;
 
 namespace UnifiedRgb.Host.ScenePackages;
 
@@ -123,8 +125,9 @@ public sealed class ScenePackageFrameSource(ScenePackageStore packages, ScenePac
         }
 
         var first = m.Lighting[0];
-        var set = new FrameSet(id, first.Frames, first.FrameDurationMs, m.Lighting.Select(l => l.LedCount).ToArray(),
-            m.Lighting.Select(l => package.Lighting[l.File]).ToArray())
+        var playback = snapshot.Playback;
+        var set = new FrameSet(id, first.Frames, first.FrameDurationMs / (playback?.Speed ?? 1), m.Lighting.Select(l => l.LedCount).ToArray(),
+            m.Lighting.Select(l => playback is null ? package.Lighting[l.File] : ScenePackagePlayback.TransformFrames(package.Lighting[l.File], l.LedCount, l.Frames, playback)).ToArray())
         {
             Timing = FrameSetTiming.PhysicalMs,
         };
@@ -136,6 +139,12 @@ public sealed class ScenePackageFrameSource(ScenePackageStore packages, ScenePac
 
         built = (set, snapshot.LightingTargets(m));
         _built[id] = built;
+        // Prepared variants can be large. Existing render plans retain their arrays when cache entries are evicted.
+        while (_built.Count > 16)
+        {
+            var old = _built.Keys.FirstOrDefault(k => k != id);
+            if (old is null || !_built.TryRemove(old, out _)) break;
+        }
         if (_removed.ContainsKey(package.ContentId)) { _built.TryRemove(id, out _); problem = "The package was removed."; return false; }
         problem = null;
         return true;
@@ -190,7 +199,7 @@ public sealed class ScenePackageTimeline : IScreenTimeline
 
     /// <summary>What a timeline id resolved to: its loop duration and whether it has RGB, or why it cannot play.</summary>
     /// <param name="Pinned">An explicit <see cref="Block"/>: only <see cref="Warm"/> (an apply or completed hydration) lifts it.</param>
-    internal sealed record TimelineFacts(double DurationMs, bool HasLighting, string? Problem, bool Pinned = false);
+    internal sealed record TimelineFacts(double DurationMs, bool HasLighting, string? Problem, bool Pinned = false, ScenePackagePlaybackDto? Playback = null);
 
     /// <summary>Resolves <paramref name="timelineId"/> now (store/binding I/O; never on a rendering path) and caches the result.</summary>
     /// <returns>Why it cannot play, or null.</returns>
@@ -248,19 +257,19 @@ public sealed class ScenePackageTimeline : IScreenTimeline
         if (facts.HasLighting)
         {
             return _loopTimeline(timelineId) is { } t
-                ? new ScreenTimelineSample(t.PositionMs, t.Source, t.Blocked)
+                ? new ScreenTimelineSample(ScenePackagePlayback.SourcePosition(t.PositionMs, facts.DurationMs, facts.Playback), t.Source, t.Blocked)
                 : new ScreenTimelineSample(0, TimelineSources.Blocked, RgbNotInPlan);
         }
 
         var start = _epochs.GetOrAdd(timelineId, _ => Stopwatch.GetTimestamp());
         var elapsedMs = Stopwatch.GetElapsedTime(start).TotalMilliseconds;
         var period = facts.DurationMs;
-        return new ScreenTimelineSample(elapsedMs - (Math.Floor(elapsedMs / period) * period), TimelineSources.ApplyEpoch);
+        return new ScreenTimelineSample(ScenePackagePlayback.SourcePosition(elapsedMs, period, facts.Playback), TimelineSources.ApplyEpoch);
     }
 
     internal static TimelineFacts FactsOf(ScenePackageFrameSource source, string timelineId) =>
-        source.TryResolve(timelineId, out var package, out _, out var problem)
-            ? new TimelineFacts(package.Manifest.DurationMs, package.Manifest.Lighting.Count > 0, null)
+        source.TryResolve(timelineId, out var package, out var snapshot, out var problem)
+            ? new TimelineFacts(package.Manifest.DurationMs, package.Manifest.Lighting.Count > 0, null, Playback: snapshot.Playback)
             : new TimelineFacts(0, false, problem ?? "the package content cannot be resolved");
 
     private void ScheduleWarm(string timelineId)

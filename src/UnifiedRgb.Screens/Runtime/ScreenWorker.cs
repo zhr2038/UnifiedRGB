@@ -54,6 +54,12 @@ internal sealed record ScreenWorkerContext(
     public Func<string, bool> NativeVideoAllowed { get; init; } = static _ => false;
     public Func<bool> WholeCaseBlackout { get; init; } = static () => false;
     public string? BacklightStateDirectory { get; init; }
+
+    /// <summary>
+    /// Test seam for the PreparedOverlay lab path's encoder; null (production: the manager never sets it) runs the worker's exact
+    /// inline overlay operations, <see cref="ScreenWorker.PrepareOverlayPng"/>.
+    /// </summary>
+    public Func<OverlayPreparationRequest, (byte[] Bytes, string Note)>? PrepareOverlayForTest { get; init; }
 }
 
 internal sealed record WorkerCommand(ScreenAssignmentDto? Assignment, bool Paused, bool Stop = false);
@@ -120,7 +126,19 @@ internal sealed partial class ScreenWorker : IDisposable
 
     public ScreenDeviceInfo Device => _device;
     internal bool HasExited => !_thread.IsAlive;
-    internal ScreenPerformanceDto Performance => _performance.Snapshot(Snapshot()) with { NativeVideo = Volatile.Read(ref _videoFacts) };
+    /// <summary>
+    /// The diagnostic read: per-submission rows and the optional native lab facts only while their trial is this screen's ACTIVE one,
+    /// with the worker loop's own precedence (native video trial first, then rate trial).
+    /// </summary>
+    internal ScreenPerformanceDto Performance
+    {
+        get
+        {
+            var video = _ctx.VideoTrialOf(_device.Id)?.Info.TrialId;
+            var active = video ?? _ctx.TrialOf(_device.Id)?.Info.TrialId;
+            return _performance.Snapshot(Snapshot(), active) with { NativeVideo = NativeVideoFacts(video) };
+        }
+    }
 
     /// <summary>
     /// The labelled source of the last timeline-driven frame ("device-clock", "upload-anchor: ...", "apply-epoch", "unavailable",
@@ -224,7 +242,7 @@ internal sealed partial class ScreenWorker : IDisposable
     private void Run()
     {
         var family = _device.Family;
-        var compositor = new ScreenCompositor(_ctx.Assets, FrameCacheBytes);
+        using var compositor = new ScreenCompositor(_ctx.Assets, FrameCacheBytes);
         var animationCache = new ScreenAnimationCache(family.Family == ScreenFamily.Turzx ? 48L * 1024 * 1024 : 16L * 1024 * 1024);
         ScreenEncodingSelection? cachedEncoding = null;
         ScreenAssignmentDto? assignment = null;
@@ -248,6 +266,11 @@ internal sealed partial class ScreenWorker : IDisposable
         var offIssued = false;
         bool? lastPowerRequest = null;
         string? powerError = null;
+        // Source-frame diagnostics only (never read by selection, pacing or transfer): a new continuity generation starts after a
+        // command, trial, channel or native session change, or after an attempt that did not complete a successful submission.
+        var sourceBreak = true;
+        var attemptOpen = false;
+        object? sourceSession = null;
         try
         {
             if (_ctx.BacklightStateDirectory is { } stateDirectory)
@@ -273,6 +296,7 @@ internal sealed partial class ScreenWorker : IDisposable
                     paused = cmd.Paused;
                     pacing.Reset();
                     lastSlow = false;
+                    sourceBreak = true;
                 }
 
                 var powerOff = backlight is not null && _ctx.WholeCaseBlackout();
@@ -334,6 +358,7 @@ internal sealed partial class ScreenWorker : IDisposable
 
                         stamp = ScreenTimestamp.System(family.Family);
                         clearLayer = ClearsPngLayerOnOpen(family.Family);
+                        sourceBreak = true;
                         LogOpened(_ctx.Log, _device.Id, channel.OutEndpoint, channel.InEndpoint);
                     }
                     catch (ScreenTransferException ex)
@@ -373,7 +398,7 @@ internal sealed partial class ScreenWorker : IDisposable
                 if (lastTrial != currentTrialId)
                 {
                     pacing.Reset(); lastTrial = currentTrialId; staticFrame = null;
-                    animationCache.Clear(); compositor.ClearCache(); lastSlow = false;
+                    animationCache.Clear(); compositor.ClearCache(); lastSlow = false; sourceBreak = true;
                 }
                 if (lastSlow || staticFrame is not null || !compositor.IsDynamic(renderAssignment)) period = Math.Max(period, 1000);
                 if (trial?.Info.LegacyPacing != true)
@@ -390,6 +415,12 @@ internal sealed partial class ScreenWorker : IDisposable
                 var frameStart = _ctx.Time.GetTimestamp();
                 var intervalMs = previousStart == 0 ? 0 : _ctx.Time.GetElapsedTime(previousStart, frameStart).TotalMilliseconds;
                 previousStart = frameStart;
+                if (attemptOpen) sourceBreak = true; // the previous attempt failed or was abandoned: never compare across it
+                attemptOpen = true;
+                StoredAsset? selectedAsset = null;
+                int selectedIndex = -1;
+                long selectedPosition = 0;
+                var cacheHit = false;
                 double composeMs = 0, encodeMs = 0;
                 var bootstrapping = false;
                 var powerChanging = false;
@@ -419,9 +450,11 @@ internal sealed partial class ScreenWorker : IDisposable
                         var cacheAsset = separateVideoOverlay || renderAssignment.Overlay == "none" && renderAssignment.OverlayLayout is null ? sourceAsset : null;
                         var frameIndex = sourceAsset?.FrameAt(elapsed) ?? 0;
                         if (nativeVideo) { _videoPosition = elapsed; _videoFrameIndex = frameIndex; }
+                        selectedAsset = sourceAsset; selectedIndex = frameIndex; selectedPosition = elapsed;
                         if (cacheAsset is not null && animationCache.Find(cacheAsset.Id, frameIndex) is { } hit)
                         {
                             frame = hit;
+                            cacheHit = true;
                         }
                         else
                         {
@@ -483,14 +516,20 @@ internal sealed partial class ScreenWorker : IDisposable
                     }
 
                     double packetMs, writeMs, readMs; int packetLength, replyBytes; uint requestTimestamp;
+                    NativeVideoWork nativeWork = default;
+                    double overlayComposeMs = 0, overlayEncodeMs = 0;
                     string? readError;
                     if (frame.Command == Protocol.TurzxVideoProtocol.DataCommand)
                     {
                         var beforePacket = _videoSession?.PacketMs ?? 0; var beforeWrite = _videoSession?.WriteMs ?? 0;
                         var beforeRead = _videoSession?.ReadMs ?? 0; var beforeBytes = _videoSession?.BytesWritten ?? 0;
-                        if (!SendVideo(frame, renderAssignment, stamp!)) { StopVideo(); staticFrame = null; continue; }
+                        var beforeNative = _videoSession?.Work ?? default;
+                        var beforeOverlayCompose = _videoOverlayComposeMs; var beforeOverlayEncode = _videoOverlayEncodeMs;
+                        if (!SendVideo(frame, renderAssignment, stamp!, !correlationDisabled)) { StopVideo(); staticFrame = null; continue; }
                         packetMs = _videoSession!.PacketMs - beforePacket; writeMs = _videoSession.WriteMs - beforeWrite;
                         readMs = _videoSession.ReadMs - beforeRead; packetLength = checked((int)(_videoSession.BytesWritten - beforeBytes));
+                        nativeWork = _videoSession.Work.Since(beforeNative);
+                        overlayComposeMs = _videoOverlayComposeMs - beforeOverlayCompose; overlayEncodeMs = _videoOverlayEncodeMs - beforeOverlayEncode;
                         readError = null; replyBytes = 0; requestTimestamp = 0; // SendVideo validates EVERY native/overlay acknowledgement itself
                     }
                     else
@@ -528,11 +567,20 @@ internal sealed partial class ScreenWorker : IDisposable
                     Wrote(warning ?? readError);
                     var skipped = trial?.Info.LegacyPacing == true ? 0 : pacing.Completed(_ctx.Time.GetTimestamp(), _ctx.Time.TimestampFrequency);
                     var facts = contentReadFacts;
+                    var aggregateNative = frame.Command == Protocol.TurzxVideoProtocol.DataCommand && family.Family == ScreenFamily.Turzx;
+                    if (!ReferenceEquals(_videoSession, sourceSession)) { sourceSession = _videoSession; sourceBreak = true; }
                     _performance.Add(new ScreenFrameWork(composeMs, encodeMs, packetMs, writeMs, readMs, waitedMs, intervalMs,
                         _ctx.Time.GetElapsedTime(frameStart).TotalMilliseconds, frame.Image.Length, packetLength,
-                        facts?.Reads ?? 0, facts?.Timeouts ?? 0, facts?.ZeroLength ?? 0, facts?.FirstMs ?? 0, facts?.DrainMs ?? 0,
-                        facts?.Matched ?? 0, facts?.Correlated ?? false), targetFps, currentTrialId,
-                        (_channel as IScreenUsbDiagnostics)?.DeviceSpeedCode, skipped);
+                        aggregateNative ? nativeWork.Reads : facts?.Reads ?? 0, aggregateNative ? nativeWork.Timeouts : facts?.Timeouts ?? 0,
+                        aggregateNative ? nativeWork.Zlp : facts?.ZeroLength ?? 0, aggregateNative ? nativeWork.FirstRead : facts?.FirstMs ?? 0,
+                        aggregateNative ? nativeWork.Drain : facts?.DrainMs ?? 0,
+                        aggregateNative ? checked((int)nativeWork.Matched) : facts?.Matched ?? 0,
+                        aggregateNative ? nativeWork.Correlated > 0 : facts?.Correlated ?? false,
+                        nativeWork, overlayComposeMs, overlayEncodeMs), targetFps, currentTrialId,
+                        (_channel as IScreenUsbDiagnostics)?.DeviceSpeedCode, skipped,
+                        new ScreenSourceSample(selectedAsset, selectedIndex, selectedPosition, frameStart, _ctx.Time.TimestampFrequency, cacheHit, sourceBreak));
+                    sourceBreak = false;
+                    attemptOpen = false;
                     waitedMs = 0;
                 }
                 catch (ScreenTransferException ex)
@@ -599,6 +647,7 @@ internal sealed partial class ScreenWorker : IDisposable
 #pragma warning disable CA1031 // native cleanup failure must not escape a screen's background thread
             catch (Exception ex) { LogFrameFailed(_ctx.Log, _device.Id, "H.264 cleanup: " + ex.Message); }
 #pragma warning restore CA1031
+            DisposeOverlayPreparer(); // after the channel is closed; at most one bounded 500 ms join
             StaThread.ShutdownDispatcher();
         }
     }

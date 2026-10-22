@@ -15,9 +15,9 @@ public sealed record PackageChoice(ScenePackageInfoDto Dto)
     public string Detail => $"修订 {Dto.Revision} · {Dto.DurationMs / 1000:0.##} 秒 · {Dto.LightingRoles} 灯区 / {Dto.ScreenRoles} 屏幕";
 }
 
-public sealed record PackageTarget(string Key, string Name, ZoneRefDto? Zone = null, string? ScreenId = null);
+public sealed record PackageTarget(string Key, string Name, ZoneRefDto? Zone = null, string? ScreenId = null, string? Family = null);
 
-public sealed class PackageRoleChoice : ObservableObject
+public sealed partial class PackageRoleChoice : ObservableObject
 {
     private PackageTarget? _selected;
     public PackageRoleChoice(ScenePackageRoleDto dto, IReadOnlyList<PackageTarget> targets, PackageTarget selected)
@@ -37,12 +37,12 @@ public sealed class PackageRoleChoice : ObservableObject
     public string PreviewNote => Colors.Count < Dto.PreviewColors.Count ? $"首帧 · 显示前 {Colors.Count} 个灯位" : "";
     public BitmapSource? Preview { get; }
     public IReadOnlyList<PackageTarget> Targets { get; }
-    public PackageTarget? Selected { get => _selected; set => SetProperty(ref _selected, value); }
+    public PackageTarget? Selected { get => _selected; set { if (SetProperty(ref _selected, value)) OnPropertyChanged(nameof(AllowsRegion)); } }
     public ScenePackageBindingDto Build() => new(Dto.Role, Selected?.Zone, Selected?.ScreenId);
 }
 
 /// <summary>Immutable package content, local role bindings and explicit apply. Reading and previewing never apply content.</summary>
-public sealed class ScenePackagesViewModel : ObservableObject
+public sealed partial class ScenePackagesViewModel : ObservableObject, IDisposable
 {
     private readonly Func<IScenePackageService> _service;
     private readonly Func<Task<IReadOnlyList<ControllerDto>>> _controllers;
@@ -71,6 +71,7 @@ public sealed class ScenePackagesViewModel : ObservableObject
         _service = service; _controllers = controllers; _screens = screens; _chooseFile = chooseFile; _error = onError;
         _confirm = confirm ?? (_ => true);
         _library = library;
+        InitializeEditor();
         RefreshCommand = new AsyncCommand(_ => RefreshAsync(), Report, _ => !Busy);
         ImportCommand = new AsyncCommand(_ => ImportAsync(), Report, _ => !Busy && Available);
         SaveBindingsCommand = new AsyncCommand(_ => SaveBindingsAsync(), Report, _ => CanEdit && Roles.Count > 0);
@@ -105,7 +106,7 @@ public sealed class ScenePackagesViewModel : ObservableObject
     public bool HasDetails => _details is not null;
     public bool CanSelect => !Busy;
     public bool CanEdit => Available && !Busy && HasDetails;
-    public bool CanApply => CanEdit && _checkedApplySupported && !Dirty && _binding is { Ready: true, BindingId: not null };
+    public bool CanApply => CanEdit && _checkedApplySupported && !Dirty && !EditorDirty && _binding is { Ready: true, BindingId: not null };
     public string Title => _details?.Info.Name ?? "外部场景包";
     public string Detail => _details is { Info: var p } ? $"修订 {p.Revision} · {p.DurationMs / 1000:0.##} 秒循环 · {p.LightingRoles} 个灯光角色 · {p.ScreenRoles} 个屏幕角色" : "场景内容独立保存，设备绑定留在本机。";
     public string Provenance => _details is { Info: var p } ? $"内容 {p.ContentId[..Math.Min(12, p.ContentId.Length)]} · {p.PlaybackContract}" : "";
@@ -118,7 +119,7 @@ public sealed class ScenePackagesViewModel : ObservableObject
         {
             if (_updatingList) return;
             if (_selected?.Id == value?.Id) return;
-            if (Busy || (Dirty && !_confirm("放弃尚未保存的设备绑定并切换场景包？"))) { OnPropertyChanged(); return; }
+            if (Busy || ((Dirty || EditorDirty) && !_confirm("放弃尚未保存的参数和设备绑定并切换场景包？"))) { OnPropertyChanged(); return; }
             SetProperty(ref _selected, value);
             ClearDetails();
             _ = ReadSelectionAsync();
@@ -166,7 +167,7 @@ public sealed class ScenePackagesViewModel : ObservableObject
             if (id is not null) ClearDetails();
             Message = Packages.Count == 0 ? "尚未安装场景包。点击“导入场景包”选择 ZIP 文件。" : "选择一个场景包查看首帧和设备绑定。";
         }
-        else if (!Dirty) await ReadSelectionAsync().ConfigureAwait(true);
+        else if (!Dirty && !EditorDirty) await ReadSelectionAsync().ConfigureAwait(true);
         else Message = "场景包列表已更新，未保存的设备绑定已保留。";
     }
 
@@ -202,13 +203,19 @@ public sealed class ScenePackagesViewModel : ObservableObject
                         target = new("missing", "已保存设备 · 当前未发现", saved.Zone, saved.ScreenId); targets.Add(target);
                     }
                     var row = new PackageRoleChoice(role, targets, target ?? targets[0]);
-                    row.PropertyChanged += (_, e) => { if (!_loading && e.PropertyName == nameof(PackageRoleChoice.Selected)) { _draftVersion++; Dirty = true; } };
+                    row.PropertyChanged += (_, e) =>
+                    {
+                        if (_loading) return;
+                        if (e.PropertyName == nameof(PackageRoleChoice.Selected)) { _draftVersion++; Dirty = true; NotifyState(); PreviewChanged?.Invoke(this, EventArgs.Empty); }
+                        else if (row.IsScreen && e.PropertyName is not null && (e.PropertyName.StartsWith("Screen", StringComparison.Ordinal) || e.PropertyName.StartsWith("Region", StringComparison.Ordinal) || e.PropertyName == nameof(PackageRoleChoice.UseRegion))) MarkEditorChanged();
+                    };
                     Roles.Add(row);
                 }
                 Dirty = false; Message = binding.Ready ? "首帧预览已读取。应用后才会切换硬件内容。" : Problems(binding.Problems);
             }
             finally { _loading = false; }
             NotifyDetails();
+            await ReadEditorAsync(id, request, revision).ConfigureAwait(true);
         }
 #pragma warning disable CA1031 // Background selection read reports errors without crashing the dispatcher.
         catch (Exception ex) { if (request == Volatile.Read(ref _selectionRequest)) { ClearDetails(); Report(ex); } }
@@ -226,7 +233,7 @@ public sealed class ScenePackagesViewModel : ObservableObject
         }
         else
             foreach (var screen in _displays)
-                yield return new(screen.Id, new ScreenChoice(screen).Name + " · " + new ScreenChoice(screen).Detail, ScreenId: screen.Id);
+                yield return new(screen.Id, new ScreenChoice(screen).Name + " · " + new ScreenChoice(screen).Detail, ScreenId: screen.Id, Family: screen.Family);
     }
     private static bool Matches(PackageTarget target, ScenePackageBindingDto? saved) => saved is not null && target.Zone == saved.Zone && target.ScreenId == saved.ScreenId;
 
@@ -392,7 +399,7 @@ public sealed class ScenePackagesViewModel : ObservableObject
         }
     }
 
-    private void ClearDetails() { _details = null; _binding = null; Roles.Clear(); Dirty = false; NotifyDetails(); }
+    private void ClearDetails() { ClearEditor(); _details = null; _binding = null; Roles.Clear(); Dirty = false; NotifyDetails(); }
     private void NotifyDetails() { OnPropertyChanged(nameof(Title)); OnPropertyChanged(nameof(Detail)); OnPropertyChanged(nameof(Provenance)); OnPropertyChanged(nameof(HasDetails)); NotifyState(); }
     private void NotifyState()
     {
@@ -401,6 +408,7 @@ public sealed class ScenePackagesViewModel : ObservableObject
         OnPropertyChanged(nameof(MaintenanceAvailable));
         RefreshCommand.RaiseCanExecuteChanged(); ImportCommand.RaiseCanExecuteChanged(); SaveBindingsCommand.RaiseCanExecuteChanged(); ApplyCommand.RaiseCanExecuteChanged();
         RemoveCommand.RaiseCanExecuteChanged();
+        NotifyEditorState();
     }
     private static string Problems(IReadOnlyList<string> problems) => problems.Count == 0 ? "为每个内容角色选择设备，然后保存绑定。" : "绑定尚未就绪：\n" + string.Join("\n", problems.Select(p => p == "No binding has been saved for this package." ? "此场景包尚未保存设备绑定。" : p));
     private void Report(Exception ex) { Message = "操作未完成：" + ex.Message; _error(ex); }

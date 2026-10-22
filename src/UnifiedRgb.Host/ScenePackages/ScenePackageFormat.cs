@@ -11,7 +11,8 @@ namespace UnifiedRgb.Host.ScenePackages;
 /// <summary>
 /// The external scene package (OPUS-GENERIC-SCENE-PACKAGES): exact identifiers and bounds. schemaVersion 1, 2 and 3 share one
 /// playback contract; 2 ONLY adds the optional screen fields "accentColor" and "overlayLayout" (a telemetry region), which a
-/// schemaVersion 1 manifest still rejects in any form, including null. Version 3 additionally permits MP4/H.264 screen assets.
+/// schemaVersion 1 manifest still rejects in any form, including null. Version 3 permits MP4/H.264 assets; version 4 adds
+/// explicitly bounded original MP4 segment lists, read through one current STA decoder on the same shared timeline.
 /// Anything else — another format, schema version or
 /// playback contract, including the "...Draft" / "...-draft" authoring drafts — is rejected explicitly; a package is never
 /// upgraded, migrated, regenerated or reinterpreted.
@@ -25,6 +26,9 @@ public static partial class ScenePackageFormat
     public const int SchemaVersionRegions = 2;
     /// <summary>Explicit video schema: adds MP4/H.264 screen media and up to 60 FPS for those tracks. v1/v2 are unchanged.</summary>
     public const int SchemaVersionVideo = 3;
+    /// <summary>Explicit bounded MP4 segment lists. Earlier schemas retain their exact single-file contract.</summary>
+    public const int SchemaVersionSegments = 4;
+    public const int MaxSegmentsPerScreen = 32;
 
     /// <summary>RGB24 frames held (no interpolation) for exactly frameDurationMs PHYSICAL milliseconds each; screens on the same timeline.</summary>
     public const string PlaybackContract = "rgb24-hold-physical-ms-v1";
@@ -69,6 +73,10 @@ public static partial class ScenePackageFormat
     };
 
     public static string Sha256Hex(ReadOnlySpan<byte> data) => Convert.ToHexString(SHA256.HashData(data)).ToLowerInvariant();
+
+    internal static string ScreenAssetId(ScreenTrack track, IReadOnlyDictionary<string, string> files) => track.IsSequence
+        ? UnifiedRgb.Screens.Media.ScreenVideoSegment.SequenceId(track.Segments.Select(c => (files[c.File], c.DurationMs)).ToArray())
+        : files[track.File][..16];
 
     public static bool IsSha256Hex(string? s) => s is { Length: 64 } && s.All(c => c is (>= '0' and <= '9') or (>= 'a' and <= 'f'));
 
@@ -158,9 +166,9 @@ public static partial class ScenePackageFormat
             }
 
             var schema = Int(root, "schemaVersion", ManifestName);
-            if (schema is not (SchemaVersion or SchemaVersionRegions or SchemaVersionVideo))
+            if (schema is not (SchemaVersion or SchemaVersionRegions or SchemaVersionVideo or SchemaVersionSegments))
             {
-                throw Bad($"unsupported schemaVersion {schema} (this program reads {SchemaVersion}, {SchemaVersionRegions} and {SchemaVersionVideo} only)");
+                throw Bad($"unsupported schemaVersion {schema} (this program reads {SchemaVersion}, {SchemaVersionRegions}, {SchemaVersionVideo} and {SchemaVersionSegments} only)");
             }
 
             var contract = Str(root, "playbackContract", ManifestName);
@@ -257,7 +265,7 @@ public static partial class ScenePackageFormat
         }
 
         var referenced = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var file in m.Lighting.Select(l => (l.Role, l.File)).Concat(m.Screens.Select(s => (s.Role, s.File))))
+        foreach (var file in m.Lighting.Select(l => (l.Role, l.File)).Concat(m.Screens.SelectMany(s => s.MediaFiles.Select(f => (s.Role, File: f)))))
         {
             if (!m.Files.ContainsKey(file.File))
             {
@@ -269,7 +277,7 @@ public static partial class ScenePackageFormat
 
         foreach (var s in m.Screens)
         {
-            if (m.Lighting.Any(l => string.Equals(l.File, s.File, StringComparison.Ordinal)))
+            if (m.Lighting.Any(l => s.MediaFiles.Contains(l.File, StringComparer.Ordinal)))
             {
                 throw Bad($"file '{s.File}' cannot be both lighting and screen media");
             }
@@ -347,20 +355,38 @@ public static partial class ScenePackageFormat
         }
         else
         {
-            Only(o, where, schema, "role", "label", "file", "durationMs", "overlay", "fit", "fps", "accentColor", "overlayLayout");
+            if (schema == SchemaVersionSegments) Only(o, where, schema, "role", "label", "file", "segments", "durationMs", "overlay", "fit", "fps", "accentColor", "overlayLayout");
+            else Only(o, where, schema, "role", "label", "file", "durationMs", "overlay", "fit", "fps", "accentColor", "overlayLayout");
         }
 
         var role = Role(o, where);
         var label = Label(o, where);
-        var file = FilePath(o, where);
+        ScreenSegment[] segments = [];
+        string file;
+        if (o.ContainsKey("segments"))
+        {
+            if (schema != SchemaVersionSegments || o.ContainsKey("file")) throw Bad($"{where}: use either file or v4 segments, never both");
+            var entries = Arr(o, "segments").ToArray();
+            if (entries.Length is < 2 or > MaxSegmentsPerScreen) throw Bad($"{where}: segments needs 2..{MaxSegmentsPerScreen} entries");
+            segments = entries.Select((entry, i) =>
+            {
+                var sw = $"{where}.segments[{i}]"; var item = Obj(entry, sw); Only(item, sw, schema, "file", "durationMs");
+                var path = FilePath(item, sw); var ms = Num(item, "durationMs", sw);
+                if (!Path.GetExtension(path).Equals(".mp4", StringComparison.OrdinalIgnoreCase) || ms is < 1 or > 30000 || ms != Math.Truncate(ms)) throw Bad($"{sw}: requires MP4 and an integer durationMs in 1..30000");
+                return new ScreenSegment(path, (int)ms);
+            }).ToArray();
+            file = segments[0].File;
+        }
+        else file = FilePath(o, where);
         var ext = Path.GetExtension(file).ToLowerInvariant();
-        var video = schema == SchemaVersionVideo && ext == ".mp4";
+        var video = schema >= SchemaVersionVideo && ext == ".mp4";
         if (!video && ext is not (".png" or ".jpg" or ".jpeg" or ".gif"))
         {
             throw Bad($"{where}: screen media is PNG, JPEG or GIF; MP4 requires schemaVersion 3 ('{file}')");
         }
 
         var duration = Num(o, "durationMs", where);
+        if (segments.Length > 0 && segments.Sum(s => (long)s.DurationMs) != duration) throw Bad($"{where}: segment durations must sum exactly to durationMs (never retimed)");
         var overlay = Str(o, "overlay", where);
         if (!Overlays.Contains(overlay))
         {
@@ -406,7 +432,7 @@ public static partial class ScenePackageFormat
             layout = Layout(layoutElement, $"{where}.overlayLayout", schema);
         }
 
-        return new ScreenTrack(role, label, file, duration, overlay, fit, fps, accent, layout);
+        return new ScreenTrack(role, label, file, duration, overlay, fit, fps, accent, layout) { Segments = segments };
     }
 
     /// <summary>A v2 telemetry region: fractions of the content canvas before local rotation, exact property names.</summary>
@@ -594,7 +620,14 @@ public sealed record LightingTrack(string Role, string? Label, string File, int 
 /// </summary>
 public sealed record ScreenTrack(
     string Role, string? Label, string File, double DurationMs, string Overlay, string Fit, int Fps, string? AccentColor = null,
-    ScreenOverlayLayoutDto? OverlayLayout = null);
+    ScreenOverlayLayoutDto? OverlayLayout = null)
+{
+    public IReadOnlyList<ScreenSegment> Segments { get; init; } = [];
+    public bool IsSequence => Segments.Count > 0;
+    public IEnumerable<string> MediaFiles => IsSequence ? Segments.Select(s => s.File) : [File];
+}
+
+public sealed record ScreenSegment(string File, int DurationMs);
 
 /// <summary>Package timeline ids ("package:&lt;contentId&gt;:&lt;bindingId&gt;"): the frame-set id and the screens' TimelineId.</summary>
 public static class ScenePackageIds

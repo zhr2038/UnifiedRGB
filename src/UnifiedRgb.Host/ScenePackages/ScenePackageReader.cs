@@ -135,7 +135,7 @@ public static class ScenePackageReader
         }
 
         var lighting = manifest.Lighting.GroupBy(l => l.File, StringComparer.Ordinal).ToDictionary(g => g.Key, g => g.First(), StringComparer.Ordinal);
-        var screens = manifest.Screens.Select(s => s.File).ToHashSet(StringComparer.Ordinal);
+        var screens = manifest.Screens.SelectMany(s => s.MediaFiles).ToHashSet(StringComparer.Ordinal);
         var data = new Dictionary<string, byte[]>(StringComparer.Ordinal);
         foreach (var (path, hash) in manifest.Files)
         {
@@ -158,7 +158,7 @@ public static class ScenePackageReader
                 throw ScenePackageFormat.Bad($"'{path}' is {bytes.Length} bytes, not {track.Frames} frames × {track.LedCount} LEDs × 3");
             }
 
-            if (screens.Contains(path) && SignatureProblem(bytes, manifest.SchemaVersion == ScenePackageFormat.SchemaVersionVideo
+            if (screens.Contains(path) && SignatureProblem(bytes, manifest.SchemaVersion >= ScenePackageFormat.SchemaVersionVideo
                 && Path.GetExtension(path).Equals(".mp4", StringComparison.OrdinalIgnoreCase)) is { } bad)
             {
                 throw ScenePackageFormat.Bad($"'{path}': {bad}");

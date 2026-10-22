@@ -317,7 +317,7 @@ public sealed partial class ScenePackageStore
                 var manifest = _verified.TryGetValue(id, out var p)
                     ? p.Manifest
                     : ScenePackageFormat.ParseManifest(File.ReadAllBytes(path));
-                if (manifest.Screens.Any(s => manifest.Files[s.File].StartsWith(assetId, StringComparison.Ordinal)))
+                if (manifest.Screens.Any(s => ScenePackageFormat.ScreenAssetId(s, manifest.Files) == assetId))
                 {
                     return true;
                 }

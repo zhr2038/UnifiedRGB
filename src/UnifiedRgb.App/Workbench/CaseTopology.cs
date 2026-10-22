@@ -65,17 +65,17 @@ public sealed class CaseTopology : FrameworkElement
         _origin = new((ActualWidth - 650 * _scale) / 2, (ActualHeight - 600 * _scale) / 2);
         dc.PushTransform(new TranslateTransform(_origin.X, _origin.Y));
         dc.PushTransform(new ScaleTransform(_scale, _scale));
-        var edge = new Pen(Brush("#303743"), 1);
-        dc.DrawRoundedRectangle(Brush("#11151C"), edge, new Rect(70, 38, 500, 520), 18, 18);
-        dc.DrawRoundedRectangle(Brush("#151A23"), new Pen(Brush("#202733"), 1), new Rect(86, 54, 468, 488), 10, 10);
-        dc.DrawLine(new Pen(Brush("#303743"), 5), new Point(103, 565), new Point(153, 565));
-        dc.DrawLine(new Pen(Brush("#303743"), 5), new Point(487, 565), new Point(537, 565));
-        dc.DrawRoundedRectangle(null, new Pen(Brush("#242C39"), 1), new Rect(150, 139, 281, 159), 8, 8);
+        var edge = new Pen(Brush("#393939"), 1);
+        dc.DrawRoundedRectangle(Brush("#161616"), edge, new Rect(70, 38, 500, 520), 18, 18);
+        dc.DrawRoundedRectangle(Brush("#1B1B1B"), new Pen(Brush("#292929"), 1), new Rect(86, 54, 468, 488), 10, 10);
+        dc.DrawLine(new Pen(Brush("#393939"), 5), new Point(103, 565), new Point(153, 565));
+        dc.DrawLine(new Pen(Brush("#393939"), 5), new Point(487, 565), new Point(537, 565));
+        dc.DrawRoundedRectangle(null, new Pen(Brush("#2E2E2E"), 1), new Rect(150, 139, 281, 159), 8, 8);
         var zones = Zones?.OfType<StudioZone>().ToArray() ?? [];
         foreach (var z in zones)
         {
             var id = z.Controller.Id.ToUpperInvariant();
-            var rgb = z.Controller.State == "Active" ? Color(z) : Brush("#3B424F");
+            var rgb = z.Controller.State == "Active" ? Color(z) : Brush("#444444");
             var line = new Pen(rgb, 2.8);
             var selected = z.Ref == SelectedZone?.Ref;
             Rect hit;
@@ -83,54 +83,54 @@ public sealed class CaseTopology : FrameworkElement
             {
                 hit = new(116, 62, 323, 70);
                 for (var n = 0; n < 3; n++) Fan(dc, new Rect(123 + n * 106, 65, 91, 63), line, false, false);
-                Text(dc, "顶排  TL120", 126, 45, 12, "#B7C4D4");
+                Text(dc, "顶排  TL120", 126, 45, 12, "#A9A39A");
             }
             else if (id.Contains("06-A8-F0", StringComparison.Ordinal))
             {
                 hit = new(453, 145, 87, 290);
                 for (var n = 0; n < 3; n++) Fan(dc, new Rect(460, 150 + n * 96, 70, 85), line, true, false);
-                Text(dc, "侧排", 484, 440, 12, "#B7C4D4");
+                Text(dc, "侧排", 484, 440, 12, "#A9A39A");
             }
             else if (id.Contains("35-F7-EF", StringComparison.Ordinal))
             {
                 hit = new(116, 453, 323, 73);
                 for (var n = 0; n < 3; n++) Fan(dc, new Rect(123 + n * 106, 458, 91, 63), line, false, true);
-                Text(dc, "底排  TL140 LCD", 126, 530, 12, "#B7C4D4");
+                Text(dc, "底排  TL140 LCD", 126, 530, 12, "#A9A39A");
             }
             else if (id.Contains("EF-7E-63", StringComparison.Ordinal))
             {
                 hit = new(227, 176, 110, 110);
-                dc.DrawEllipse(Brush("#0E131A"), new Pen(Brush("#333D4D"), 1), new Point(282, 230), 49, 49);
+                dc.DrawEllipse(Brush("#141414"), new Pen(Brush("#3F3F3F"), 1), new Point(282, 230), 49, 49);
                 dc.DrawEllipse(null, new Pen(rgb, 6), new Point(282, 230), 43, 43);
-                Text(dc, "H2", 269, 212, 19, "#DEE6ED");
-                Text(dc, "水冷头", 264, 239, 12, "#B7C4D4");
+                Text(dc, "H2", 269, 212, 19, "#F3EFE8");
+                Text(dc, "水冷头", 264, 239, 12, "#A9A39A");
             }
             else if (id.StartsWith("ENEDRAM:", StringComparison.Ordinal))
             {
                 var x = id.EndsWith("0X71", StringComparison.Ordinal) ? 351 : 378;
                 hit = new(x - 5, 169, 23, 122);
-                dc.DrawRoundedRectangle(Brush("#252C36"), null, new Rect(x, 174, 12, 111), 3, 3);
+                dc.DrawRoundedRectangle(Brush("#2D2D2D"), null, new Rect(x, 174, 12, 111), 3, 3);
                 for (var n = 0; n < 8; n++) dc.DrawRoundedRectangle(rgb, null, new Rect(x + 2, 177 + n * 13, 8, 9), 2, 2);
-                Text(dc, "内存", 351, 298, 12, "#B7C4D4");
+                Text(dc, "内存", 351, 298, 12, "#A9A39A");
             }
             else if (id.StartsWith("ASUSAURA:", StringComparison.Ordinal))
             {
                 hit = new(160, 168, 54, 55);
                 var geometry = Geometry.Parse("M164,178 L209,186 L192,210 L174,201 L193,197 L184,187 Z M177,187 L165,184 L166,194 L181,201 L173,193 Z");
                 dc.DrawGeometry(rgb, null, geometry);
-                Text(dc, "ROG", 169, 219, 12, "#B7C4D4");
+                Text(dc, "ROG", 169, 219, 12, "#A9A39A");
             }
             else if (id.StartsWith("MSIGPU:", StringComparison.Ordinal))
             {
                 if (z.Zone.Id == 0)
                 {
                     hit = new(150, 342, 285, 87);
-                    dc.DrawRoundedRectangle(Brush("#202731"), edge, new Rect(150, 324, 285, 105), 9, 9);
+                    dc.DrawRoundedRectangle(Brush("#282828"), edge, new Rect(150, 324, 285, 105), 9, 9);
                     for (var n = 0; n < 3; n++)
                     {
                         var x = 202 + n * 90;
-                        dc.DrawEllipse(Brush("#151B23"), new Pen(Brush("#343E4C"), 2), new Point(x, 380), 33, 33);
-                        dc.DrawEllipse(Brush("#303B48"), null, new Point(x, 380), 10, 10);
+                        dc.DrawEllipse(Brush("#1C1C1C"), new Pen(Brush("#3F3F3F"), 2), new Point(x, 380), 33, 33);
+                        dc.DrawEllipse(Brush("#3C3C3C"), null, new Point(x, 380), 10, 10);
                     }
                     for (var n = 0; n < 2; n++)
                     {
@@ -143,7 +143,7 @@ public sealed class CaseTopology : FrameworkElement
                 {
                     hit = new(155, 325, 275, 17);
                     dc.DrawLine(line, new Point(160, 333), new Point(425, 333));
-                    Text(dc, "MSI  RTX 5090", 163, 301, 12, "#B7C4D4");
+                    Text(dc, "MSI  RTX 5090", 163, 301, 12, "#A9A39A");
                 }
             }
             else continue;
@@ -151,13 +151,13 @@ public sealed class CaseTopology : FrameworkElement
             if (selected)
             {
                 hit.Inflate(5, 5);
-                dc.DrawRoundedRectangle(null, new Pen(Brush("#5DDAC8"), 1.4) { DashStyle = DashStyles.Dash }, hit, 8, 8);
+                dc.DrawRoundedRectangle(null, new Pen(Brush("#D8B578"), 1.4) { DashStyle = DashStyles.Dash }, hit, 8, 8);
             }
         }
         // Screen silhouette only: it does not imply a connected or configured screen transport.
-        dc.DrawRoundedRectangle(Brush("#202A36"), new Pen(Brush("#62758E"), 1), new Rect(441, 88, 105, 33), 5, 5);
-        Text(dc, "机箱屏幕", 470, 97, 12, "#D9E5F2");
-        Text(dc, "分区示意 · 点击选择", 246, 578, 12, "#B7C4D4");
+        dc.DrawRoundedRectangle(Brush("#2B2B2B"), new Pen(Brush("#534B3F"), 1), new Rect(441, 88, 105, 33), 5, 5);
+        Text(dc, "机箱屏幕", 470, 97, 12, "#F3EFE8");
+        Text(dc, "分区示意 · 点击选择", 246, 578, 12, "#A9A39A");
         dc.Pop(); dc.Pop();
     }
 
@@ -180,14 +180,14 @@ public sealed class CaseTopology : FrameworkElement
             }
             offset += s.Length;
         }
-        return Brush("#343E4C");
+        return Brush("#3F3F3F");
     }
     private static void Fan(DrawingContext dc, Rect rect, Pen line, bool vertical, bool lcd)
     {
-        dc.DrawRoundedRectangle(Brush("#1A212B"), new Pen(Brush("#343D4B"), 1), rect, 8, 8);
+        dc.DrawRoundedRectangle(Brush("#222222"), new Pen(Brush("#3F3F3F"), 1), rect, 8, 8);
         var c = new Point(rect.X + rect.Width / 2, rect.Y + rect.Height / 2);
-        dc.DrawEllipse(Brush("#111720"), new Pen(Brush("#323C4A"), 1), c, 23, 23);
-        dc.DrawEllipse(Brush(lcd ? "#273443" : "#28303B"), null, c, lcd ? 13 : 9, lcd ? 13 : 9);
+        dc.DrawEllipse(Brush("#181818"), new Pen(Brush("#3D3D3D"), 1), c, 23, 23);
+        dc.DrawEllipse(Brush(lcd ? "#353535" : "#313131"), null, c, lcd ? 13 : 9, lcd ? 13 : 9);
         if (vertical)
         {
             dc.DrawLine(line, new Point(rect.Left + 3, rect.Top + 12), new Point(rect.Left + 3, rect.Bottom - 12));

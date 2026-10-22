@@ -22,6 +22,14 @@ public interface IScreenPackageMedia
     /// <summary>Imports <paramref name="data"/> into the asset store (idempotent by content) and returns its asset id.</summary>
     Task<string> InstallPackageAssetAsync(string name, byte[] data, CancellationToken ct = default);
 
+    /// <summary>Schema v4: validate each bounded MP4; the sequence is one asset on the existing shared timeline.</summary>
+    Task<ScreenMediaInfo> ProbeSequenceAsync(IReadOnlyList<ScreenVideoSegment> clips, CancellationToken ct = default)
+        => Task.FromException<ScreenMediaInfo>(new NotSupportedException("This screen subsystem does not support segmented video."));
+
+    /// <summary>Stores immutable source clips, not a pre-expanded raster list.</summary>
+    Task<string> InstallPackageSequenceAsync(string name, IReadOnlyList<ScreenVideoSegment> clips, CancellationToken ct = default)
+        => Task.FromException<string>(new NotSupportedException("This screen subsystem does not support segmented video."));
+
     /// <summary>True for an asset an installed package needs: DeleteScreenAsset refuses it (null: nothing is protected).</summary>
     Func<string, bool>? AssetPinned { get; set; }
 

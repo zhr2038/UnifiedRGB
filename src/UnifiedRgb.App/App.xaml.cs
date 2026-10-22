@@ -102,6 +102,7 @@ public partial class App : Application
                 return dialog.ShowDialog() == true ? dialog.FileName : null;
             });
         _vm = vm;
+        if (e.Args.Contains("--workbench", StringComparer.OrdinalIgnoreCase)) vm.Studio.Page = 1;
         _window = new MainWindow { DataContext = vm };
         _window.Closing += OnWindowClosing;
         _tray = new TrayIcon(ShowWindow, () => vm.Devices.RescanCommand.Execute(null), () => _ = ExitAsync());

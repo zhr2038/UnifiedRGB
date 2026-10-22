@@ -33,6 +33,7 @@ internal sealed unsafe class WinUsbScreenChannel : IScreenUsbChannel, IScreenUsb
     public ScreenReadCounts LastRead => _lastRead;
     public int ReplyQuietMs { private get; set; } = ScreenReplyFlow.DrainTimeoutMs;
     public bool? CorrelatedReplies { private get; set; }
+    public bool ExactReplyPair { private get; set; }
     private readonly ScreenReplyCapability _replyCapability = new();
     private bool _expectsReply;
     private byte _expectedCommand;
@@ -149,7 +150,8 @@ internal sealed unsafe class WinUsbScreenChannel : IScreenUsbChannel, IScreenUsb
         if (_expectsReply && (CorrelatedReplies ?? _replyCapability.Verified))
         {
             _lastRead = _lastRead with { Correlated = true };
-            return ScreenReplyFlow.ReadCorrelated(ReadRaw, buffer, timeoutMs);
+            return ExactReplyPair ? ScreenReplyFlow.ReadExactPair(ReadRaw, buffer, timeoutMs)
+                : ScreenReplyFlow.ReadCorrelated(ReadRaw, buffer, timeoutMs);
         }
         var result = ScreenReplyFlow.ReadAndDrain(ReadRaw, buffer, timeoutMs, ReplyQuietMs);
         _replyCapability.Observe(_expectsReply, _lastRead);

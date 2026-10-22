@@ -17,12 +17,14 @@ internal sealed record ComposeResult(PixelFrame Canvas, string? Warning);
 /// the whole raster on every family.
 /// Fitted asset frames are cached up to <paramref name="cacheBytes"/>; once full, further frames are recomputed per use.
 /// </summary>
-internal sealed class ScreenCompositor(AssetStore assets, long cacheBytes, OverlayRenderer? overlay = null)
+internal sealed class ScreenCompositor(AssetStore assets, long cacheBytes, OverlayRenderer? overlay = null) : IDisposable
 {
     private sealed record FittedFrame(PixelFrame Pixels, bool Opaque);
     private readonly Dictionary<(string Asset, int Frame, int W, int H, string Fit), FittedFrame> _cache = [];
     private readonly OverlayRenderer _overlay = overlay ?? new();
     private long _cachedBytes;
+    private SequenceFrameReader? _sequenceReader;
+    private string? _sourceId;
 
     /// <summary>True when the result can change over time for this assignment (animation or live telemetry).</summary>
     public bool IsDynamic(ScreenAssignmentDto a)
@@ -52,10 +54,20 @@ internal sealed class ScreenCompositor(AssetStore assets, long cacheBytes, Overl
         _cachedBytes = 0;
     }
 
+    public void Dispose()
+    {
+        _sequenceReader?.Dispose(); _sequenceReader = null;
+        ClearCache();
+    }
+
     public ComposeResult Compose(ScreenFamilyInfo family, ScreenAssignmentDto a, long elapsedMs, PcTelemetryDto? telemetry, DateTimeOffset now)
     {
         ArgumentNullException.ThrowIfNull(family);
         ArgumentNullException.ThrowIfNull(a);
+        if (_sourceId != a.BackgroundAssetId)
+        {
+            _sequenceReader?.Dispose(); _sequenceReader = null; _sourceId = a.BackgroundAssetId;
+        }
         var swap = a.Rotation is 90 or 270;
         var cw = swap ? family.Height : family.Width;
         var ch = swap ? family.Width : family.Height;
@@ -67,7 +79,12 @@ internal sealed class ScreenCompositor(AssetStore assets, long cacheBytes, Overl
         {
             if (assets.Find(assetId) is { } asset)
             {
-                var fitted = Fitted(asset, asset.FrameAt(elapsedMs), cw, ch, a.Fit);
+                FittedFrame fitted;
+                try { fitted = Fitted(asset, asset.FrameAt(elapsedMs), cw, ch, a.Fit); }
+                catch (Exception ex) when (asset.Sequence is not null && ex is IOException or InvalidDataException or ArgumentException or SharpGen.Runtime.SharpGenException or System.Runtime.InteropServices.COMException)
+                {
+                    return ComposeBlocked(family, "sequence media cannot render: " + ex.Message);
+                }
                 var pixels = fitted.Pixels;
                 if (fitted.Opaque && pixels.Width == cw && pixels.Height == ch)
                 {
@@ -127,7 +144,8 @@ internal sealed class ScreenCompositor(AssetStore assets, long cacheBytes, Overl
             return hit;
         }
 
-        var src = WpfCodec.DecodePng(assets.ReadFrame(asset, frame), 1920L * 1920);
+        var src = asset.Sequence is not null ? (_sequenceReader ??= new SequenceFrameReader(assets)).Read(asset, frame)
+            : WpfCodec.DecodePng(assets.ReadFrame(asset, frame), 1920L * 1920);
         PixelFrame fitted;
         if (fit == "cover")
         {

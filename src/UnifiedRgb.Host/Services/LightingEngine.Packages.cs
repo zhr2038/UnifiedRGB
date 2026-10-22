@@ -55,7 +55,10 @@ public sealed partial class LightingEngine
             throw new ArgumentException("Package frame sets need the scene's package provenance (content id, binding id, contract).", paramName);
         }
 
-        if (!string.Equals(package.PlaybackContract, ScenePackageFormat.PlaybackContract, StringComparison.Ordinal))
+        var expectedContract = frameSets is ScenePackageFrameSource packageSource
+            && packageSource.TryResolve(ScenePackageIds.TimelineIdOf(package.ContentId, package.BindingId), out _, out var binding, out _)
+            ? binding.PlaybackContract : ScenePackageFormat.PlaybackContract;
+        if (!string.Equals(package.PlaybackContract, expectedContract, StringComparison.Ordinal))
         {
             throw new ArgumentException(
                 $"Unsupported playback contract '{package.PlaybackContract}' (this program plays '{ScenePackageFormat.PlaybackContract}' only).", paramName);

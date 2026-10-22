@@ -1,17 +1,17 @@
 <ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
-    <SolidColorBrush x:Key="ScreenPilot.Canvas" Color="#10141B"/>
-    <SolidColorBrush x:Key="ScreenPilot.Surface" Color="#171D26"/>
-    <SolidColorBrush x:Key="ScreenPilot.Input" Color="#111720"/>
-    <SolidColorBrush x:Key="ScreenPilot.Raised" Color="#202834"/>
-    <SolidColorBrush x:Key="ScreenPilot.Text" Color="#F2F6FB"/>
-    <SolidColorBrush x:Key="ScreenPilot.Secondary" Color="#B7C4D4"/>
-    <SolidColorBrush x:Key="ScreenPilot.DisabledText" Color="#91A1B5"/>
-    <SolidColorBrush x:Key="ScreenPilot.Line" Color="#2B3442"/>
-    <SolidColorBrush x:Key="ScreenPilot.Border" Color="#62758E"/>
-    <SolidColorBrush x:Key="ScreenPilot.Accent" Color="#5DDAC8"/>
-    <SolidColorBrush x:Key="ScreenPilot.OnAccent" Color="#102821"/>
-    <SolidColorBrush x:Key="ScreenPilot.Selection" Color="#253D3C"/>
-    <SolidColorBrush x:Key="ScreenPilot.Hover" Color="#2B3948"/>
+    <SolidColorBrush x:Key="ScreenPilot.Canvas" Color="#000000"/>
+    <SolidColorBrush x:Key="ScreenPilot.Surface" Color="#0F0F10"/>
+    <SolidColorBrush x:Key="ScreenPilot.Input" Color="#080808"/>
+    <SolidColorBrush x:Key="ScreenPilot.Raised" Color="#1B1A18"/>
+    <SolidColorBrush x:Key="ScreenPilot.Text" Color="#F3EFE8"/>
+    <SolidColorBrush x:Key="ScreenPilot.Secondary" Color="#A9A39A"/>
+    <SolidColorBrush x:Key="ScreenPilot.DisabledText" Color="#8E877C"/>
+    <SolidColorBrush x:Key="ScreenPilot.Line" Color="#302D27"/>
+    <SolidColorBrush x:Key="ScreenPilot.Border" Color="#534B3F"/>
+    <SolidColorBrush x:Key="ScreenPilot.Accent" Color="#D8B578"/>
+    <SolidColorBrush x:Key="ScreenPilot.OnAccent" Color="#17120A"/>
+    <SolidColorBrush x:Key="ScreenPilot.Selection" Color="#2A241B"/>
+    <SolidColorBrush x:Key="ScreenPilot.Hover" Color="#2A241B"/>
     <SolidColorBrush x:Key="ScreenPilot.Error" Color="#FFA5A5"/>
     <SolidColorBrush x:Key="ScreenPilot.ErrorSurface" Color="#382328"/>
 </ResourceDictionary>

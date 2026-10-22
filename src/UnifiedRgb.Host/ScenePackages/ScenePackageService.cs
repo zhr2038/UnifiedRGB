@@ -235,7 +235,7 @@ public sealed partial class ScenePackageService : IScenePackageService, ISceneLi
                 return new ScenePackageBindingStateDto(package.ContentId, null, requested, false, problems);
             }
 
-            var snapshot = BindingStore.Save(package.ContentId, entries);
+            var snapshot = BindingStore.Save(package.ContentId, entries, BindingStore.Current(package.ContentId, out _)?.Playback);
             var live = await EvaluateAsync(package, entries, requireActive: true, ct).ConfigureAwait(false);
             LogBindingSaved(package.ContentId, snapshot.BindingId);
             return new ScenePackageBindingStateDto(package.ContentId, snapshot.BindingId, entries.Select(ToDto).ToArray(), live.Count == 0, live);
@@ -293,7 +293,7 @@ public sealed partial class ScenePackageService : IScenePackageService, ISceneLi
 
         var m = package.Manifest;
         var timelineId = ScenePackageIds.TimelineIdOf(package.ContentId, snapshot.BindingId);
-        var provenance = new ScenePackageProvenance(package.ContentId, snapshot.BindingId, ScenePackageFormat.PlaybackContract);
+        var provenance = new ScenePackageProvenance(package.ContentId, snapshot.BindingId, snapshot.PlaybackContract);
         var current = _engine.Loop.Scene;
         Scene scene;
         if (m.Lighting.Count > 0)
@@ -388,6 +388,10 @@ public sealed partial class ScenePackageService : IScenePackageService, ISceneLi
             var assignment = new ScreenAssignmentDto(screenId, assetId, "#000000", s.Overlay, 0, 1, s.Fps, true, Fit: s.Fit, TimelineId: timelineId,
                 OverlayLayout: s.OverlayLayout);
             kept.Add(s.AccentColor is { } accent ? assignment with { AccentColor = accent } : assignment);
+            if (snapshot.Playback?.Screens?.FirstOrDefault(e => e.Role == s.Role) is { } edit)
+                kept[^1] = kept[^1] with { Brightness = edit.Brightness ?? assignment.Brightness, Overlay = edit.Overlay ?? assignment.Overlay,
+                    AccentColor = edit.AccentColor ?? kept[^1].AccentColor, Fit = edit.Fit ?? assignment.Fit, Fps = edit.Fps ?? assignment.Fps,
+                    Enabled = edit.Enabled ?? assignment.Enabled, OverlayLayout = edit.ClearOverlayLayout ? null : edit.OverlayLayout ?? assignment.OverlayLayout };
         }
 
         var candidate = new ScreenSceneDto(kept);
@@ -399,6 +403,20 @@ public sealed partial class ScenePackageService : IScenePackageService, ISceneLi
         if (_media is null)
         {
             throw new ArgumentException("This Host has no screen subsystem.");
+        }
+
+        if (track.IsSequence)
+        {
+            var sequenceName = $"{package.Manifest.Id} {track.Role}";
+            try
+            {
+                return await _media.InstallPackageSequenceAsync(sequenceName.Length > MaxAssetNameLength ? sequenceName[..MaxAssetNameLength] : sequenceName,
+                    SequenceClips(track, package.ReadFile), ct).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException or NotSupportedException)
+            {
+                throw new ArgumentException($"screen role {track.Role}: {ex.Message}", ex);
+            }
         }
 
         byte[] bytes;

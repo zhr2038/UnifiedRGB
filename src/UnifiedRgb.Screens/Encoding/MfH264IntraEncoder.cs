@@ -15,17 +15,20 @@ internal sealed class MfH264IntraEncoder : IDisposable
     internal const int MaxEncodedBytes = 2 * 1024 * 1024;
     private readonly int _width, _height;
     private readonly bool _fullRange;
+    private readonly bool _singleSlice;
     private readonly IMFTransform _encoder;
     private readonly object _codecOwner;
     private readonly IMfCodecApi _codec;
     private long _index;
     private bool _disposed;
+    public int LastSliceCount { get; private set; }
 
-    public MfH264IntraEncoder(int width, int height, bool fullRange = false)
+    public MfH264IntraEncoder(int width, int height, bool fullRange = false, bool singleSlice = false, int quality = 95)
     {
+        if (quality is < 95 or > 100) throw new ArgumentOutOfRangeException(nameof(quality), "Native quality may only remain95 or increase to100.");
         if (width < 2 || height < 2 || (width & 1) != 0 || (height & 1) != 0 || (long)width * height > 1920L * 1920)
             throw new ArgumentOutOfRangeException(nameof(width), "H.264 needs an even, bounded raster.");
-        _width = width; _height = height; _fullRange = fullRange;
+        _width = width; _height = height; _fullRange = fullRange; _singleSlice = singleSlice;
         MFStartup().CheckError();
         IMFTransform? transform = null; object? owner = null;
         try
@@ -37,7 +40,14 @@ internal sealed class MfH264IntraEncoder : IDisposable
             Set(codec, "8d390aac-dc5c-4200-b57f-814d04babab2", (uint)0); // no B pictures
             Set(codec, "9c27891a-ed7a-40e1-88e8-b22727a024ee", true); // AVLowLatencyMode: one input -> one output
             Set(codec, "1c0608e9-370c-4710-8a58-cb6181c42423", (uint)3); // quality VBR
-            Set(codec, "fcbf57a3-7ea5-4b0c-9644-69b40c39c391", (uint)95); // AVEncCommonQuality
+            Set(codec, "fcbf57a3-7ea5-4b0c-9644-69b40c39c391", (uint)95); // AVEncCommonQuality, legacy ordering
+            if (singleSlice)
+            {
+                // Static slice parameters MUST be set before media types; a successful post-start setter can have no effect.
+                Set(codec, "e9e782ef-5f18-44c9-a90b-e9c3c2c17b0b", (uint)2); // macroblock rows per slice
+                Set(codec, "92f51df3-07a5-4172-aefe-c69ca3b60e35", (uint)((height + 15) / 16));
+            }
+            if (quality != 95) Set(codec, "fcbf57a3-7ea5-4b0c-9644-69b40c39c391", (uint)quality);
             using var output = Type(VideoFormatGuids.H264, width, height, fullRange);
             output.Set(MediaTypeAttributeKeys.AvgBitrate, (uint)24_000_000).CheckError();
             output.Set(MediaTypeAttributeKeys.Mpeg2Profile, (uint)66).CheckError();
@@ -66,6 +76,8 @@ internal sealed class MfH264IntraEncoder : IDisposable
         var kinds = H264AnnexB.Types(bytes);
         if (!kinds.Contains(7) || !kinds.Contains(8) || !kinds.Contains(5) || kinds.Any(t => t is >= 1 and <= 4))
             throw new InvalidDataException("H.264 encoder did not produce an independently decodable SPS/PPS/IDR access unit.");
+        LastSliceCount = kinds.Count(t => t == 5);
+        if (_singleSlice && LastSliceCount != 1) throw new InvalidDataException("The requested single-slice encoder did not emit one complete IDR slice; nothing may be sent.");
         return bytes;
     }
 

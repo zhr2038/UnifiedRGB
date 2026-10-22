@@ -26,6 +26,9 @@
   </ItemGroup>
   <ItemGroup>
     <Resource Include="Assets/Brand/guangyu.ico" />
+    <Resource Include="Assets/Workbench/*.png" />
+    <Resource Include="Assets/Workbench/*.svg" />
+    <EmbeddedResource Include="Assets/Workbench/case-geometry.json" LogicalName="UnifiedRgb.CaseGeometry.json" />
     <EmbeddedResource Include="Assets/Brand/tray-*.ico" LogicalName="UnifiedRgb.App.Brand.%(Filename)%(Extension)" />
     <Content Include="Assets/Brand/guangyu.ico" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="Assets/Brand/*.svg" CopyToOutputDirectory="PreserveNewest" />

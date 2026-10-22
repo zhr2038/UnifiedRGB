@@ -9,6 +9,17 @@ namespace UnifiedRgb.Contracts;
 /// </summary>
 public interface IScenePackageService
 {
+    Task<ScenePackageEditorStateDto> GetScenePackageEditorAsync(string contentId, string? bindingId = null, CancellationToken ct = default)
+        => throw new NotSupportedException("Scene-package editing is not supported by this Host.");
+    Task SaveScenePackageVariantAsync(ScenePackageSaveVariantDto request, CancellationToken ct = default)
+        => throw new NotSupportedException("Scene-package variants are not supported by this Host.");
+    Task<ScenePackageEditorStateDto> SaveScenePackageEditAsync(ScenePackageEditRequestDto request, CancellationToken ct = default)
+        => throw new NotSupportedException("Scene-package editing is not supported by this Host.");
+    Task<ScenePackagePreviewDto> GetScenePackagePreviewAsync(string contentId, CancellationToken ct = default)
+        => throw new NotSupportedException("Dynamic package preview is not supported by this Host.");
+    Task<ScenePackagePreviewChunkDto> ReadScenePackagePreviewChunkAsync(ScenePackagePreviewChunkRequestDto request, CancellationToken ct = default)
+        => throw new NotSupportedException("Dynamic package preview is not supported by this Host.");
+
     Task<IReadOnlyList<ScenePackageInfoDto>> ListScenePackagesAsync(CancellationToken ct = default);
 
     /// <summary>Validates the whole ZIP and installs it; identical content returns the existing entry. Invalid input throws ArgumentException.</summary>

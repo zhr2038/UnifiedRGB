@@ -30,6 +30,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private string _error = string.Empty;
     private volatile string? _uiFault;
     private TrayState _tray = TrayState.Disconnected;
+    private int _workbenchSource;
+    private bool _initialSourceSelected;
+    public int WorkbenchSourceIndex { get => _workbenchSource; set => SetProperty(ref _workbenchSource, value); }
 
     /// <param name="confirm">Yes/no prompt before flash writes ("Save current lighting to fans"); null: no prompt (tests).</param>
     public MainViewModel(PipeClient client, IUiDispatcher ui, IAutostartRegistry autostart, string appExePath, string hostDataDirectory, string appLogDirectory,
@@ -48,6 +51,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             () => client.Require().ListControllersAsync(), () => client.RequireScreens().ListScreensAsync(),
             choosePackageFile ?? (() => null), ReportError, confirm, client.RequireLibrary);
         Profiles = new ProfilesViewModel(client, ui, ReportError, Packages, confirm);
+        Packages.ReadPreviewTelemetry = () => client.RequireScreens().GetPcTelemetryAsync();
+        Screens.PropertyChanged += (_, e) => { if (e.PropertyName == nameof(ScreensViewModel.TelemetrySnapshot)) Packages.TelemetrySnapshot = Screens.TelemetrySnapshot; };
         Profiles.Applied += (_, _) => { _ = Studio.ReadCommand.ExecuteAsync(); _ = Screens.RefreshOptionalAsync(); };
         Packages.Applied += (_, _) => { _ = Studio.ReadCommand.ExecuteAsync(); _ = Screens.RefreshOptionalAsync(); };
         Bringup = new NativeBringupViewModel(client, ui, ReportError);
@@ -170,6 +175,12 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         await Studio.RefreshAsync().ConfigureAwait(true);
         await Screens.RefreshOptionalAsync().ConfigureAwait(true);
         await Packages.RefreshOptionalAsync().ConfigureAwait(true);
+        Packages.SelectCurrent(Studio.ActivePackageContentId);
+        if (!_initialSourceSelected)
+        {
+            WorkbenchSourceIndex = Studio.ActivePackageContentId is null ? 0 : 1;
+            _initialSourceSelected = true;
+        }
         var status = await _client.Require().GetStatusAsync(false).ConfigureAwait(true);
         Diagnostics.Update(status);
         Studio.UpdateStatus(status);
@@ -218,7 +229,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         });
     }
 
-    public void Dispose() => Bringup.Dispose();
+    public void Dispose() { Packages.Dispose(); Bringup.Dispose(); }
 
     private void UpdateTray() => TrayState = TrayStateOf(_client.State == ConnectionState.Connected, Devices.Snapshot);
 }

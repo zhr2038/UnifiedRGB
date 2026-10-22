@@ -647,7 +647,7 @@ public sealed class RenderLoop : IDisposable
             {
                 if (!controllers[c].IsLoop && !_bringup.Contains(controllers[c].Descriptor.Id))
                 {
-                    _bus.Publish(controllers[c].Descriptor.Id, controllers[c].Mailbox.Back);
+                    _bus.TryPublishCurrent(controllers[c].Mailbox, controllers[c].Mailbox.Back);
                 }
             }
         }
@@ -971,9 +971,17 @@ public sealed class RenderLoop : IDisposable
             }
 
             var loop = new LoopFrames(timing.Frames, rgb.Length / 3 / timing.Frames, timing.IntervalMs, index!.Value, rgb) { Geometry = geometry, Strict = strict };
-            _lastLoops[(controller, zone)] = loop;
-            _bus.PublishLoop(controller, zone, loop);
-            published++;
+            var slot = Array.Find(_controllers, c => c.Descriptor.Id == controller);
+            if (slot is not null && _bus.TryPublishCurrentLoop(slot.Mailbox, zone, loop))
+            {
+                _lastLoops[(controller, zone)] = loop;
+                published++;
+            }
+            else
+            {
+                _lastLoops.Remove((controller, zone));
+                _uploaded.Remove((controller, zone));
+            }
         }
 
         BindClocks(_plan); // after publishing: the transmitted-timing verdict refers to the indices now on the bus

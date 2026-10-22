@@ -236,6 +236,32 @@ public sealed class FrameBus : IFrameSink, IDisposable
 
     public IReadOnlyCollection<Mailbox> Mailboxes => _boxes.Values;
 
+    /// <summary>
+    /// Publish only while this exact render-plan mailbox remains registered. Device teardown can retire a mailbox before
+    /// discovery recompiles the plan; the old frame must neither crash the clock nor enter a replacement with the same id.
+    /// The short gate also prevents disposal of the signal between the identity check and publication.
+    /// </summary>
+    internal bool TryPublishCurrent(Mailbox expected, Frame frame)
+    {
+        lock (_gate)
+        {
+            if (!_boxes.TryGetValue(expected.Controller.Id, out var current) || !ReferenceEquals(current, expected)) return false;
+            current.Publish(frame);
+            return true;
+        }
+    }
+
+    /// <summary>The same lifetime check for automatic loop publication; explicit PublishLoop keeps its strict contract.</summary>
+    internal bool TryPublishCurrentLoop(Mailbox expected, ZoneId zone, LoopFrames loop)
+    {
+        lock (_gate)
+        {
+            if (!_boxes.TryGetValue(expected.Controller.Id, out var current) || !ReferenceEquals(current, expected)) return false;
+            current.PublishLoop(zone, loop);
+            return true;
+        }
+    }
+
     public void Publish(ControllerId id, Frame frame)
     {
         if (!_boxes.TryGetValue(id, out var box))

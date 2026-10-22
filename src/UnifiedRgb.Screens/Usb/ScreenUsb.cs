@@ -99,6 +99,8 @@ internal interface IScreenUsbDiagnostics
     ScreenReadCounts LastRead { get; }
     int ReplyQuietMs { set; }
     bool? CorrelatedReplies { set; }
+    /// <summary>Native data negotiated independently: require exactly one full matching ACK followed by its ZLP.</summary>
+    bool ExactReplyPair { set; }
     void ExpectResponse(byte command, uint timestamp);
 }
 

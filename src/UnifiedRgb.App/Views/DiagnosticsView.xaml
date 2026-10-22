@@ -19,7 +19,7 @@
                     <TextBlock Text="安装映射" Style="{StaticResource FieldLabel}"/><TextBlock Text="{Binding LastUpload.Mapping}" TextWrapping="Wrap" FontFamily="Consolas" FontSize="12"/>
                     <TextBlock Text="几何与压缩" Style="{StaticResource FieldLabel}"/><TextBlock Text="{Binding LastUpload.Geometry}" TextWrapping="Wrap" FontFamily="Consolas" FontSize="12"/>
                     <TextBlock Text="{Binding LastUpload.Fidelity}" Foreground="{StaticResource AccentBrush}" Margin="0,8,0,0"/>
-                    <TextBlock Text="最近错误" Style="{StaticResource FieldLabel}"/><TextBlock Text="{Binding LastError}" Foreground="#F5BD96" TextWrapping="Wrap"/>
+                    <TextBlock Text="最近错误" Style="{StaticResource FieldLabel}"/><TextBlock Text="{Binding LastError}" Foreground="#F0B58A" TextWrapping="Wrap"/>
                     <Expander Header="底层信息" Margin="0,24,0,0"><StackPanel><TextBlock Text="{Binding Id}" TextWrapping="Wrap"/><TextBlock Text="{Binding BlockedBy}" TextWrapping="Wrap"/><TextBlock Text="{Binding LastUpload.CodecSha256}" TextWrapping="Wrap" FontFamily="Consolas" FontSize="12"/></StackPanel></Expander>
                 </StackPanel>
             </StackPanel></ScrollViewer></Border>

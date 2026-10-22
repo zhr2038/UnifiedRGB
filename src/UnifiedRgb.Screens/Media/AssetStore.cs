@@ -11,13 +11,14 @@ namespace UnifiedRgb.Screens.Media;
 /// <summary>A stored, normalized asset. Frames are PNG files f000.png.. in the asset directory.</summary>
 internal sealed record StoredAsset(string Id, string Name, string Format, int Width, int Height, IReadOnlyList<int> DelaysMs, long Bytes)
 {
+    public VideoSequenceMeta? Sequence { get; init; }
     public int FrameCount => DelaysMs.Count;
 
     public bool Animated => FrameCount > 1;
 
     public int DurationMs => Animated ? DelaysMs.Sum() : 0;
 
-    public string Kind => Format == "mp4" ? "video" : Animated ? "animation" : "image";
+    public string Kind => Format is "mp4" or SegmentedVideo.Format ? "video" : Animated ? "animation" : "image";
 
     public ScreenAssetDto ToDto() => new(Id, Name, Width, Height, FrameCount, DurationMs, Kind);
 
@@ -222,7 +223,8 @@ internal sealed partial class AssetStore
                 return new(false, false, 0);
             }
 
-            owned = Enumerable.Range(0, asset.FrameCount).Select(FrameFile).Append("meta.json").ToHashSet(StringComparer.OrdinalIgnoreCase);
+            owned = asset.Sequence is { } sequence ? SequenceOwned(sequence)
+                : Enumerable.Range(0, asset.FrameCount).Select(FrameFile).Append("meta.json").ToHashSet(StringComparer.OrdinalIgnoreCase);
             _ = OwnedLibraryPaths.Inventory(_root, Path.Combine(_root, id), owned);
             bytes = owned.Sum(f => new FileInfo(Path.Combine(_root, id, f)).Length);
 
@@ -288,6 +290,11 @@ internal sealed partial class AssetStore
 
             try
             {
+                if (File.Exists(Path.Combine(dir, SequenceMetaFile)))
+                {
+                    _assets[name] = LoadSequence(dir, name);
+                    continue;
+                }
                 var meta = JsonSerializer.Deserialize(ReadBounded(Path.Combine(dir, "meta.json"), MaxMetaBytes), ScreensJsonContext.Default.AssetMeta);
                 if (meta is null || meta.Id != name || meta.DelaysMs is not { Length: >= 1 } || meta.Width < 1 || meta.Height < 1
                     || string.IsNullOrEmpty(meta.Name)
@@ -307,7 +314,7 @@ internal sealed partial class AssetStore
 
                 _assets[name] = new StoredAsset(name, meta.Name, meta.Format, meta.Width, meta.Height, meta.DelaysMs, bytes);
             }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
+            catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException or JsonException)
             {
                 LogSkipped(_log, name, ex.Message);
             }
@@ -322,6 +329,15 @@ internal sealed partial class AssetStore
             if (Directory.Exists(path) && (name.StartsWith("~tmp-", StringComparison.Ordinal) || name.StartsWith("~del-", StringComparison.Ordinal))
                 && Guid.TryParseExact(name[5..], "N", out _))
             {
+                if (File.Exists(Path.Combine(path, SequenceMetaFile)))
+                {
+                    var sequence = JsonSerializer.Deserialize(ReadBounded(Path.Combine(path, SequenceMetaFile), SegmentedVideo.MaxMetaBytes), SequenceJsonContext.Default.VideoSequenceMeta);
+                    if (sequence is not null && SegmentedVideo.MetadataProblem(sequence) is null)
+                    {
+                        if (!OwnedLibraryPaths.Purge(_root, path, SequenceOwned(sequence))) LogCleanupFailed(_log, path, "Unknown or locked sequence files kept for inspection.");
+                        return;
+                    }
+                }
                 var limit = 300;
                 var metadata = Path.Combine(path, "meta.json");
                 if (File.Exists(metadata))
@@ -333,7 +349,7 @@ internal sealed partial class AssetStore
                 if (!OwnedLibraryPaths.Purge(_root, path, owned)) LogCleanupFailed(_log, path, "Unknown or locked files kept for inspection.");
             }
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
+        catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException or JsonException)
         {
             LogCleanupFailed(_log, path, ex.Message);
         }

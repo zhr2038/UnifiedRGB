@@ -141,7 +141,7 @@ internal static class Mp4Importer
     }
 
     // A local MP4 may still contain external data references. Never let the Windows resolver follow a network/file URL.
-    private static void ValidateContainer(ReadOnlySpan<byte> data)
+    internal static void ValidateContainer(ReadOnlySpan<byte> data)
     {
         Walk(data, 0);
         static void Walk(ReadOnlySpan<byte> boxes, int depth)

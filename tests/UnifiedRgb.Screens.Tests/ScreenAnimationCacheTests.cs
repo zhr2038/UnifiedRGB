@@ -9,6 +9,28 @@ namespace UnifiedRgb.Screens.Tests;
 public sealed class ScreenAnimationCacheTests
 {
     [Fact]
+    public void A_full_supported_sixty_fps_cycle_can_be_cached_without_increasing_its_byte_budget()
+    {
+        const long budget = 48L * 1024 * 1024;
+        var cache = new ScreenAnimationCache(budget);
+        var image = new ScreenImage(121, new byte[4096], "independent picture");
+        for (var i = 0; i < 1800; i++) cache.Add("source60", i, image).Should().BeTrue();
+        cache.Count.Should().Be(1800);
+        cache.Bytes.Should().Be(1800L * 4096).And.BeLessThan(budget);
+        cache.Find("source60", 959).Should().BeSameAs(image);
+        cache.Find("source60", 1799).Should().BeSameAs(image);
+        cache.Add("source60", 1800, image).Should().BeFalse("entry count remains bounded by the importer limit");
+
+        var bytes = new ScreenAnimationCache(8192);
+        bytes.Add("a", 0, image).Should().BeTrue();
+        bytes.Add("a", 1, image).Should().BeTrue();
+        bytes.Add("a", 2, image).Should().BeFalse("the unchanged byte limit still takes precedence");
+        bytes.Count.Should().Be(2);
+        cache.Clear();
+        (cache.Bytes, cache.Count).Should().Be((0, 0));
+    }
+
+    [Fact]
     public void Oversized_cycles_keep_a_bounded_useful_prefix_and_clear_releases_it()
     {
         var cache = new ScreenAnimationCache(7, 2);

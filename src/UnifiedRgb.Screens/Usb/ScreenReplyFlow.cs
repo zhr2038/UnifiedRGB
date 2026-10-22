@@ -16,6 +16,20 @@ internal static class ScreenReplyFlow
     public const int OpenDrainLimit = 64;
     public const int FrameDrainLimit = 8;
 
+    /// <summary>Negotiated native data only. Any extra, short, stale or missing packet invalidates this opened channel.</summary>
+    public static int ReadExactPair(ScreenPipeReader read, Span<byte> response, int timeoutMs)
+    {
+        var ack = read(response, timeoutMs);
+        if (ack is { Length: 512, TimedOut: false, MatchesRequest: true })
+        {
+            Span<byte> terminal = stackalloc byte[512];
+            var end = read(terminal, DrainTimeoutMs);
+            if (end is { Length: 0, TimedOut: false }) return ack.Length;
+        }
+        throw new ScreenTransferException(ScreenTransferError.ResponseMismatch,
+            "Native data did not return exactly its full matching ACK and terminal ZLP; close the channel before another write.");
+    }
+
     /// <summary>One outstanding image: consume OUR timestamp-matched status AND its terminating USB ZLP. A stale ZLP never ends it.</summary>
     public static int ReadCorrelated(ScreenPipeReader read, Span<byte> response, int timeoutMs)
     {

@@ -85,5 +85,5 @@ public sealed partial class ScenePackageService
     }
 
     private static string[] RelatedAssets(InstalledScenePackage package) => package.Manifest.Screens
-        .Select(s => package.Manifest.Files[s.File][..16]).Distinct(StringComparer.Ordinal).ToArray();
+        .Select(s => ScenePackageFormat.ScreenAssetId(s, package.Manifest.Files)).Distinct(StringComparer.Ordinal).ToArray();
 }

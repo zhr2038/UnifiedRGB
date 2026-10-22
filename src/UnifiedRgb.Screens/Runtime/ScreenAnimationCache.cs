@@ -1,4 +1,5 @@
 using UnifiedRgb.Screens.Composition;
+using UnifiedRgb.Screens.Media;
 
 namespace UnifiedRgb.Screens.Runtime;
 
@@ -13,7 +14,7 @@ internal sealed record ScreenImage(byte Command, byte[] Image, string Note)
 /// before every lookup and clears it on assignment/policy changes. Admission stops at either bound: a looping animation
 /// larger than the budget retains a useful prefix instead of thrashing an LRU on every loop. STA-owned; no locks or I/O.
 /// </summary>
-internal sealed class ScreenAnimationCache(long maxBytes, int maxEntries = 512)
+internal sealed class ScreenAnimationCache(long maxBytes, int maxEntries = Mp4Importer.MaxFrames)
 {
     private readonly Dictionary<(string Asset, int Frame), ScreenImage> _images = [];
     public long Bytes { get; private set; }

@@ -9,6 +9,11 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        Loaded += (_, _) =>
+        {
+            var area = SystemParameters.WorkArea;
+            if (Width > area.Width || Height > area.Height) { Width = Math.Max(MinWidth, area.Width); Height = Math.Max(MinHeight, area.Height); Left = area.Left; Top = area.Top; }
+        };
         DataContextChanged += (_, _) =>
         {
             if (DataContext is MainViewModel vm)

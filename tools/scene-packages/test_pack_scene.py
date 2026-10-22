@@ -11,6 +11,19 @@ pack = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(pack)
 
 class AuthoringTests(unittest.TestCase):
+    def test_v4_sequence_pins_each_clip_and_rejects_ambiguous_or_old_schema(self):
+        video=Path(__file__).resolve().parents[2]/"tests"/"Fixtures"/"media"/"h264-30.mp4"
+        for n in ["a","b"]:(self.source/f"screens/{n}.mp4").write_bytes(video.read_bytes())
+        track={"role":"video-panel","segments":[{"file":f"screens/{n}.mp4","durationMs":6000} for n in ["a","b"]],"durationMs":12000,"overlay":"none","fit":"contain","fps":30}
+        self.edit(lambda m:m.update(schemaVersion=4,screens=[track]))
+        encoded,files=pack.prepare(self.source)
+        self.assertEqual(4,json.loads(encoded)["schemaVersion"])
+        self.assertIn("screens/a.mp4",files);self.assertIn("screens/b.mp4",files)
+        self.edit(lambda m:m["screens"][0].update(file="screens/a.mp4"))
+        with self.assertRaisesRegex(ValueError,"without file"):pack.prepare(self.source)
+        self.edit(lambda m:m.update(schemaVersion=3))
+        with self.assertRaisesRegex(ValueError,"schemaVersion 4"):pack.prepare(self.source)
+
     def test_sample_does_not_silently_downgrade_a_video_schema(self):
         with self.assertRaisesRegex(ValueError,"schema must be 1 or 2"):
             pack.sample(self.root/"video",schema=3)
@@ -107,7 +120,7 @@ class AuthoringTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,"needs schemaVersion 2"): pack.build(self.source,self.root/"bad.zip")
 
     def test_unknown_schema_versions_fail_closed(self):
-        for version in (0,4,"2",2.0,True):
+        for version in (0,5,"2",2.0,True):
             self.edit(lambda m:m.update(schemaVersion=version))
             with self.assertRaisesRegex(ValueError,"v1/v2/v3"): pack.build(self.source,self.root/"bad.zip")
 

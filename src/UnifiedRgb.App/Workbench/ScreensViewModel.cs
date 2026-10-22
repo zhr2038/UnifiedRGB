@@ -74,6 +74,18 @@ public sealed class ScreensViewModel : ObservableObject
     private int _editorOperations;
     private string _busyText = string.Empty;
     private string _errorText = string.Empty;
+    private bool _useRegion;
+    private double _regionX, _regionY, _regionWidth = 100, _regionHeight = 100, _regionOpacity;
+    private int _regionColumns = 2;
+    public PcTelemetryDto? TelemetrySnapshot { get; private set; }
+    public bool AllowsRegion => Selected?.Dto.Family == "Turzx";
+    public bool UseRegion { get => _useRegion; set { if (SetProperty(ref _useRegion, value)) Changed(); } }
+    public double RegionX { get => _regionX; set { if (SetProperty(ref _regionX, value)) Changed(); } }
+    public double RegionY { get => _regionY; set { if (SetProperty(ref _regionY, value)) Changed(); } }
+    public double RegionWidth { get => _regionWidth; set { if (SetProperty(ref _regionWidth, value)) Changed(); } }
+    public double RegionHeight { get => _regionHeight; set { if (SetProperty(ref _regionHeight, value)) Changed(); } }
+    public int RegionColumns { get => _regionColumns; set { if (SetProperty(ref _regionColumns, value)) Changed(); } }
+    public double RegionOpacity { get => _regionOpacity; set { if (SetProperty(ref _regionOpacity, value)) Changed(); } }
 
     public ScreensViewModel(Func<IScreenService> service, IUiDispatcher ui, Action<Exception> onError, Func<string?> chooseFile, Func<string, bool>? confirm = null, Func<DateTimeOffset>? now = null, Func<IScreenDeviceSettingsService>? deviceSettings = null)
     {
@@ -255,6 +267,7 @@ public sealed class ScreensViewModel : ObservableObject
             {
                 if (!CurrentConnection(epoch)) return;
                 var age = DateTimeOffset.UtcNow - data.Timestamp;
+                TelemetrySnapshot = data; OnPropertyChanged(nameof(TelemetrySnapshot));
                 Telemetry = age > TimeSpan.FromSeconds(5) ? "电脑数据已过期，等待新采样" : $"CPU {Number(data.CpuUsagePercent, "%")}    内存 {Bytes(data.MemoryUsedBytes)} / {Bytes(data.MemoryTotalBytes)}\nGPU {Number(data.GpuUsagePercent, "%")}    {Number(data.GpuTemperatureC, "°C")}    显存 {Bytes(data.GpuMemoryUsedBytes)} / {Bytes(data.GpuMemoryTotalBytes)}\n{data.Timestamp.ToLocalTime():HH:mm:ss} 更新";
                 UpdateScreenChoices(screens);
             });
@@ -342,7 +355,8 @@ public sealed class ScreensViewModel : ObservableObject
         if (!double.IsFinite(Brightness) || Brightness is < 0 or > 100 || Fps is < 1 or > 60) throw new InvalidOperationException("亮度范围为 0～100%，发送帧率范围为 1～60。发送上限不会增加素材帧数。");
         var overlay = Overlay?.Id ?? "none";
         var saved = SavedAssignment();
-        var region = overlay == "dashboard" ? saved?.OverlayLayout : null;
+        var region = overlay == "dashboard" && AllowsRegion && UseRegion ? new ScreenOverlayLayoutDto(RegionX / 100, RegionY / 100, RegionWidth / 100, RegionHeight / 100, RegionColumns, RegionOpacity / 100) : null;
+        if (ScenePackagePlayback.Validate(new(Screens: [new("screen", OverlayLayout: region)])) is { } bad) throw new InvalidOperationException(bad);
         // A shared timeline clocks its authored media: presentation edits keep it; different media never inherits it.
         var timeline = LeavesTimeline(saved) ? null : saved?.TimelineId;
         return new(Selected.Id, Asset?.Dto?.Id, Background, overlay, _deviceSettings is null ? Rotation : _savedRotation, Brightness / 100, Fps, Enabled, Accent, Fit?.Id ?? "cover", TimelineId: timeline, OverlayLayout: region);
@@ -368,6 +382,10 @@ public sealed class ScreensViewModel : ObservableObject
             _quality = EncodingQualities[0]; OnPropertyChanged(nameof(EncodingQuality)); DeviceSettingsDirty = false;
             _settingsAvailable = false; _settingsVersion++; UpdateSettingsState();
             Brightness = a.Brightness * 100; Fps = a.Fps; Enabled = a.Enabled;
+            UseRegion = a.OverlayLayout is not null; RegionX = (a.OverlayLayout?.X ?? 0) * 100; RegionY = (a.OverlayLayout?.Y ?? 0) * 100;
+            RegionWidth = (a.OverlayLayout?.Width ?? 1) * 100; RegionHeight = (a.OverlayLayout?.Height ?? 1) * 100;
+            RegionColumns = a.OverlayLayout?.Columns ?? 2; RegionOpacity = (a.OverlayLayout?.BackgroundOpacity ?? 0) * 100;
+            OnPropertyChanged(nameof(AllowsRegion));
             Preview = null; PreviewNote = "内容预览尚未生成。预览只合成图片，不发送到硬件。"; Dirty = false;
             OnPropertyChanged(nameof(ScreenDetail));
             _draftVersion++;

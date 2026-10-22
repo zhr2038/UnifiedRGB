@@ -41,6 +41,7 @@ internal static class Program
             throw new ArgumentException("QA options must be complete --name=value arguments; quote values containing spaces.");
         var options = args.Select(x => x.Split('=', 2)).Where(x => x.Length == 2).ToDictionary(x => x[0], x => x[1]);
         string Get(string key, string fallback) => options.GetValueOrDefault(key, fallback);
+        if (Get("--workbench", "false") == "true") { WorkbenchQa.Run(options); return; }
         if (Get("--library", "false") == "true") { LibraryQa.Run(options); return; }
         var record = Path.GetFullPath(Get("--record", "ui-qa-state.json"));
         Directory.CreateDirectory(Path.GetDirectoryName(record)!);

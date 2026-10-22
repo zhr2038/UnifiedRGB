@@ -1,0 +1,3 @@
+<UserControl x:Class="UnifiedRgb.App.Views.PackageCasePreview" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:p="clr-namespace:UnifiedRgb.App.Preview">
+ <Viewbox Stretch="Uniform"><Grid Width="776" Height="420" ClipToBounds="True"><p:PackageCaseDrawing x:Name="Drawing" Width="776" Height="420"/><Canvas x:Name="MediaCanvas" Width="776" Height="420" IsHitTestVisible="False"/></Grid></Viewbox>
+</UserControl>

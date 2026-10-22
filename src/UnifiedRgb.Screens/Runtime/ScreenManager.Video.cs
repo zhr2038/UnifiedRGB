@@ -20,9 +20,13 @@ public sealed partial class ScreenManager : IScreenVideoService
     public async Task<NativeVideoTrialDto> BeginNativeVideoTrialAsync(NativeVideoTrialRequestDto request, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(request); ct.ThrowIfCancellationRequested();
-        if (request.DurationMs is < 1000 or > 60000 || request.Fps is < 1 or > 60
+        if (request.DurationMs is < 1000 or > 60000 || request.Fps is < 1 or > 60 || request.Quality is < 95 or > 100
             || !ScreenIds.TryParse(request.ScreenId, out var family, out _) || family.Family is not (ScreenFamily.Turzx or ScreenFamily.H2))
             throw new ArgumentException("A video trial needs one H2/TURZX id, 1..60 FPS and 1..60 seconds.", nameof(request));
+        if ((request.SingleSlice || request.SimpleOverlayPng || (request.Quality ?? 95) != 95) && family.Family != ScreenFamily.Turzx)
+            throw new ArgumentException("Experimental slice and increased-quality settings are TURZX-only.", nameof(request));
+        if ((request.PreparedOverlay || request.MeasureQueueAfterOverlay) && family.Family != ScreenFamily.Turzx)
+            throw new ArgumentException("Prepared-overlay and overlay-queue measurements are TURZX-only.", nameof(request));
         await EnterMutationAsync(ct).ConfigureAwait(false);
         try
         {
@@ -41,7 +45,9 @@ public sealed partial class ScreenManager : IScreenVideoService
                 if (assignment.TimelineId is not null && (_assets.Find(assignment.BackgroundAssetId!) is not { } current || current.DurationMs != asset.DurationMs))
                     throw new ArgumentException("Trial media must match the current shared loop duration exactly.", nameof(request));
             }
-            var info = new NativeVideoTrialDto(Guid.NewGuid().ToString("N"), id, request.DurationMs, request.Fps, request.AssetId);
+            var info = new NativeVideoTrialDto(Guid.NewGuid().ToString("N"), id, request.DurationMs, request.Fps, request.AssetId)
+                { SingleSlice = request.SingleSlice, Quality = request.Quality ?? 95, SimpleOverlayPng = request.SimpleOverlayPng,
+                  PreparedOverlay = request.PreparedOverlay, MeasureQueueAfterOverlay = request.MeasureQueueAfterOverlay };
             Volatile.Write(ref _videoTrial, new(info, _platform.Time.GetTimestamp() + request.DurationMs * _platform.Time.TimestampFrequency / 1000));
             worker.Post(assignment, false); // identity, output state, TimelineId, local settings and persistence are untouched
             return info;

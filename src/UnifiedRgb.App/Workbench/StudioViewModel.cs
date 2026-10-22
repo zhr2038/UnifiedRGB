@@ -35,6 +35,9 @@ public sealed class StudioViewModel : ObservableObject
     private bool _preview;
     private long _refreshId;
     private bool _updatingAssignments;
+    private bool _replacePackage;
+    private string? _activePackageContentId;
+    public string? ActivePackageContentId => _activePackageContentId;
 
     public StudioViewModel(IHostConnection client, IUiDispatcher ui, Action<Exception> onError, Func<string, bool>? confirm = null)
     {
@@ -84,7 +87,7 @@ public sealed class StudioViewModel : ObservableObject
         get => _page;
         set { if (SetProperty(ref _page, value)) { PreviewPlaying = false; OnPropertyChanged(nameof(PageTitle)); OnPropertyChanged(nameof(PageSubtitle)); } }
     }
-    public string PageTitle => Page switch { 0 => "机箱总览", 1 => "灯效编排", 2 => "屏幕内容", 3 => "设备与校准", 4 => "场景库", 5 => "运行诊断", _ => "偏好设置" };
+    public string PageTitle => Page switch { 0 => "机箱总览", 1 => "场景工作台", 2 => "屏幕工作区", 3 => "设备与校准", 4 => "场景与素材库", 5 => "运行诊断", _ => "偏好设置" };
     public string PageSubtitle => Page switch
     {
         0 => "一眼查看全机分区、当前编排与运行状态。",
@@ -130,6 +133,8 @@ public sealed class StudioViewModel : ObservableObject
         _ui.Post(() =>
         {
             if (request != Volatile.Read(ref _refreshId)) return;
+            _activePackageContentId = scene.Package?.ContentId;
+            OnPropertyChanged(nameof(ActivePackageContentId));
             var replaceDraft = revision == Draft.Revision && (!Draft.Dirty || discardDraft);
             UpdateZones(controllers);
             if (replaceDraft)
@@ -213,11 +218,20 @@ public sealed class StudioViewModel : ObservableObject
         if (JsonSerializer.Serialize(current.Assignments, JsonOptions) != baseline)
             throw new InvalidOperationException("运行中的灯效已被其他操作修改。请先重新读取，避免覆盖新场景。");
         var assignments = current.Assignments.ToList();
+        ScreenSceneDto? nextScreens = null;
+        if (_replacePackage && current.Package is not null)
+        {
+            if (!_confirm("当前灯光与屏幕属于联动场景。应用内置灯效后，关联屏幕将保留画面并独立播放。继续？")) return;
+            var leaving = assignments.Where(a => a.FrameSetId?.StartsWith("package:", StringComparison.Ordinal) == true).Select(a => a.FrameSetId).ToHashSet();
+            assignments.RemoveAll(a => leaving.Contains(a.FrameSetId));
+            if (current.Screens is { } screens) nextScreens = new(screens.Assignments.Select(a => leaving.Contains(a.TimelineId) ? a with { TimelineId = null } : a).ToArray());
+        }
         if (originalIndex is { } oldIndex) assignments.RemoveAt(oldIndex);
         var overlap = assignments.Any(a => a.Targets.Intersect(next.Targets).Any());
         if (overlap) throw new InvalidOperationException("所选分区已由其他编排控制。请先移除对应编排，避免覆盖。");
         assignments.Insert(Math.Min(originalIndex ?? assignments.Count, assignments.Count), next);
-        await service.SetSceneAsync(new(assignments)).ConfigureAwait(true);
+        await service.SetSceneAsync(new(assignments, Screens: nextScreens)).ConfigureAwait(true);
+        _replacePackage = false;
         var reload = revision == Draft.Revision && ReferenceEquals(_assignment, selected);
         _scene = new(assignments); SetAssignmentRows(assignments, selected, next);
         if (reload)
@@ -240,6 +254,7 @@ public sealed class StudioViewModel : ObservableObject
     {
         if (Draft.Dirty && !_confirm("放弃未应用的修改，开始新的灯效编排？")) return;
         _assignment = null;
+        _replacePackage = _scene.Package is not null;
         OnPropertyChanged(nameof(SelectedAssignment));
         NotifyDraftAccess();
         Draft.Load(null, Zones);

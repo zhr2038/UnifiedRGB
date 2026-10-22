@@ -338,6 +338,7 @@ public sealed partial class ScreenManager : IScreenService, IScreenSceneBinding,
         }
 
         var encoding = EncodingOf(assignment.ScreenId);
+        var videoTrial = VideoTrialOf(assignment.ScreenId)?.Info;
         if (encoding.Quality == Encoding.ScreenEncodingPolicies.NativeH264IntraV1 && !NativeVideoVerified(assignment.ScreenId)
             && VideoTrialOf(assignment.ScreenId) is null)
             throw new InvalidOperationException("NOT SENDABLE: native H.264 has not been individually verified for this screen.");
@@ -354,11 +355,12 @@ public sealed partial class ScreenManager : IScreenService, IScreenSceneBinding,
         {
             _previewCompositor ??= new ScreenCompositor(_assets, PreviewCacheBytes);
             _previewCompositor.ClearCache();
-            var video = encoding.Quality == Encoding.ScreenEncodingPolicies.NativeH264IntraV1;
+            var video = encoding.Quality == Encoding.ScreenEncodingPolicies.NativeH264IntraV1 || videoTrial is not null;
             var composed = _previewCompositor.Compose(family, video && family.Family == ScreenFamily.Turzx ? shownAssignment with { Overlay = "none", OverlayLayout = null } : shownAssignment, 0, telemetry, now);
             if (video)
             {
-                var preview = ScreenWorker.PreviewVideo(family, shownAssignment, composed.Canvas, telemetry, now, rotation);
+                var preview = ScreenWorker.PreviewVideo(family, shownAssignment, composed.Canvas, telemetry, now, rotation,
+                    videoTrial?.SingleSlice ?? false, videoTrial?.Quality ?? 95, videoTrial?.SimpleOverlayPng ?? false);
                 return (WpfCodec.EncodePng(preview.Shown), preview.Note);
             }
             EncodedFrame encoded;
@@ -561,6 +563,7 @@ public sealed partial class ScreenManager : IScreenService, IScreenSceneBinding,
         _sampler.Dispose();
         if (_previewThread.IsValueCreated)
         {
+            await _previewThread.Value.InvokeAsync(() => { _previewCompositor?.Dispose(); _previewCompositor = null; return true; }, CancellationToken.None).ConfigureAwait(false);
             _previewThread.Value.Dispose();
         }
 

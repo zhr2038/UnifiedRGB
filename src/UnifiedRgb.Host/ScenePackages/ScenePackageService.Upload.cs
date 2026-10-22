@@ -273,7 +273,8 @@ public sealed partial class ScenePackageService
         var media = new List<(ScenePackageMediaRecord, byte[])>();
         foreach (var s in content.Manifest.Screens)
         {
-            media.Add(await ProbeAsync(s, content.Files[s.File], ct).ConfigureAwait(false));
+            media.Add(s.IsSequence ? await ProbeSequenceAsync(s, content.Files, ct).ConfigureAwait(false)
+                : await ProbeAsync(s, content.Files[s.File], ct).ConfigureAwait(false));
         }
 
         var (installed, created) = await Task.Run(() => Store.Install(content, zip, expectedZipSha256, media), ct).ConfigureAwait(false);

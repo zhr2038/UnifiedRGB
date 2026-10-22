@@ -1,7 +1,7 @@
-"""Data-only ScenePackage v1/v2/v3 authoring helper. Runtime import remains authoritative.
+"""Data-only ScenePackage v1/v2/v3/v4 authoring helper. Runtime import remains authoritative.
 
 schemaVersion 2 only adds two optional screen fields: accentColor (#RRGGBB) and overlayLayout (a telemetry
-region on rectangular screens). v3 explicitly adds MP4/H.264 tracks. v1/v2 retain their original meaning."""
+region on rectangular screens). v3 adds MP4/H.264. v4 adds bounded MP4 sequences. Earlier schemas retain their original meaning."""
 from __future__ import annotations
 import argparse
 import hashlib
@@ -17,7 +17,7 @@ import zlib
 FORMAT = "UnifiedRgb.ScenePackage"
 CONTRACT = "rgb24-hold-physical-ms-v1"
 INERT = {"README.md", "README.txt", "bindings.template.json"}
-SCHEMAS = (1, 2, 3)
+SCHEMAS = (1, 2, 3, 4)
 REGION_KEYS = ("x", "y", "width", "height", "columns", "backgroundOpacity")
 V2_SCREEN_FIELDS = ("accentColor", "overlayLayout")
 RESERVED = {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"} | {f"{p}{i}" for p in ("COM", "LPT") for i in range(1, 10)}
@@ -85,7 +85,7 @@ def prepare(folder):
     manifest = json.loads(raw, object_pairs_hook=unique_object)
     schema = manifest.get("schemaVersion")
     if manifest.get("format") != FORMAT or type(schema) is not int or schema not in SCHEMAS or manifest.get("playbackContract") != CONTRACT:
-        raise ValueError("Explicit ScenePackage v1/v2/v3 / rgb24-hold-physical-ms-v1 required; drafts are never upgraded")
+        raise ValueError("Explicit ScenePackage v1/v2/v3/v4 / rgb24-hold-physical-ms-v1 required; drafts are never upgraded")
     if manifest.get("loop") is not True:
         raise ValueError("v1 requires loop:true")
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", manifest.get("id", "")):
@@ -105,6 +105,35 @@ def prepare(folder):
             if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", role) or role in roles:
                 raise ValueError(f"Invalid or duplicate role: {role}")
             roles.add(role)
+            if "segments" in track:
+                if schema != 4 or kind != "screen" or "file" in track:
+                    raise ValueError(f"{role}: segments require schemaVersion 4 screen media without file")
+                clips = track["segments"]
+                if not isinstance(clips,list) or not 2 <= len(clips) <= 32:
+                    raise ValueError(f"{role}: need 2..32 segments")
+                total = 0
+                for clip in clips:
+                    if not isinstance(clip,dict) or set(clip) != {"file","durationMs"}:
+                        raise ValueError(f"{role}: invalid segment properties")
+                    total += integer(clip["durationMs"],1,30000,"segment durationMs")
+                    name = relative_name(clip["file"])
+                    if PurePosixPath(name).suffix.lower() != ".mp4" or name.casefold() in folded and name not in files:
+                        raise ValueError(f"{role}: invalid/colliding segment file")
+                    path = (folder/name).resolve(strict=True)
+                    if not path.is_relative_to(folder) or not path.is_file() or not 16 <= path.stat().st_size <= 12*1024*1024:
+                        raise ValueError(f"{role}: segment escapes source or exceeds per-file budget")
+                    data=path.read_bytes()
+                    if data[4:8] != b"ftyp": raise ValueError(f"{role}: segment is not MP4")
+                    files[name]=data;folded.add(name.casefold())
+                if total != duration or track.get("durationMs") != duration or track.get("overlay") not in ("none","compact","dashboard") or track.get("fit") not in ("contain","cover"):
+                    raise ValueError(f"{role}: invalid sequence timing/track")
+                integer(track.get("fps"),1,60,"fps")
+                screen_v2(track,role)
+                if sum(len(files[c["file"]]) for c in clips) > 64*1024*1024:
+                    raise ValueError(f"{role}: sequence sources exceed 64 MiB")
+                if sum(map(len,files.values())) > 256*1024*1024:
+                    raise ValueError("Expanded package exceeds 256 MiB")
+                continue
             name = relative_name(track.get("file"))
             if name == "scene.json" or name.casefold() in folded and name not in files:
                 raise ValueError(f"Colliding asset name: {name}")
@@ -132,7 +161,7 @@ def prepare(folder):
                 if isinstance(baked, bool) or not isinstance(baked, (int,float)) or not math.isfinite(baked) or not 0 <= baked <= 1:
                     raise ValueError("brightnessBaked must be metadata in 0..1")
             else:
-                video = schema == 3 and PurePosixPath(name).suffix.lower() == ".mp4"
+                video = schema >= 3 and PurePosixPath(name).suffix.lower() == ".mp4"
                 if (not video and PurePosixPath(name).suffix.lower() not in (".png", ".jpg", ".jpeg", ".gif")) or path.stat().st_size > 12*1024*1024:
                     raise ValueError(f"Unsupported or oversized screen asset: {name}")
                 if track.get("durationMs") != duration or track.get("overlay") not in ("none", "compact", "dashboard") or track.get("fit") not in ("contain", "cover"):
