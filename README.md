@@ -1,12 +1,18 @@
+<img src="src/UnifiedRgb.App/Assets/Brand/guangyu-mark.png" width="88" alt="光域标志" />
+
 # 光域 · UnifiedRGB
 
-**一个场景，控制整个机箱的灯光与屏幕。**
+**一个场景，连接整个机箱的灯光、屏幕与外设。**
 
 [![Windows 构建与测试](https://github.com/zhr2038/UnifiedRGB/actions/workflows/windows.yml/badge.svg)](https://github.com/zhr2038/UnifiedRGB/actions/workflows/windows.yml)
 
-光域是面向 Windows 的机箱控制程序：使用原生设备后端管理风扇灯光、冷头灯环、显卡、主板、内存和 LCD，将灯效编排、屏幕动画与电脑信息放在同一个工作台中。
+光域是面向 Windows 的中文机箱控制程序：使用原生设备后端管理风扇灯光、冷头灯环、显卡、主板、内存、五块机箱 LCD，以及已接入的 ROG 键盘和鼠标，将灯效、画面、电脑信息与机箱开关放在同一个工作台中。
 
 项目采用 **C# / .NET 10 LTS / WPF**。Python 仅用于场景包制作工具，运行主程序不需要 Python。
+
+[下载安装包](https://github.com/zhr2038/UnifiedRGB/releases) · [场景包开发指南](design/SCENE-PACKAGE-DEVELOPER-GUIDE.zh-CN.md) · [Windows 打包说明](tools/packaging/README.md) · [报告问题](https://github.com/zhr2038/UnifiedRGB/issues)
+
+> 本页描述当前 `main` 源码。已发布安装包可能早于最新外设功能，请核对相应 Release 的说明。仓库不分发本机固件镜像、真实设备绑定、实际校准或用户配置。
 
 Windows x64 自包含安装包通过 [GitHub Releases](https://github.com/zhr2038/UnifiedRGB/releases) 分发。选择 `Guangyu-…-win-x64-Setup.exe`，无需另装 .NET 或 Python；源码 ZIP 不是安装包。安装包未做商业代码签名，Windows 可能显示未知发布者提示。
 
@@ -17,8 +23,10 @@ Windows x64 自包含安装包通过 [GitHub Releases](https://github.com/zhr203
 - **黑金中文工作台**：纯黑、石墨与香槟金配色，包含机箱总览、内置灯效、外部导入、屏幕内容、设备校准、场景库、诊断及偏好设置。
 - **屏幕内容页试点**：按窗口空间切换三区、两区或紧凑布局；页面内深浅主题、清晰焦点、忙碌/错误/断线状态，分别保存本机设置与应用内容。
 - **全机灯效**：颜色、呼吸、流动、堆积与波浪回退；串行路径、并行设备组、方向、安装映射和冷头灯环校准。
+- **机箱总览与开关**：查看灯光、屏幕和外设状态，执行全机熄灯或恢复；重复熄灯保留恢复点，已运行的场景不会因重复开启意图而重新开始。
+- **ROG 外设**：键盘及鼠标整区 RGB、键盘 OLED 状态与动画接口，以及经本机验证的原生“光域”菜单控制。逐键 RGB 已加入源码，完整键表仍待实机验收。
 - **统一时序**：无线设备播放上传的动画循环；原生直驱设备按共享时间模型跟随，支持接收状态核对与有界重传。
-- **原生屏幕**：风扇 LCD、H2 冷头屏和受支持的 TURZX 长条屏；图片/GIF 背景、电脑数据叠加、逐屏内容和编码结果预览。
+- **原生五屏**：三块 TL 风扇 LCD、H2 冷头屏和受支持的 TURZX 长条屏；图片/GIF/受支持的 MP4 背景、电脑数据叠加、逐屏内容和编码结果预览。
 - **本机屏幕设置**：按 ScreenId 保存 0°/90°/180°/270° 安装方向，切换场景包时保留；PNG 编码质量策略可单独保存。
 - **JPEG 细节优先**：风扇屏/冷头的可选本机策略，从 Q100 起步并在原容量内回退；旧默认输出保持。三块风扇屏已实测真正 60fps MP4 素材，走主机解码/JPEG 通道，不要求刷固件。
 - **通用场景包**：导入独立 ZIP，预览内容，为角色绑定本机灯区与屏幕。新主题通过数据包扩展，无需为每个主题修改程序。
@@ -46,10 +54,12 @@ Windows x64 自包含安装包通过 [GitHub Releases](https://github.com/zhr203
 | 联力风扇 LCD | 已验证的 TL LCD 无线屏 | 原生屏幕传输，与扇叶转速控制分离 |
 | 冷头 LCD | 已验证的 H2 屏 | 原生画面上传与信息叠加 |
 | TURZX 屏 | 已验证的 `1CBE:0088`，1920×480 横向画布 | 内部转换为设备的 480×1920 光栅；不与用户安装旋转混淆 |
+| ROG 键盘 | Azoth X，USB / 2.4GHz RF 已接入 | 整区 RGB、OLED 与原生菜单按各自条件准入；逐键仅完成下述单键实机验证 |
+| ROG 鼠标 | Harpe II Extreme Edition20，已验证的 2.4GHz RF 路线 | area0 是一个整区逻辑点，不是独立多灯区或逐灯映射 |
 | 虚拟设备 | 内置 | 无硬件时用于开发与逻辑验证 |
 | OpenRGB SDK | 可选兼容适配器 | 当前上述原生接入不需要启动 OpenRGB；此适配器默认关闭 |
 
-当前原生 GPU / 主板 / 内存 / 屏幕传输不需要 MSI Center、Armoury Crate、L-Connect 或 TURZX 控制程序在后台运行。Windows USB 绑定、显卡驱动、PawnIO 等必要设备驱动仍需正确安装。
+当前原生 GPU / 主板 / 内存 / 屏幕及上述 ROG 接入不需要 MSI Center、Armoury Crate、L-Connect 或 TURZX 控制程序在后台运行。Windows USB 绑定、显卡驱动、PawnIO 等必要设备驱动仍需正确安装。本页不声明蓝牙路线已支持；查询身份、RGB、OLED 和原生菜单的验证不能相互替代。
 
 **联力灯光默认使用独立的托管 C# 无损压缩器**，不需要 `yuz.dll` 或厂商安装目录。匹配搜索与双路径选择针对 RGB 循环设计；线格式与有边界检查的解码器参考 MIT 许可的 tinyuz 1.1.1，保留[第三方声明](THIRD-PARTY-NOTICES.md)及随程序输出的许可原文，不将上游算法称为完全自创。
 
@@ -57,7 +67,29 @@ Windows x64 自包含安装包通过 [GitHub Releases](https://github.com/zhr203
 
 仅需本机比较或回退时，可显式设置 `UnifiedRgb:LianLi:Codec=VendorYuz` 和合法取得的 x64 `YuzDllPath`；默认 `Managed` 会忽略旧 DLL 路径。没有自动搜索或隐式切回厂商 DLL，本仓库仍不分发该 DLL。
 
-## 从源码构建
+## 键盘原生菜单、OLED 与逐键 RGB
+
+### 原生“光域”控制
+
+在**已安装并验证本机定制原生固件**的键盘上，用户已确认 USB 与 RF 两条路线的原生“光域”控制：中键切换全机熄灯 / 恢复，上拨和下拨选择配置好的场景。原有 Volume / Media / Brightness / Custom 模式与自定义绑定需要保留。
+
+独立原生菜单需要本机定制固件的能力支持；只安装本程序不会给原厂键盘自动新增菜单。定制镜像与刷写材料不在此仓库分发，不能通过改写本机标记伪装固件能力。
+
+| 画面 | 用途与条件 |
+| --- | --- |
+| 入场 Logo | 原生“光域”入口的品牌画面，名义停留约 1.2 秒；新的位图修正候选仍待独立实机验收 |
+| 机箱状态页 | 根据实际 Host 状态显示机箱信息，不将请求受理当成硬件完成 |
+| 自制场景动画 | 从当前共享屏幕场景选择素材，转换为 208×64、16 级灰度 OLED 帧；需单独开启、绑定并通过当前显示能力准入 |
+
+自制动画沿用场景的共享时间位置，不因进入菜单从第零帧另起时钟。当前上传节流默认 2000ms，不承诺 OLED 15/30/60fps，也不等于直接上传原生 GIF。入场 Logo、状态页与作者动画的呈现条件各不相同，接口及限制见[场景包开发指南](design/SCENE-PACKAGE-DEVELOPER-GUIDE.zh-CN.md)的外设章节。
+
+### 逐键 RGB 的当前进度
+
+2026-10-29，用户分别确认了 **USB 与 RF 路线的单个 Esc 键显示红色**。完整 81 键键表、逐键空间效果与主题制作交付尚未完成实机验收。协议中的记录数量或候选映射不能替代完整键位验证。
+
+逐键 RGB 使用自己的协议初始化与本机映射门槛，不依赖此次入场 Logo 位图刷写。键名、逻辑布局与原生 LED ID 的关系留在本机；场景包只交付匹配灯位数的 RGB24 内容。W/A/S/D 高亮、波浪和涟漪的制作方法见开发指南，不能把制作能力描述为当前全键盘已经验收。
+
+## 从源码构建与运行
 
 需要 Windows x64、.NET 10 SDK 和 Git。首次还原依赖需要访问 NuGet。命令在仓库根目录执行：
 
@@ -72,9 +104,9 @@ dotnet build .\src\UnifiedRgb.sln -c Release --no-restore -warnaserror
 dotnet test .\src\UnifiedRgb.sln -c Release --no-build -m:1
 ```
 
-源码默认启用虚拟适配器，关闭全部真实硬件输出；默认无线设备列表为空。构建和测试不会复制作者机器的配置、自动停止厂商程序或点亮设备。
+源码默认启用虚拟适配器，关闭真实设备后端和屏幕输出；无线设备列表与 ROG 设备绑定为空。构建不会复制作者机器的配置，也不会自动停止厂商程序。
 
-开发者可在新环境中启动后台与界面：
+开发者可在没有现有后台占用的新环境中启动后台与界面：
 
 ```powershell
 # 后台负责硬件访问；界面验证连接到同一用户的管理员后台。
@@ -89,6 +121,8 @@ Start-Process .\src\UnifiedRgb.App\bin\Release\net10.0-windows\UnifiedRgb.App.ex
 ### 测试说明
 
 测试覆盖效果数学、上传预算、传输规则、设备状态机、场景包安全与事务、屏幕编码和方向持久化、界面草稿及恢复行为。
+
+当前完整回归仍有已知基线失败，不能据本页或定向测试结果宣称全套通过。CI 的实际结果以对应提交的 [Actions](https://github.com/zhr2038/UnifiedRGB/actions) 为准。
 
 - 通用回归使用仓库内的合成样例和 fake 设备，无需机箱硬件。
 - 建议按上述命令串行运行测试程序集，避免调度计时测试与其他进程的 WPF 编码测试争用资源；计时测试仍保留原有2ms阈值。
@@ -106,6 +140,8 @@ python -m unittest discover -s .\tools\scene-packages -p "test_*.py"
 ## 制作与导入场景包
 
 完整契约、容量限制、灯光数据格式、时间轴和设备绑定说明见 **[中文场景包开发规范](design/SCENE-PACKAGE-DEVELOPER-GUIDE.zh-CN.md)**。
+
+程序输出包含该指南、打包脚本和极光示例。键盘/鼠标整区 RGB 使用单逻辑点轨道；逐键轨道必须匹配已经验证的本机布局。键盘 OLED 当前没有独立的场景包角色绑定入口，需要从已应用的普通屏幕场景中选择素材，经单独的本机接口准备和启用。沿用现有 v1–v4 格式，不增加外设专属清单字段。
 
 ```powershell
 python .\tools\scene-packages\pack_scene.py sample .\my-scenes\aurora
@@ -157,6 +193,7 @@ flowchart LR
 | `src/UnifiedRgb.Host` | 后台、持久化、设备接管、场景包事务与计划任务 |
 | `src/UnifiedRgb.Core` | 效果、空间布局、动画循环、调度和时间模型 |
 | `src/UnifiedRgb.Devices.*` | 各类设备适配器及抽象 |
+| `src/UnifiedRgb.Devices.AsusRog` | ROG RGB、OLED、原生菜单与输入协议 |
 | `src/UnifiedRgb.Transports.Win` | WinUSB / HID / NVIDIA / SMBus 与传输限制 |
 | `src/UnifiedRgb.Screens` | 素材、合成、编码、电脑数据与原生屏幕输出 |
 | `src/UnifiedRgb.Contracts`、`src/UnifiedRgb.Cli` | IPC 契约与命令行 |
@@ -165,22 +202,20 @@ flowchart LR
 | `tools/codegen` | 34 个通用特效的生成器与只读一致性检查 |
 | `tools/pawnio` | 固定版本模块、对应源文件、来源和许可 |
 
-本机运行数据默认位于 `%ProgramData%\UnifiedRgb`，界面日志位于 `%LocalAppData%\UnifiedRgb\logs`。源码仓库不包含用户场景、真实安装校准、驱动安装包、设备占用记录或本机调试档案。
+源码仓库不包含用户场景、真实安装校准、设备占用记录、本机调试档案或定制固件镜像。
 
-## 后续交付
+## 验证记录与后续范围
 
 屏幕原生视频代码和实机结果见 [原生视频实现记录](design/NATIVE-VIDEO-IMPLEMENTATION-20261021.zh-CN.md) 及 [五屏 MP4 与冷头协议续作](design/FIVE-SCREEN-MP4-AND-H2-NATIVE-20261021.zh-CN.md)。MP4 使用原有统一时间轴选帧，长屏 H.264 独立关键帧路径保留实时电脑信息 PNG 叠加，不调用厂商程序。冷头 H.264 已在本机完成 5 秒通信和 60 秒限时试验，用户确认画面、黑位和同步正常；测试后恢复熄灯，未自动切换常用策略。冷头电脑信息可合入整幅视频画面，当前场景未启用该层，实机信息叠加仍未测。三块无线风扇屏已用 MP4 素材实测 JPEG 传输，尚无已验证的原生视频入口。原生策略默认关闭，只向单独完成对应验证的设备开放；本机限时验收不代表所有固件兼容或相机实测帧率。
 
-风扇屏的后续实测见 [60fps 与 JPEG 细节优先记录](design/TL-SCREEN-60FPS-AND-DETAIL-20261021.zh-CN.md)：960 幅独立画面/16 秒的 MP4 经程序实际导入，三屏约 59.56 次主机事务/秒，用户确认流畅。当前 R23 仍是 30fps，未改写或插帧；要增加动作画面，需要真正的 60fps 素材并在 v3 包中设置 `fps: 60`。可选 `jpeg-detail-v1` 已完成原素材对照，用户确认细节改善；默认、现场场景和本机选择保持原样。新界面文件已准备，当前窗口草稿保留，重开界面后才出现新选项。
+风扇屏的实测见 [60fps 与 JPEG 细节优先记录](design/TL-SCREEN-60FPS-AND-DETAIL-20261021.zh-CN.md)：960 幅独立画面/16 秒的 MP4 经程序实际导入，三屏约 59.56 次主机事务/秒，用户确认流畅。要增加动作画面，需要真正的 60fps 素材并在 v3 包中设置 `fps: 60`；这些结果不代表 OLED、所有设备或叠加组合都有 60fps 保证。可选 `jpeg-detail-v1` 已完成原素材对照，用户确认细节改善。
 
-1. 自带运行环境的 Windows 安装程序，以及升级、卸载、开始菜单与启动项验证。
-2. 针对当前电脑的首次设备检测、依赖准备与可理解的控制验证流程。
-3. 按 [Windows 应用交付方案](design/WINDOWS-APPLICATION.md) 和 [设计系统](DESIGN_SYSTEM.md) 推广已实现的屏幕页试点，并完成剩余 DPI 与无障碍验收；保留 WPF 与现有业务接口。
+安装与升级工具已有实现，入口见 [Windows 打包说明](tools/packaging/README.md)；具体安装包所包含的功能仍以其发布版本为准。后续重点包括完整键盘映射与逐键主题验收，以及按 [Windows 应用交付方案](design/WINDOWS-APPLICATION.md) 和 [设计系统](DESIGN_SYSTEM.md) 完成剩余 DPI 与无障碍验收。
 
-这些项目仍在开发，不能将设计文档当作已上线功能。
+当前不声明所有型号兼容、完整跨 DPI / 无障碍认证、蓝牙控制或 Home Assistant 集成已完成；设计文档不等同于已发布或实机验收。
 
 ## 第三方与许可
 
-参见 [第三方说明](THIRD-PARTY-NOTICES.md)、[屏幕协议来源说明](src/UnifiedRgb.Screens/THIRD-PARTY-NOTICES.md) 及 [PawnIO 模块来源](tools/pawnio/PROVENANCE.md)。本仓库目前尚未指定项目级开源许可证；第三方组件仍遵守其各自许可。
+参见 [第三方说明](THIRD-PARTY-NOTICES.md)、[屏幕协议来源说明](src/UnifiedRgb.Screens/THIRD-PARTY-NOTICES.md)、[ROG 协议说明](src/UnifiedRgb.Devices.AsusRog/README.md) 及 [PawnIO 模块来源](tools/pawnio/PROVENANCE.md)。本仓库目前尚未指定项目级开源许可证；第三方组件仍遵守其各自许可。
 
 光域与文中硬件品牌没有官方隶属关系。欢迎通过 [Issues](https://github.com/zhr2038/UnifiedRGB/issues) 提交可复现的问题和设备兼容信息；提交日志前请先去除个人路径、设备序列号和凭据。
