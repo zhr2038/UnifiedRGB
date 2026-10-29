@@ -24,6 +24,18 @@ public sealed class UnifiedRgbOptions
     /// <summary>Native ASUS Aura HID (NATIVE-2); off by default. Writers additionally need AsusAura:ControlVerified.</summary>
     public bool EnableAsusAura { get; set; }
 
+    /// <summary>ROG receiver metadata/leased diagnostics. Off by default; keyboard output also needs explicit local pins and verification.</summary>
+    public bool EnableAsusRog { get; set; }
+
+    public UnifiedRgb.Devices.AsusRog.RogOptions AsusRog { get; set; } = new();
+
+    /// <summary>Optional local same-tick fallback for aggregate peripherals. Empty preserves all existing scenes.</summary>
+    public ZoneFollowerOptions[] ZoneFollowers { get; set; } = [];
+
+    public KeyboardDisplayOptions KeyboardDisplay { get; set; } = new();
+
+    public KeyboardNativeMenuOptions KeyboardNativeMenu { get; set; } = new();
+
     /// <summary>
     /// Native ENE DRAM over PawnIO SMBus (NATIVE-3); off by default. Writers additionally need EneDram:PawnIoModuleVerified
     /// and EneDram:ControlVerified.

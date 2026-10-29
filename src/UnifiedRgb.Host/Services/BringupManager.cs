@@ -62,6 +62,8 @@ public sealed partial class BringupManager : IAsyncDisposable
         var entry = Entry(controllerId);
         var id = entry.Descriptor.Id;
         var cls = entry.Descriptor.Class;
+        if (cls == DeviceClass.AsusRog && !_adapters.RogAcquisitionAllowed)
+            throw new InvalidOperationException("ROG bring-up is blocked by the peripheral configuration handoff.");
         if (entry.Adapter is not INativeBringup native)
         {
             throw new ArgumentException($"{controllerId} ({cls}) has no native bring-up.", nameof(controllerId));

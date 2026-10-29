@@ -93,6 +93,39 @@
             </ItemsControl>
             </ScrollViewer>
         </Expander>
+        <GroupBox DockPanel.Dock="Bottom" Header="逐键软件帧审查 · 非实机证明" Visibility="{Binding HasPerKeyReviews, Converter={StaticResource Visible}}">
+            <ItemsControl ItemsSource="{Binding PerKeyControllers}">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <StackPanel Margin="0,4,0,8">
+                            <TextBlock Text="{Binding ChineseName}" FontWeight="SemiBold" />
+                            <TextBlock Text="{Binding PerKeyReview.Summary}" Foreground="{StaticResource MutedBrush}" />
+                            <ItemsControl ItemsSource="{Binding PerKeyReview.Keys}" Width="{Binding PerKeyReview.Width}" Height="{Binding PerKeyReview.Height}"
+                                          HorizontalAlignment="Left" Margin="0,4,0,0">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate>
+                                        <Canvas />
+                                    </ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
+                                <ItemsControl.ItemContainerStyle>
+                                    <Style TargetType="ContentPresenter">
+                                        <Setter Property="Canvas.Left" Value="{Binding Left}" />
+                                        <Setter Property="Canvas.Top" Value="{Binding Top}" />
+                                    </Style>
+                                </ItemsControl.ItemContainerStyle>
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border Width="{Binding Size}" Height="{Binding Size}" Background="{Binding Color}" CornerRadius="3"
+                                                BorderBrush="{StaticResource MutedBrush}" BorderThickness="1" ToolTip="{Binding ToolTip}" />
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                            <TextBlock Text="颜色来自共享场景时间轴的软件计算；发送成功与实机显示均未在此验收。" Foreground="{StaticResource MutedBrush}" Margin="0,4,0,0" />
+                        </StackPanel>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+        </GroupBox>
         <ListView ItemsSource="{Binding VisibleControllers}">
             <ListView.View>
                 <GridView>
@@ -100,6 +133,7 @@
                     <GridViewColumn Header="厂商" DisplayMemberBinding="{Binding Vendor}" Width="90" />
                     <GridViewColumn Header="状态" DisplayMemberBinding="{Binding ChineseState}" Width="80" />
                     <GridViewColumn Header="分区" DisplayMemberBinding="{Binding ChineseZones}" Width="210" />
+                    <GridViewColumn Header="逐键能力" DisplayMemberBinding="{Binding ChinesePerKey}" Width="300" />
                     <GridViewColumn Header="说明" DisplayMemberBinding="{Binding ChineseHint}" Width="360" />
                 </GridView>
             </ListView.View>

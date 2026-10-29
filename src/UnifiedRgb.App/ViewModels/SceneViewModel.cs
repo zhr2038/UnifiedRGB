@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using UnifiedRgb.App.Ipc;
 using UnifiedRgb.App.Mvvm;
 using UnifiedRgb.App.Preview;
+using UnifiedRgb.App.Workbench;
 using UnifiedRgb.Contracts.Dto;
 using UnifiedRgb.Core.Effects;
 
@@ -209,7 +210,9 @@ public sealed class SceneViewModel : ObservableObject
 
     private async Task ApplyGroupAsync()
     {
-        await _client.Require().SetAssignmentAsync(BuildGroup()).ConfigureAwait(true);
+        var group = BuildGroup();
+        PerKeyDisplay.RequireAdmitted(group.Targets, _controllers);
+        await _client.Require().SetAssignmentAsync(group).ConfigureAwait(true);
         await RefreshAsync().ConfigureAwait(true);
     }
 

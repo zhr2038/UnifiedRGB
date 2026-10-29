@@ -6,6 +6,7 @@
     <ProjectReference Include="../../src/UnifiedRgb.Devices.LianLi/UnifiedRgb.Devices.LianLi.csproj" />
     <ProjectReference Include="../../src/UnifiedRgb.Devices.MsiGpu/UnifiedRgb.Devices.MsiGpu.csproj" />
     <ProjectReference Include="../../src/UnifiedRgb.Devices.AsusAura/UnifiedRgb.Devices.AsusAura.csproj" />
+    <ProjectReference Include="../../src/UnifiedRgb.Devices.AsusRog/UnifiedRgb.Devices.AsusRog.csproj" />
     <ProjectReference Include="../../src/UnifiedRgb.Devices.EneDram/UnifiedRgb.Devices.EneDram.csproj" />
     <ProjectReference Include="../../src/UnifiedRgb.Devices.OpenRgbSdk/UnifiedRgb.Devices.OpenRgbSdk.csproj" />
     <ProjectReference Include="../../src/UnifiedRgb.Core/UnifiedRgb.Core.csproj" />

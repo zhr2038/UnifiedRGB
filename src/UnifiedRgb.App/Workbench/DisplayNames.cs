@@ -20,6 +20,8 @@ public static class DisplayNames
         var s when s.Contains("35-F7-EF", StringComparison.Ordinal) => "底排风扇 · TL140 LCD × 3",
         var s when s.StartsWith("MSIGPU:", StringComparison.Ordinal) => "显卡 · MSI RTX 5090",
         var s when s.StartsWith("ASUSAURA:", StringComparison.Ordinal) => "主板 · ROG 标志",
+        var s when s.StartsWith("ASUSR:", StringComparison.Ordinal) => s.EndsWith(":RECEIVER", StringComparison.Ordinal) ? "ROG 接收器 · 身份探测"
+            : fallback?.Contains("Harpe", StringComparison.OrdinalIgnoreCase) == true ? "鼠标 · ROG 20 周年（本机绑定）" : "键盘 · ROG 夜魔 X（本机绑定）",
         var s when s.EndsWith(":0X71", StringComparison.Ordinal) => "内存 · 靠近冷头",
         var s when s.EndsWith(":0X73", StringComparison.Ordinal) => "内存 · 外侧",
         _ => fallback ?? id,
@@ -30,7 +32,10 @@ public static class DisplayNames
         : Controller(c.Id, c.Name);
 
     public static bool IsDiscoveryPort(ControllerDto c) => c.Zones.Count == 0 &&
-        (c.Id == "enedram:p0" || c.Id == "enedram:p1");
+        (c.Id == "enedram:p0" || c.Id == "enedram:p1" || c.DeviceClass == "AsusRog");
+
+    public static bool IsDiscoveryPortId(string id) => id is "enedram:p0" or "enedram:p1"
+        || id.StartsWith("asusr:", StringComparison.OrdinalIgnoreCase) && id.EndsWith(":receiver", StringComparison.OrdinalIgnoreCase);
 
     public static string State(string? state) => state switch
     {

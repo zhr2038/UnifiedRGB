@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="../UnifiedRgb.Devices.Abstractions/UnifiedRgb.Devices.Abstractions.csproj" />
+    <ProjectReference Include="../UnifiedRgb.Transports.Win/UnifiedRgb.Transports.Win.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="UnifiedRgb.Devices.Tests" />
+  </ItemGroup>
+</Project>

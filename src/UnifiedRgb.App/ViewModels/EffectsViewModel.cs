@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using UnifiedRgb.App.Ipc;
 using UnifiedRgb.App.Mvvm;
 using UnifiedRgb.App.Preview;
+using UnifiedRgb.App.Workbench;
 using UnifiedRgb.Contracts.Dto;
 using UnifiedRgb.Core.Effects;
 using UnifiedRgb.Core.Effects.LianLi;
@@ -376,7 +377,12 @@ public sealed class EffectsViewModel : ObservableObject, IDisposable
         }
     }
 
-    private Task ApplyAsync() => _client.Require().SetAssignmentAsync(BuildAssignment());
+    private async Task ApplyAsync()
+    {
+        var assignment = BuildAssignment();
+        PerKeyDisplay.RequireAdmitted(assignment.Targets, Zones.Select(z => z.Controller));
+        await _client.Require().SetAssignmentAsync(assignment).ConfigureAwait(true);
+    }
 
     private void OnZoneChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs? e)
     {

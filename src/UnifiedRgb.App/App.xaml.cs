@@ -100,8 +100,13 @@ public partial class App : Application
             {
                 var dialog = new Microsoft.Win32.OpenFileDialog { Title = "导入独立场景包", Filter = "场景包 ZIP|*.zip", Multiselect = false };
                 return dialog.ShowDialog() == true ? dialog.FileName : null;
-            });
+            },
+            startHostTask: HostStartup.StartTaskAsync);
         _vm = vm;
+        vm.HostStart.PropertyChanged += (_, args) =>
+        {
+            if (args.PropertyName == nameof(HostStartViewModel.Status) && vm.HostStart.HasStatus) Log.Information("Host start: {Status}", vm.HostStart.Status);
+        };
         if (e.Args.Contains("--workbench", StringComparer.OrdinalIgnoreCase)) vm.Studio.Page = 1;
         _window = new MainWindow { DataContext = vm };
         _window.Closing += OnWindowClosing;
@@ -119,7 +124,7 @@ public partial class App : Application
         };
         maintenance.Dispose(); // the visible App now blocks an upgrade; task startup may proceed
         _client.Start();
-        _ = EnsureHostAsync();
+        _ = vm.HostStart.StartCommand.ExecuteAsync(); // the launch request shares the sidebar action's gate: a click meanwhile requests nothing more
         if (!e.Args.Contains("--minimized", StringComparer.OrdinalIgnoreCase))
         {
             ShowWindow();
@@ -202,24 +207,6 @@ public partial class App : Application
             MessageBox.Show(ex.Message, "光域 · 后台启动", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
         Shutdown(exitCode);
-    }
-
-    private async Task EnsureHostAsync()
-    {
-        if (_client is null) return;
-        try
-        {
-            if (await HostStartup.EnsureAsync(_client.WaitConnectedAsync, () => HostStartup.StartTaskAsync(_startupStop.Token), _startupStop.Token).ConfigureAwait(true))
-                Log.Information("Requested existing Host task at app startup; waiting for trusted IPC");
-        }
-        catch (OperationCanceledException) when (_exiting) { }
-#pragma warning disable CA1031 // startup failure is visible in the GUI and log, never an unobserved UI task
-        catch (Exception ex)
-#pragma warning restore CA1031
-        {
-            Log.Warning(ex, "Could not request Host startup");
-            if (!_exiting && _client.State != ConnectionState.Connected) _vm?.ReportError(ex);
-        }
     }
 
     private void ShowWindow()

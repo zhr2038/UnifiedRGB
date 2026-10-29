@@ -32,6 +32,16 @@ public static class Projector
         return s;
     }
 
+    /// <summary>Projects sparse per-key coordinates in map order, or the ordinary dense zone layout.</summary>
+    public static Sample[] Project(ZoneDescriptor zone)
+    {
+        ArgumentNullException.ThrowIfNull(zone);
+        if (zone.PerKeyPoints is null) return Project(zone.Layout, zone.Placement);
+        if (zone.Placement is not null) throw new NotSupportedException("Per-key case placement requires a separate physical desk calibration.");
+        if (zone.PerKeyPoints.Count != zone.LedCount) throw new ArgumentException("Per-key point count does not match the zone.", nameof(zone));
+        return zone.PerKeyPoints.Select(p => new Sample(p.U, p.Theta, p.X, p.Y)).ToArray();
+    }
+
     /// <summary>Rewrites X/Y of <paramref name="samples"/> (projected from <paramref name="layout"/>) by <paramref name="placement"/>.</summary>
     public static void Place(ZoneLayout layout, ZonePlacement placement, Span<Sample> samples)
     {

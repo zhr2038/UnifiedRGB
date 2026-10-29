@@ -420,11 +420,12 @@ public sealed class NativeGuiTests
     }
 
     [Fact]
-    public async Task Devices_page_has_five_takeover_rows_and_gate_labels_that_name_no_process_to_close()
+    public async Task Devices_page_has_six_takeover_rows_and_gate_labels_that_name_no_process_to_close()
     {
         await using var client = new PipeClient("UnifiedRgb-unused-" + Guid.NewGuid().ToString("N"));
         var devices = new DevicesViewModel(client, InlineDispatcher.Instance, _errors.Add);
-        devices.Takeover.Select(t => t.DeviceClass).Should().Equal("LianLi", "MsiGpu", "OpenRgb", "AsusAura", "EneDram");
+        devices.Takeover.Select(t => t.DeviceClass).Should().Equal("LianLi", "MsiGpu", "OpenRgb", "AsusAura", "EneDram", "AsusRog");
+        devices.Takeover.Last().ChineseName.Should().Be("ROG 键鼠外设");
         devices.Takeover.Should().OnlyContain(t => t.Enabled == null, "unknown until set; nothing is applied on construction");
 
         var unverified = new ControllerItem(Native(Aura, "AsusAura"));

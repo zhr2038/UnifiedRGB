@@ -29,7 +29,7 @@ public sealed record BringupTarget(ControllerDto Dto)
 public sealed class NativeBringupViewModel : ObservableObject, IDisposable
 {
     /// <summary>Device classes with a native bring-up adapter.</summary>
-    public static readonly string[] NativeClasses = ["MsiGpu", "AsusAura", "EneDram"];
+    public static readonly string[] NativeClasses = ["MsiGpu", "AsusAura", "EneDram", "AsusRog"];
 
     /// <summary>Design §6 default lease; the Host clamps to its MaxLeaseSeconds (600).</summary>
     public const int DefaultLeaseSeconds = 120;

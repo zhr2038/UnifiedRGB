@@ -26,6 +26,16 @@ public sealed record ControllerItem(ControllerDto Dto)
 
     public string State => Dto.State;
 
+    /// <summary>True per-key readiness (never inferred from aggregate colour); Ready without verified restoration is not admitted.</summary>
+    public string ChinesePerKey => PerKeyDisplay.Controller(Dto);
+
+    public IReadOnlyList<PerKeyPixelDto> PerKeyPixels => Dto.PerKeyFrame?.Keys ?? [];
+    /// <summary>The last software per-key frame laid out by key row/column; null without one. Not optical proof.</summary>
+    public PerKeyFrameReview? PerKeyReview => Dto.PerKeyFrame is { Keys.Count: > 0 } frame ? new(frame) : null;
+    public string PerKeyFrameSummary => Dto.PerKeyFrame is { } frame
+        ? $"最近软件逐键帧 #{frame.Index} · {frame.Keys.Count} 键 · 仅用于审查，非实机证明"
+        : "无逐键帧 · 整体颜色或逐键未就绪";
+
     /// <summary>Zone and LED counts; native aggregate zones (one colour on every record, no spatial claim) are counted as unmapped.</summary>
     public string Zones => Dto.Zones.Count(z => !z.Mapped) is var unmapped and > 0
         ? $"{Dto.Zones.Count} zone(s), {Dto.Zones.Sum(z => z.LedCount)} LEDs, {unmapped} unmapped"
@@ -57,7 +67,7 @@ public sealed class TakeoverItem(string deviceClass, Func<TakeoverItem, Task> ap
     private string _message = string.Empty;
 
     public string DeviceClass { get; } = deviceClass;
-    public string ChineseName => DeviceClass switch { "LianLi" => "联力无线设备", "MsiGpu" => "微星显卡", "AsusAura" => "华硕主板", "EneDram" => "内存灯光", _ => "OpenRGB 兼容接口" };
+    public string ChineseName => DeviceClass switch { "LianLi" => "联力无线设备", "MsiGpu" => "微星显卡", "AsusAura" => "华硕主板", "EneDram" => "内存灯光", "AsusRog" => "ROG 键鼠外设", _ => "OpenRGB 兼容接口" };
     public string StateText => Enabled is null ? "状态未读取" : Enabled == true ? "已开启接管" : "已关闭接管";
 
     public bool? Enabled
@@ -88,7 +98,7 @@ public sealed class TakeoverItem(string deviceClass, Func<TakeoverItem, Task> ap
 
 public sealed class DevicesViewModel : ObservableObject
 {
-    public static readonly string[] HardwareClasses = ["LianLi", "MsiGpu", "OpenRgb", "AsusAura", "EneDram"];
+    public static readonly string[] HardwareClasses = ["LianLi", "MsiGpu", "OpenRgb", "AsusAura", "EneDram", "AsusRog"];
 
     private readonly PipeClient _client;
     private readonly IUiDispatcher _ui;
@@ -116,6 +126,9 @@ public sealed class DevicesViewModel : ObservableObject
 
     public ObservableCollection<ControllerItem> Controllers { get; } = [];
     public IEnumerable<ControllerItem> VisibleControllers => Controllers.Where(c => !DisplayNames.IsDiscoveryPort(c.Dto));
+    /// <summary>Controllers whose adapter reported a software per-key frame (review data only).</summary>
+    public IEnumerable<ControllerItem> PerKeyControllers => VisibleControllers.Where(c => c.PerKeyReview is not null);
+    public bool HasPerKeyReviews => PerKeyControllers.Any();
     public AsyncCommand EnableTakeoverCommand { get; }
     public AsyncCommand DisableTakeoverCommand { get; }
 
@@ -180,6 +193,8 @@ public sealed class DevicesViewModel : ObservableObject
 
         OnPropertyChanged(nameof(HasLianLi));
         OnPropertyChanged(nameof(VisibleControllers));
+        OnPropertyChanged(nameof(PerKeyControllers));
+        OnPropertyChanged(nameof(HasPerKeyReviews));
         Changed?.Invoke(this, EventArgs.Empty);
     });
 

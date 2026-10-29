@@ -10,12 +10,22 @@ namespace UnifiedRgb.Host.Services;
 /// <summary>Engine ↔ wire conversions. Only Contracts DTOs cross the pipe.</summary>
 public static class DtoMapper
 {
+    /// <summary>
+    /// No backend reports a complete original-lighting snapshot with a positively verified restore path yet, so every per-key
+    /// status carries restoration Unproven and no per-key output request is admitted (PerKeyAdmission). A backend restoration
+    /// source (INTERFACE-PROPOSAL) replaces this; nothing here may turn it Verified.
+    /// </summary>
+    internal const string RestorationNotReported =
+        "No backend reports a complete original-lighting snapshot with a verified restore path; per-key output is not admitted.";
+
     public static ControllerDto ToDto(ControllerEntry e)
     {
         var d = e.Descriptor;
+        // One Writer snapshot: a retirement on another thread may clear e.Writer between two reads.
+        var writer = e.Writer;
         var state = e.BringupLease is not null ? ControllerStates.BringUp
-            : e.IsActive
-            ? (e.Writer!.Paused ? ControllerStates.Contended : ControllerStates.Active)
+            : writer is not null
+            ? (writer.Paused ? ControllerStates.Contended : ControllerStates.Active)
             : e.Verdict.State == Services.GuardState.Clear ? ControllerStates.Offline : e.Verdict.State.ToString();
         var m = e.Adapter is LianLiAdapter lianLi ? lianLi.MountingOf(d.Id).Settings : null;
         return new ControllerDto(d.Id.Value, d.Vendor, d.Name, d.Class.ToString(), d.DeviceType.ToString(), d.Serial,
@@ -25,7 +35,18 @@ public static class DtoMapper
                 HalfStep = m?.HalfStep == true,
                 FaceOnFill = m?.FaceOnFill == true,
             }).ToArray(), d.Capabilities.MaxFps, state, e.BringupLease ?? e.Verdict.Writer,
-            e.Adapter is not INativeBringup native || native.IsControlVerified(d.Id));
+            e.Adapter is not INativeBringup native || native.IsControlVerified(d.Id),
+            ToDto(ReadPerKeyFrame(e)));
+    }
+
+    // Review data only: a failing diagnostics read must not hide the controller from the list.
+    private static PerKeyFrame? ReadPerKeyFrame(ControllerEntry e)
+    {
+        if (e.Adapter is not IPerKeyFrameSource source) return null;
+#pragma warning disable CA1031 // A per-key review frame is optional; any failure only omits it.
+        try { return source.ReadPerKeyFrame(e.Descriptor.Id); }
+        catch (Exception ex) when (ex is not OutOfMemoryException) { return null; }
+#pragma warning restore CA1031
     }
 
     public static ZoneDto ToDto(ZoneDescriptor z) => ToDto(z, false);
@@ -34,7 +55,15 @@ public static class DtoMapper
         new(z.Id.Value, z.Name, z.Layout.Kind.ToString(), z.Layout.LedCount, z.Layout.Width, z.Layout.Height, z.Family, z.Units, chainReversed)
         {
             Mapped = z.Mapped,
+            PerKey = ToDto(z.PerKey),
         };
+
+    public static PerKeyStatusDto? ToDto(PerKeyCapability? capability) => capability is null ? null
+        : new(capability.State.ToString(), capability.Reason, capability.Transport, capability.KeyCount, capability.MaximumKeys,
+            PerKeyRestorationStates.Unproven, RestorationNotReported);
+
+    public static PerKeyFrameDto? ToDto(PerKeyFrame? frame) => frame is null ? null
+        : new(frame.Index, frame.Keys.Select(key => new PerKeyPixelDto(key.LedId, key.Key, key.Row, key.Column, FormatColor(key.Color))).ToArray());
 
     public static EffectDto ToDto(IEffectGenerator g) =>
         new(g.Id, g.Schema.DisplayName, g.Schema.MinColors, g.Schema.MaxColors, g.Schema.UsesSpeed, g.Schema.UsesDirection,

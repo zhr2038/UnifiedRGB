@@ -27,6 +27,10 @@ public sealed partial class ScreenManager : IScreenVideoService
             throw new ArgumentException("Experimental slice and increased-quality settings are TURZX-only.", nameof(request));
         if ((request.PreparedOverlay || request.MeasureQueueAfterOverlay) && family.Family != ScreenFamily.Turzx)
             throw new ArgumentException("Prepared-overlay and overlay-queue measurements are TURZX-only.", nameof(request));
+        if (request.BakeTelemetry && family.Family != ScreenFamily.Turzx)
+            throw new ArgumentException("Baked telemetry is a TURZX-only trial (H2 already composites it before encoding).", nameof(request));
+        if (request.BakeTelemetry && (request.PreparedOverlay || request.MeasureQueueAfterOverlay || request.SimpleOverlayPng))
+            throw new ArgumentException("Baked telemetry sends no overlay PNG: prepared, measured or repacked PNG overlays cannot be combined with it.", nameof(request));
         await EnterMutationAsync(ct).ConfigureAwait(false);
         try
         {
@@ -47,7 +51,8 @@ public sealed partial class ScreenManager : IScreenVideoService
             }
             var info = new NativeVideoTrialDto(Guid.NewGuid().ToString("N"), id, request.DurationMs, request.Fps, request.AssetId)
                 { SingleSlice = request.SingleSlice, Quality = request.Quality ?? 95, SimpleOverlayPng = request.SimpleOverlayPng,
-                  PreparedOverlay = request.PreparedOverlay, MeasureQueueAfterOverlay = request.MeasureQueueAfterOverlay };
+                  PreparedOverlay = request.PreparedOverlay, MeasureQueueAfterOverlay = request.MeasureQueueAfterOverlay,
+                  BakeTelemetry = request.BakeTelemetry };
             Volatile.Write(ref _videoTrial, new(info, _platform.Time.GetTimestamp() + request.DurationMs * _platform.Time.TimestampFrequency / 1000));
             worker.Post(assignment, false); // identity, output state, TimelineId, local settings and persistence are untouched
             return info;

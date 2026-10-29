@@ -18,7 +18,8 @@ namespace UnifiedRgb.Host.Ipc;
 public sealed partial class PipeServer(
     UnifiedRgbOptions options, IRgbService service, ILogger<PipeServer> logger, IScreenService? screens = null, IScenePackageService? packages = null,
     IScreenDeviceSettingsService? deviceSettings = null, IScreenPerformanceService? performance = null, ISceneLibraryService? library = null,
-    IScreenVideoService? video = null)
+    IScreenVideoService? video = null, IKeyboardDisplayService? keyboardDisplay = null,
+    IPeripheralConfigurationService? peripheralConfiguration = null, INativeMenuService? nativeMenu = null)
     : BackgroundService
 {
     // [LoggerMessage] in .NET 8 needs a field; primary-constructor parameters are not seen by the generator.
@@ -141,6 +142,9 @@ public sealed partial class PipeServer(
             rpc.AddLocalRpcTarget<IRgbService>(scope?.Service ?? service, null);
             if (performance is not null) rpc.AddLocalRpcTarget<IScreenPerformanceService>(performance, null);
             if (video is not null) rpc.AddLocalRpcTarget<IScreenVideoService>(video, null);
+            if (keyboardDisplay is not null) rpc.AddLocalRpcTarget<IKeyboardDisplayService>(keyboardDisplay, null);
+            if (peripheralConfiguration is not null) rpc.AddLocalRpcTarget<IPeripheralConfigurationService>(peripheralConfiguration, null);
+            if (nativeMenu is not null) rpc.AddLocalRpcTarget<INativeMenuService>(nativeMenu, null);
             if (library is not null) rpc.AddLocalRpcTarget<ISceneLibraryService>(library, null);
             if (screens is not null)
             {

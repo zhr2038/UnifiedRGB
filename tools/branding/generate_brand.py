@@ -4,12 +4,16 @@ No fonts, third-party artwork, network access or runtime Python dependency.
 """
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
-import io, math, struct
+import argparse, io, struct
 
 ROOT = Path(__file__).resolve().parents[2]
-OUT = ROOT / 'src/UnifiedRgb.App/Assets/Brand'
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--output-directory', type=Path, default=ROOT / 'src/UnifiedRgb.App/Assets/Brand')
+parser.add_argument('--preview', type=Path, help='Optional developer-only specimen board')
+args = parser.parse_args()
+OUT = args.output_directory
 OUT.mkdir(parents=True, exist_ok=True)
-MINT, TILE, EDGE, WHITE = '#5DDAC8', '#121D29', '#2C414F', '#F3FAFC'
+GOLD, TILE, EDGE, WHITE = '#D8B578', '#1B1A18', '#534B3F', '#F3EFE8'
 SIZES = (16,20,24,32,40,48,64,128,256)
 ARC = 'M166 51 H96 C71 51 51 71 51 96 V160 C51 185 71 205 96 205 H160 C185 205 205 185 205 160 V130 H136'
 RAY = 'M194 62 L205 83'
@@ -17,7 +21,7 @@ RAY = 'M194 62 L205 83'
 
 def svg(tile=True):
     background = f'<rect width="256" height="256" rx="56" fill="{TILE}"/>' if tile else ''
-    return f'''<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-label="光域：环光标志"><title>光域 · 环光</title>{background}<path d="{ARC}" fill="none" stroke="{MINT}" stroke-width="28" stroke-linecap="round" stroke-linejoin="round"/><path d="{RAY}" fill="none" stroke="{WHITE}" stroke-width="14" stroke-linecap="round"/></svg>'''
+    return f'''<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-label="光域：环光标志"><title>光域 · 环光</title>{background}<path d="{ARC}" fill="none" stroke="{GOLD}" stroke-width="28" stroke-linecap="round" stroke-linejoin="round"/><path d="{RAY}" fill="none" stroke="{WHITE}" stroke-width="14" stroke-linecap="round"/></svg>'''
 
 
 def render(size, tile=True, badge=None):
@@ -36,16 +40,25 @@ def render(size, tile=True, badge=None):
     curve((96,51),(71,51),(51,71),(51,96)); points.append((51,160))
     curve((51,160),(51,185),(71,205),(96,205)); points.append((160,205))
     curve((160,205),(185,205),(205,185),(205,160)); points.extend([(205,130),(136,130)])
-    d.line([(p(x),p(y)) for x,y in points],fill=MINT,width=p(width),joint='curve')
+    d.line([(p(x),p(y)) for x,y in points],fill=GOLD,width=p(width),joint='curve')
     for x,y in ((166,51),(136,130),(205,130)):
-        r=width/2; d.ellipse((p(x-r),p(y-r),p(x+r),p(y+r)),fill=MINT)
+        r=width/2; d.ellipse((p(x-r),p(y-r),p(x+r),p(y+r)),fill=GOLD)
     d.line(((p(194),p(62)),(p(205),p(83))),fill=WHITE,width=p(14))
     for x,y in ((194,62),(205,83)):
         d.ellipse((p(x-7),p(y-7),p(x+7),p(y+7)),fill=WHITE)
     if badge:
-        # Same brand, with the existing grey/green/amber operational meaning.
-        d.ellipse((p(178),p(178),p(250),p(250)), fill=TILE)
-        d.ellipse((p(190),p(190),p(238),p(238)), fill=badge)
+        # Gold-family status badges also differ by shape, so status never depends on colour alone.
+        d.ellipse((p(175),p(175),p(253),p(253)), fill=TILE)
+        if badge == 'ok':
+            d.ellipse((p(184),p(184),p(244),p(244)), fill=GOLD)
+            d.line([(p(197),p(214)),(p(209),p(226)),(p(232),p(200))], fill=TILE, width=p(8), joint='curve')
+        elif badge == 'attention':
+            d.polygon([(p(214),p(181)),(p(250),p(244)),(p(178),p(244))], fill='#E4BB70')
+            d.line([(p(214),p(201)),(p(214),p(221))], fill=TILE, width=p(7))
+            d.ellipse((p(210),p(230),p(218),p(238)), fill=TILE)
+        else:
+            d.ellipse((p(184),p(184),p(244),p(244)), fill='#8C7B61')
+            d.line([(p(198),p(214)),(p(230),p(214))], fill=WHITE, width=p(7))
     return im.resize((size,size), Image.Resampling.LANCZOS)
 
 
@@ -64,10 +77,10 @@ def ico(path, badge=None):
 render(1024).save(OUT/'guangyu.png')
 render(512,False).save(OUT/'guangyu-mark.png')
 ico(OUT/'guangyu.ico')
-for name,color in [('ok','#70D3A7'),('attention','#F5BD69'),('disconnected','#A4B1BF')]:
-    ico(OUT/f'tray-{name}.ico',color)
+for name in ['ok','attention','disconnected']:
+    ico(OUT/f'tray-{name}.ico',name)
 
-mark = f'''<DrawingGroup x:Key="Brand.MarkDrawing"><GeometryDrawing Brush="Transparent" Geometry="M0,0 H256 V256 H0 Z"/><GeometryDrawing Geometry="{ARC}"><GeometryDrawing.Pen><Pen Brush="{MINT}" Thickness="28" StartLineCap="Round" EndLineCap="Round" LineJoin="Round"/></GeometryDrawing.Pen></GeometryDrawing><GeometryDrawing Geometry="{RAY}"><GeometryDrawing.Pen><Pen Brush="{WHITE}" Thickness="14" StartLineCap="Round" EndLineCap="Round"/></GeometryDrawing.Pen></GeometryDrawing></DrawingGroup>'''
+mark = f'''<DrawingGroup x:Key="Brand.MarkDrawing"><GeometryDrawing Brush="Transparent" Geometry="M0,0 H256 V256 H0 Z"/><GeometryDrawing Geometry="{ARC}"><GeometryDrawing.Pen><Pen Brush="{GOLD}" Thickness="28" StartLineCap="Round" EndLineCap="Round" LineJoin="Round"/></GeometryDrawing.Pen></GeometryDrawing><GeometryDrawing Geometry="{RAY}"><GeometryDrawing.Pen><Pen Brush="{WHITE}" Thickness="14" StartLineCap="Round" EndLineCap="Round"/></GeometryDrawing.Pen></GeometryDrawing></DrawingGroup>'''
 xaml=f'''<!-- Generated by tools/branding/generate_brand.py from the same geometry as the original SVG master. -->
 <ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
 {mark}
@@ -76,17 +89,24 @@ xaml=f'''<!-- Generated by tools/branding/generate_brand.py from the same geomet
 </ResourceDictionary>'''
 (OUT/'Brand.xaml').write_text(xaml,encoding='utf-8')
 
-board=Image.new('RGB',(1180,640),'#10141B'); board.paste(render(256),(72,78),render(256))
+if not args.preview:
+    print(f'Generated black/gold SVG, WPF, PNG and four 9-frame Windows ICO files in {OUT}')
+    raise SystemExit(0)
+
+board=Image.new('RGB',(1180,640),'#090909'); board.paste(render(256),(72,78),render(256))
 d=ImageDraw.Draw(board)
 font=ImageFont.truetype('C:/Windows/Fonts/msyh.ttc',54)
 small=ImageFont.truetype('C:/Windows/Fonts/msyh.ttc',21)
-d.text((390,104),'光域',font=font,fill='#F2F6FB'); d.text((394,190),'GUANGYU  /  LIGHT STUDIO',font=small,fill='#B7C4D4')
-d.text((394,246),'环光 · 一处编排，整机同频',font=small,fill=MINT)
-d.line((72,380,1108,380), fill='#2B3442',width=1)
+d.text((390,104),'光域',font=font,fill=WHITE); d.text((394,190),'GUANGYU  /  LIGHT STUDIO',font=small,fill='#A9A39A')
+d.text((394,246),'环光 · 一处编排，整机同频',font=small,fill=GOLD)
+for x,name,label in [(394,'ok','正常'),(560,'attention','注意'),(726,'disconnected','离线')]:
+    icon=render(28,badge=name); board.paste(icon,(x,302),icon); d.text((x+40,302),label,font=small,fill=WHITE)
+d.line((72,380,1108,380), fill=EDGE,width=1)
 x=76
 for size in (16,24,32,48,64,128):
     icon=render(size); board.paste(icon,(x,436+(128-size)//2),icon)
-    d.text((x,588),str(size)+' px',font=ImageFont.truetype('C:/Windows/Fonts/segoeui.ttf',15),fill='#B7C4D4'); x+=size+60
-board.save(ROOT/'bringup/brand-20261020/logo-board-r2.png')
+    d.text((x,588),str(size)+' px',font=ImageFont.truetype('C:/Windows/Fonts/segoeui.ttf',15),fill='#A9A39A'); x+=size+60
+args.preview.parent.mkdir(parents=True, exist_ok=True)
+board.save(args.preview)
 print(f'Generated SVG, vector WPF resources, PNG and four 9-frame Windows ICO files in {OUT}')
 

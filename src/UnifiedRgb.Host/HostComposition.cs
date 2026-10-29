@@ -6,6 +6,7 @@ using UnifiedRgb.Core.Effects;
 using UnifiedRgb.Core.Engine;
 using UnifiedRgb.Devices;
 using UnifiedRgb.Devices.AsusAura;
+using UnifiedRgb.Devices.AsusRog;
 using UnifiedRgb.Devices.EneDram;
 using UnifiedRgb.Devices.LianLi;
 using UnifiedRgb.Devices.MsiGpu;
@@ -17,6 +18,7 @@ using UnifiedRgb.Host.Services;
 using UnifiedRgb.Host.Timing;
 using UnifiedRgb.Screens.Runtime;
 using UnifiedRgb.Transports.Process;
+using UnifiedRgb.Transports.Hid;
 
 namespace UnifiedRgb.Host;
 
@@ -74,6 +76,17 @@ public static class HostComposition
             services.AddSingleton<IDeviceAdapterFactory, EneDramAdapterFactory>();
         }
 
+        if (options.KeyboardDisplay.HasVerifiedLightingRoute && options.AsusRog.Keyboards.Length != 0)
+            throw new InvalidOperationException("Legacy ROG keyboard bindings conflict with the shared keyboard OLED/lighting owner; keep mouse bindings and remove the duplicate keyboard route.");
+        if (options.EnableAsusRog)
+        {
+            services.AddSingleton(options.AsusRog);
+            services.AddSingleton<IDeviceAdapterFactory, RogAdapterFactory>();
+        }
+        services.AddSingleton<RogWiredLightingBridge>();
+        if (options.KeyboardDisplay.HasVerifiedLightingRoute)
+            services.AddSingleton<IDeviceAdapterFactory, WiredKeyboardAdapterFactory>();
+
         if (options.EnableOpenRgb)
         {
             services.AddSingleton(options.OpenRgb);
@@ -90,13 +103,19 @@ public static class HostComposition
         services.AddSingleton<IClock>(sp => new MasterClock(sp.GetRequiredService<Func<IPreciseSleeper>>()()));
         services.AddSingleton(EffectRegistry.Default);
         services.AddSingleton<FrameBus>();
+        services.AddSingleton(sp =>
+        {
+            var marker = PeripheralConfigurationMarker.For(options);
+            return new PeripheralConfigurationGate(marker.Load());
+        });
         services.AddSingleton(sp => new AdapterHost(
             sp.GetServices<IDeviceAdapterFactory>(),
             sp,
             sp.GetRequiredService<IWriterGuard>(),
             sp.GetRequiredService<FrameBus>(),
             sp.GetRequiredService<Func<IPreciseSleeper>>(),
-            sp.GetRequiredService<ILogger<AdapterHost>>(), sp.GetRequiredService<UnifiedRgbOptions>()));
+            sp.GetRequiredService<ILogger<AdapterHost>>(), sp.GetRequiredService<UnifiedRgbOptions>(),
+            sp.GetRequiredService<PeripheralConfigurationGate>()));
         if (enableIpc)
         {
             services.AddHostedService<PipeReservation>();
@@ -121,12 +140,15 @@ public static class HostComposition
         services.AddSingleton<IScreenDeviceSettingsService>(sp => sp.GetRequiredService<ScreenManager>());
         services.AddSingleton<IScreenPerformanceService>(sp => sp.GetRequiredService<ScreenManager>());
         services.AddSingleton<IScreenVideoService>(sp => sp.GetRequiredService<ScreenManager>());
+        services.AddSingleton<IKeyboardOledMedia>(sp => sp.GetRequiredService<ScreenManager>());
 
         services.AddSingleton(sp =>
         {
             var engine = sp.GetRequiredService<LightingEngine>();
             return new ScenePackageTimeline(sp.GetRequiredService<ScenePackageFrameSource>(), id => engine.Loop.Timeline(id));
         });
+        // The keyboard OLED animation reads this exact instance; it never runs an independent clock.
+        services.AddSingleton<IScreenTimeline>(sp => sp.GetRequiredService<ScenePackageTimeline>());
         services.AddSingleton(sp => new ScenePackageService(
             sp.GetRequiredService<ScenePackageFrameSource>(),
             sp.GetRequiredService<ScenePackageTimeline>(),
@@ -149,6 +171,49 @@ public static class HostComposition
             sp.GetRequiredService<RgbNotifier>(),
             RgbService.LocalOwner,
             sp.GetService<IScreenSceneBinding>()));
+        services.AddSingleton<IRogWiredOledFactory, RogWiredOledFactory>();
+        services.AddSingleton<IRogWirelessOledFactory, RogWirelessOledFactory>();
+        services.AddSingleton<IKeyboardNativePresentationCapability>(_ => new RogNative49PresentationCapability(options.KeyboardNativeMenu));
+        // Scene-cycle caption: a pure overlay over an immutable snapshot; the keyboard display applies it to native frames only.
+        services.AddSingleton<KeyboardSceneCycleOverlay>();
+        // Same arguments the former type registration resolved; nativeFrameOverlay is the Logo provider's optional final parameter.
+        services.AddSingleton(sp => new KeyboardDisplayService(
+            sp.GetRequiredService<UnifiedRgbOptions>(), sp.GetRequiredService<IRgbService>(), sp.GetRequiredService<IScreenService>(),
+            sp.GetRequiredService<IRogWiredOledFactory>(), sp.GetRequiredService<IWriterGuard>(),
+            lighting: sp.GetService<RogWiredLightingBridge>(),
+            wirelessFactory: sp.GetService<IRogWirelessOledFactory>(),
+            configurationGate: sp.GetService<PeripheralConfigurationGate>(),
+            nativeMenu: sp.GetService<RogNativeMenuSource>(),
+            keyboardMedia: sp.GetService<IKeyboardOledMedia>(),
+            sharedTimeline: sp.GetService<IScreenTimeline>(),
+            time: sp.GetService<TimeProvider>(),
+            nativePresentation: sp.GetService<IKeyboardNativePresentationCapability>(),
+            nativeFrameOverlay: sp.GetRequiredService<KeyboardSceneCycleOverlay>().Apply,
+            nativeFrameAcknowledged: sp.GetRequiredService<KeyboardSceneCycleOverlay>().Acknowledge));
+        services.AddSingleton<IKeyboardDisplayService>(sp => sp.GetRequiredService<KeyboardDisplayService>());
+        services.AddHostedService(sp => sp.GetRequiredService<KeyboardDisplayService>());
+        services.AddSingleton<IPeripheralConfigurationResources, RogPeripheralConfigurationResources>();
+        services.AddSingleton(sp => new PeripheralConfigurationService(options,
+            sp.GetRequiredService<PeripheralConfigurationGate>(), sp.GetRequiredService<IPeripheralConfigurationResources>()));
+        services.AddSingleton<IPeripheralConfigurationService>(sp => sp.GetRequiredService<PeripheralConfigurationService>());
+        // One default-off source. Exact local installation/route policy never replaces its fresh actual CAP/input admission.
+        services.AddSingleton(TimeProvider.System);
+        services.AddSingleton<RogNativeMenuSource>(sp => new(options.KeyboardNativeMenu,
+            sp.GetService<IHidInputReportDevices>(), sp.GetService<IHidContainerResolver>(), sp.GetRequiredService<TimeProvider>()));
+        services.AddSingleton<INativeMenuSource>(sp => sp.GetRequiredService<RogNativeMenuSource>());
+        // Up/Down scene browsing: Host-local, fed only by NativeMenuService's validated steps; it reads nothing before the first
+        // step and resolves its RGB/package services lazily. Center stays the existing case Toggle.
+        services.AddSingleton(sp => new KeyboardSceneCycleBridge(sp.GetRequiredService<UnifiedRgbOptions>(),
+            () => sp.GetRequiredService<IRgbService>(), () => sp.GetRequiredService<IScenePackageService>(),
+            sp.GetRequiredService<KeyboardSceneCycleOverlay>(), sp.GetRequiredService<TimeProvider>(),
+            sp.GetService<ILogger<KeyboardSceneCycleBridge>>()));
+        services.AddSingleton(sp => new NativeMenuService(options, sp.GetRequiredService<IRgbService>(), sp.GetRequiredService<IScreenService>(),
+            sp.GetRequiredService<INativeMenuSource>(), sp.GetRequiredService<KeyboardDisplayService>(), sp.GetRequiredService<PeripheralConfigurationGate>(), sp.GetRequiredService<TimeProvider>(),
+            sp.GetRequiredService<KeyboardSceneCycleBridge>()));
+        services.AddSingleton<INativeMenuService>(sp => sp.GetRequiredService<NativeMenuService>());
+        services.AddHostedService(sp => sp.GetRequiredService<NativeMenuService>());
+        // Registered after the menu owner, so it stops first: no scene apply starts once the Host is stopping.
+        services.AddHostedService(sp => sp.GetRequiredService<KeyboardSceneCycleBridge>());
         if (enableIpc)
         {
             services.AddSingleton<PipeServer>();

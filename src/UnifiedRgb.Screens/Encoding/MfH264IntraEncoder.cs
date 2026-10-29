@@ -68,8 +68,9 @@ internal sealed class MfH264IntraEncoder : IDisposable
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         if (frame.Width != _width || frame.Height != _height) throw new ArgumentException("H.264 raster changed.", nameof(frame));
-        var nv12 = ToNv12(frame, _fullRange);
-        using var sample = Sample(nv12, _index++);
+        // The NV12 bytes are converted straight into the locked input buffer: identical bytes to ToNv12, without a managed copy.
+        using var sample = Sample(checked(_width * _height * 3 / 2), _index++,
+            target => Nv12Converter.Convert(frame.Pixels, _width, _height, _fullRange, target));
         Set(_codec, "398c1b98-8353-475a-9ef2-8f265d260345", (uint)1); // ForceKeyFrame is VT_UI4, NOT VT_BOOL
         _encoder.ProcessInput(0, sample, 0);
         var bytes = H264ColourMetadata.SpecifyCanvasColour(Output(_encoder, MaxEncodedBytes), _fullRange);
@@ -150,16 +151,24 @@ internal sealed class MfH264IntraEncoder : IDisposable
         transform.ProcessMessage((TMessageType)0x10000003, 0); // NOTIFY_START_OF_STREAM
     }
 
-    private static IMFSample Sample(byte[] bytes, long index)
+    private delegate void SampleFill(Span<byte> target);
+
+    private static IMFSample Sample(byte[] bytes, long index) => Sample(bytes.Length, index, bytes.CopyTo);
+
+    private static unsafe IMFSample Sample(int length, long index, SampleFill fill)
     {
         var sample = MFCreateSample();
         try
         {
-            using var buffer = MFCreateMemoryBuffer(bytes.Length);
-            buffer.Lock(out var pointer, out _, out _);
-            try { Marshal.Copy(bytes, 0, pointer, bytes.Length); }
+            using var buffer = MFCreateMemoryBuffer(length);
+            buffer.Lock(out var pointer, out var capacity, out _);
+            try
+            {
+                if (capacity < length) throw new InvalidDataException("Media Foundation input buffer is shorter than requested.");
+                fill(new Span<byte>((void*)pointer, length));
+            }
             finally { buffer.Unlock(); }
-            buffer.CurrentLength = bytes.Length; sample.AddBuffer(buffer);
+            buffer.CurrentLength = length; sample.AddBuffer(buffer);
             sample.SampleTime = index * 10_000_000 / 60; sample.SampleDuration = 10_000_000 / 60;
             return sample;
         }
@@ -187,30 +196,11 @@ internal sealed class MfH264IntraEncoder : IDisposable
 
     private static void Set(IMfCodecApi codec, string key, object value) => Marshal.ThrowExceptionForHR(codec.SetValue(new Guid(key), ref value));
 
+    /// <summary>The exact BT.709 NV12 bytes the encoder is fed (see <see cref="Nv12Converter"/>; even rasters only).</summary>
     internal static byte[] ToNv12(PixelFrame frame, bool fullRange = false)
     {
-        var w = frame.Width; var h = frame.Height; var p = frame.Pixels;
-        var data = new byte[checked(w * h * 3 / 2)];
-        for (var y = 0; y < h; y += 2)
-        for (var x = 0; x < w; x += 2)
-        {
-            int sumR = 0, sumG = 0, sumB = 0;
-            for (var yy = 0; yy < 2; yy++)
-            for (var xx = 0; xx < 2; xx++)
-            {
-                var i = ((y + yy) * w + x + xx) * 4; int b = p[i], g = p[i + 1], r = p[i + 2];
-                data[(y + yy) * w + x + xx] = fullRange
-                    ? (byte)Math.Clamp((54 * r + 183 * g + 19 * b + 128) >> 8, 0, 255)
-                    : (byte)Math.Clamp(16 + ((47 * r + 157 * g + 16 * b + 128) >> 8), 16, 235);
-                sumR += r; sumG += g; sumB += b;
-            }
-            var r4 = (sumR + 2) / 4; var g4 = (sumG + 2) / 4; var b4 = (sumB + 2) / 4;
-            var uv = w * h + y / 2 * w + x;
-            data[uv] = fullRange ? (byte)Math.Clamp(128 + ((-29 * r4 - 99 * g4 + 128 * b4 + 128) >> 8), 0, 255)
-                : (byte)Math.Clamp(128 + ((-26 * r4 - 87 * g4 + 112 * b4 + 128) >> 8), 16, 240);
-            data[uv + 1] = fullRange ? (byte)Math.Clamp(128 + ((128 * r4 - 116 * g4 - 12 * b4 + 128) >> 8), 0, 255)
-                : (byte)Math.Clamp(128 + ((112 * r4 - 102 * g4 - 10 * b4 + 128) >> 8), 16, 240);
-        }
+        var data = new byte[checked(frame.Width * frame.Height * 3 / 2)];
+        Nv12Converter.Convert(frame.Pixels, frame.Width, frame.Height, fullRange, data);
         return data;
     }
 

@@ -27,7 +27,7 @@ namespace UnifiedRgb.Core.Engine;
 /// assignment reports a fresh sample of ONE device clock, its streamed members take their phase from that counter instead of
 /// the upload anchor (<see cref="DeviceClockPhase"/>); anything else keeps the legacy timing, with the reason reported.
 /// </summary>
-public sealed class RenderLoop : IDisposable
+public sealed partial class RenderLoop : IDisposable
 {
     private readonly EffectRegistry _registry;
     private readonly FrameBus _bus;
@@ -338,6 +338,7 @@ public sealed class RenderLoop : IDisposable
                     c.Capabilities.Delivery == Delivery.UploadedLoop))
                 .ToArray();
             Activate(_scene, skipMissing: true, force: false);
+            CompileFollowers(_scene);
         }
     }
 
@@ -362,6 +363,7 @@ public sealed class RenderLoop : IDisposable
             beforePublish?.Invoke();
             Activate(compiled, force: false, forceFor: null);
             _scene = scene;
+            CompileFollowers(scene);
         }
     }
 
@@ -643,11 +645,12 @@ public sealed class RenderLoop : IDisposable
                 }
             }
 
+            ApplyFollowers();
             for (var c = 0; c < controllers.Length; c++)
             {
-                if (!controllers[c].IsLoop && !_bringup.Contains(controllers[c].Descriptor.Id))
+                if (!controllers[c].IsLoop && !_bringup.Contains(controllers[c].Descriptor.Id) && !FollowerSourceHeld(c))
                 {
-                    _bus.TryPublishCurrent(controllers[c].Mailbox, controllers[c].Mailbox.Back);
+                    _bus.TryPublishCurrent(controllers[c].Mailbox, controllers[c].Mailbox.Back, FollowerDependency(c));
                 }
             }
         }
@@ -1046,6 +1049,7 @@ public sealed class RenderLoop : IDisposable
 
             var layouts = new List<ZoneLayout>();
             var placements = new List<ZonePlacement?>();
+            var perKeyPoints = new List<IReadOnlyList<ZonePoint>?>();
             var members = new List<(Slice Slice, bool IsLoop)>();
             var layoutOf = new Dictionary<(int, int), int>();
             var offset = 0;
@@ -1075,6 +1079,7 @@ public sealed class RenderLoop : IDisposable
                 layoutOf.TryAdd((slot, zoneIndex), layouts.Count);
                 layouts.Add(zone.Layout);
                 placements.Add(zone.Placement);
+                perKeyPoints.Add(zone.PerKeyPoints);
                 members.Add((new Slice(slot, zoneIndex, offset), _controllers[slot].IsLoop));
                 if (spanOf is not null)
                 {
@@ -1098,7 +1103,9 @@ public sealed class RenderLoop : IDisposable
             }
 
             // §7.6: X/Y from an owner-entered placement when present; U (and every Lian Li geometry) unchanged
-            var samples = spanOf is not null
+            // PER-KEY: a member with sparse key points keeps its keys' geometry; without one this is the expression below, unchanged
+            var samples = PerKeyLayout.Any(perKeyPoints) ? PerKeyLayout.Concat(layouts, placements, perKeyPoints, spanOf is not null ? programSpans : null)
+                : spanOf is not null
                 ? GroupLayout.ConcatPath(layouts, placements, programSpans)
                 : layouts.Count == 1 ? Projector.Project(layouts[0], placements[0]) : GroupLayout.Concat(layouts, placements);
             var loopSlices = members.Where(m => m.IsLoop).Select(m => m.Slice).ToList();

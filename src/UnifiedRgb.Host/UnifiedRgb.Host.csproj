@@ -13,6 +13,7 @@
     <ProjectReference Include="../UnifiedRgb.Devices.LianLi/UnifiedRgb.Devices.LianLi.csproj" />
     <ProjectReference Include="../UnifiedRgb.Devices.MsiGpu/UnifiedRgb.Devices.MsiGpu.csproj" />
     <ProjectReference Include="../UnifiedRgb.Devices.AsusAura/UnifiedRgb.Devices.AsusAura.csproj" />
+    <ProjectReference Include="../UnifiedRgb.Devices.AsusRog/UnifiedRgb.Devices.AsusRog.csproj" />
     <ProjectReference Include="../UnifiedRgb.Devices.EneDram/UnifiedRgb.Devices.EneDram.csproj" />
     <ProjectReference Include="../UnifiedRgb.Devices.OpenRgbSdk/UnifiedRgb.Devices.OpenRgbSdk.csproj" />
     <ProjectReference Include="../UnifiedRgb.Screens/UnifiedRgb.Screens.csproj" />
@@ -33,6 +34,7 @@
     <RuntimeHostConfigurationOption Include="Switch.System.Windows.Media.ShouldRenderEvenWhenNoDisplayDevicesAreAvailable" Value="true" />
   </ItemGroup>
   <ItemGroup>
+    <EmbeddedResource Include="../UnifiedRgb.App/Assets/Brand/Brand.xaml" LogicalName="UnifiedRgb.KeyboardBrand.xaml" />
     <None Update="appsettings.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

@@ -21,6 +21,12 @@ public sealed record NativeVideoTrialRequestDto(string ScreenId, int DurationMs 
     /// </summary>
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
     public bool MeasureQueueAfterOverlay { get; init; }
+    /// <summary>
+    /// Explicit bounded TURZX-only temporary trial: the live overlay is composited into the H.264 picture instead of the separate PNG
+    /// layer (no per-update PNG writes, no encoded-picture cache). Default false keeps the PNG overlay; omitted from JSON when false.
+    /// </summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
+    public bool BakeTelemetry { get; init; }
 }
 public sealed record NativeVideoTrialDto(string TrialId, string ScreenId, int DurationMs, int Fps, string? AssetId)
 {
@@ -31,4 +37,6 @@ public sealed record NativeVideoTrialDto(string TrialId, string ScreenId, int Du
     public bool PreparedOverlay { get; init; }
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
     public bool MeasureQueueAfterOverlay { get; init; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
+    public bool BakeTelemetry { get; init; }
 }

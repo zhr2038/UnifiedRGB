@@ -16,6 +16,7 @@ public static class ControllerStates
 /// One discovered controller. <c>ControlVerified</c> (NATIVE design §2/§6) is false for a native controller whose class gate
 /// has not been set after the morning E3c: discoverable and openable by a bring-up session only, never a scene writer.
 /// Older Hosts may omit it; missing verification is displayed conservatively as unverified. The Host remains the write gate.
+/// PerKeyFrame is the adapter's last software-generated per-key frame (review data, not optical proof); null and omitted otherwise.
 /// </summary>
 public sealed record ControllerDto(
     string Id,
@@ -28,4 +29,6 @@ public sealed record ControllerDto(
     int MaxFps,
     string State,
     string? BlockedBy,
-    bool ControlVerified = false);
+    bool ControlVerified = false,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    PerKeyFrameDto? PerKeyFrame = null);

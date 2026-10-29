@@ -106,7 +106,9 @@ public sealed class ProfilesViewModel : ObservableObject
     public async Task ApplyAsync()
     {
         var name = _selected?.Name ?? throw new InvalidOperationException("Select a profile.");
-        await _client.Require().ApplyProfileAsync(name).ConfigureAwait(true);
+        var svc = _client.Require();
+        await PerKeyDisplay.RequireProfileAdmittedAsync(svc, name).ConfigureAwait(true);
+        await svc.ApplyProfileAsync(name).ConfigureAwait(true);
         Applied?.Invoke(this, EventArgs.Empty);
     }
 

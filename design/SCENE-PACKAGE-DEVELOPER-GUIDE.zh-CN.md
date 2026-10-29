@@ -342,6 +342,89 @@ PNG 优化器只使用已支持的非交错 RGBA8 PNG，保持图片上限 **524
 生成预览会使用已保存的本机方向和质量，解码实际待发送的 PNG/JPEG 字节后显示，因此 JPEG 损失和 PNG 降色也会出现在预览里。未保存的设备设置会提示；编码失败或超预算时清空旧预览并报告失败，不拿未编码原图冒充成功。预览不发送硬件命令，也不等于实际播放或吞吐验收。
 
 区域绑定还会按本机方向检查实际像素尺寸，每个读数至少需要24×24像素；过小会明确拒绝，不静默变成不可见数据层。
+
+## 键盘 RGB、鼠标 RGB 与键盘 OLED 制作（2026-10-29）
+
+外设沿用现有内容契约；以下状态是本次核对的验收快照，后续实机映射结果应另行更新。**RGB 能按逻辑灯位制作，不代表每个实体按键已经完成映射；键盘 OLED 也不是 v1–v4 中可直接绑定的屏幕目标。**
+
+| 目标 | 当前代码与内容入口 | 部署 / 实机状态与限制 |
+| --- | --- | --- |
+| 键盘整区 RGB | 普通 `lighting` 角色，`ledCount: 1`，一个 RGB 值覆盖整键盘；通过共享键盘 owner 输出 | 已有整区场景输出路径。它不能表现独立 W/A/S/D 或逐键波浪；必须绑定当前发现的整区灯区 |
+| 键盘逐键 RGB | 本机逐键能力为 `Ready` 时，同一灯区暴露 N 个逻辑灯位，普通 RGB24 轨道写 N 个颜色 | 逐键后端已部署；**目前仅原生 LED 0 → Esc 的红色在 USB 和 2.4G 两条路由上均获主人目视确认**。完整 81 键表未验收，不能按 81 键已就绪发布主题；蓝牙未验证 |
+| Harpe Edition20 鼠标 RGB | 普通 `lighting` 角色，`ledCount: 1`，对应 area0 整区点 | 已有跟随机箱及熄灯实测；没有已确认的鼠标独立灯珠地址，不能制作鼠标内部逐灯跑马 |
+| 键盘 OLED 状态页 / 原生菜单呈现 | 独立键盘显示服务；与场景包屏幕轨道分开 | 不等于场景素材播放器。本次核对时原生入场 Logo 修正仍是未刷入的候选资源；后续刷入和目视结果须单独记录，不把软件预览写成设备已显示 |
+| 键盘 OLED 场景动画 | 已有素材转换、共享时间轴选择及本机动画 API；默认关闭，受准入与显示 owner 限制 | 本次未核验当前场景动画开启 / 绑定及实机播放；保留原生菜单 / 拨杆时恢复键盘原动画的接口仍有固件阻塞。不能宣传任意包可直接投放 OLED 或高帧率播放 |
+
+这里的 USB / 2.4G Esc 确认只证明该键、该颜色和各自传输路径，不能扩展为全部键位、完整动画、光学同步、蓝牙或 Home Assistant 集成已完成。主机发送完成 / ACK 与实际可见画面仍须分别记录。
+
+### RGB 作者：角色、灯位与本机绑定
+
+1. 在 `lighting` 中使用作者自定角色，例如 `keyboard-rgb`、`mouse-rgb`。它们只是角色名字，不是新增类型；不要向清单增加 `keyboard`、`mouse`、`keyframes` 或 `nativeCode` 等字段。
+2. 整区键盘和鼠标各制作一条 `ledCount: 1` 的 RGB24 轨道；逐键键盘只有在本机确实暴露 N 灯位且映射验收完成后才制作 `ledCount: N`。包不能把一个像素自动拉伸到 N 个键，也不能把 N 键轨道降级成整区轨道。
+3. `pixelOrder: "logical-layout"` 的第 i 个像素是当前逻辑布局第 i 项，不是原生 LED ID i。逐键布局的顺序来自本机已验证的键表；键名、行列和原生 LED ID 的关系属于本机配置。作者可在离线制作时参考经确认的布局，将 W/A/S/D 对应逻辑索引涂色，或按行列坐标计算左→右波浪 / 预渲染涟漪，再只交付 RGB24。
+4. 键名 → 逻辑索引 / 原生 LED ID、设备地址和各传输路线的映射不要写入发布 ZIP、v1 清单或内容哈希。它们保存在本机 `AsusRog.KeyboardPerKey.Maps` 等设备配置中。仅灯位数量相同不保证两种键盘排列相同，跨机型制作仍须核对布局，不能只改标签复用。
+5. 全部 RGB 轨道继续共用 `frames`、`frameDurationMs`，相乘等于 `durationMs`。v1 没有逐帧时间戳字段：第 i 帧从 `i × frameDurationMs` 真实毫秒开始驻留。颜色和亮度在 RGB 字节中制作，`brightnessBaked` 只是说明；不要再次缩放。导入后在现有“设备绑定”中把角色绑定到实际发现的键盘 / 鼠标灯区，仍执行精确灯位数检查。
+
+W/A/S/D 高亮、左右波浪和涟漪是**完整键表成立后的可制作内容**，不是本次已完成的逐键实机验收。包可保存预渲染涟漪；随真实按键触发的涟漪还需要独立的输入与交互实现，RGB24 包本身没有按键事件脚本。候选键表、协议最大记录数或诊断帧不能代替实际键位映射。
+
+### 最小可执行 RGB 示例：两个整区角色
+
+把以下代码存为自己的 `make_peripheral_demo.py`，在项目根目录执行 `python .\make_peripheral_demo.py .\my-scenes\peripheral-demo`。只创建数据目录，不连接设备。两个角色同步保持琥珀色 500ms、黑色 500ms；这只是制作示例，导入和绑定后也须显式应用才会输出。
+
+```python
+import json
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+root.mkdir(parents=True, exist_ok=False)  # 拒绝覆盖旧主题
+(root / "lighting").mkdir()
+tracks = []
+for role in ("keyboard-rgb", "mouse-rgb"):
+    file = f"lighting/{role}.rgb24"
+    (root / file).write_bytes(bytes((255, 128, 0, 0, 0, 0)))
+    tracks.append({"role": role, "file": file, "ledCount": 1,
+                   "frames": 2, "frameDurationMs": 500,
+                   "pixelFormat": "RGB24", "pixelOrder": "logical-layout",
+                   "brightnessBaked": 1})
+manifest = {"format": "UnifiedRgb.ScenePackage", "schemaVersion": 1,
+            "id": "peripheral-demo", "name": "外设整区制作示例", "revision": 1,
+            "durationMs": 1000, "loop": True,
+            "playbackContract": "rgb24-hold-physical-ms-v1",
+            "lighting": tracks, "screens": [], "files": {}}
+(root / "scene.json").write_text(
+    json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+```
+
+再执行现有辅助工具：
+
+```powershell
+python .\tools\scene-packages\pack_scene.py build .\my-scenes\peripheral-demo .\my-scenes\peripheral-demo-v1.zip
+```
+
+这是一份结构有效的 v1 两轨包；只有目标灯区实际为一个逻辑点时才能绑定。若未来键盘切为已验证 N 键灯区，需要作者生成匹配 N 的另一个内容修订。示例没有屏幕或机箱轨道；加入它们时须保持同一 1000ms 周期，所有 RGB 轨道使用相同帧格，不能另开外设时钟。
+
+鼠标的一像素内容可以由作者对机箱画面选一点或求平均后预先写入 `mouse-rgb`，这属于作者明确的投影选择。另一条现有路径是**本机** `ZoneFollower` 回退：同一渲染 tick 复制一个流式源灯位到未显式分配内容的单点目标；不支持上传循环源、链式跟随或自动平均。显式给鼠标分配场景轨道会优先于该回退。回退关系不写入包，也不改变包时钟。整区外设的实际刷新仍受 adapter / writer 限流；当前键盘代码上限 10 次/秒是主机限制，不能写成逐键或鼠标 60fps 保证。
+
+### OLED 作者：画布、灰度与当前可走的路线
+
+建议按 **208×64** 横向画布制作高对比、大字、简化图形。输出是 16 级灰度（0 黑，15 白），不是彩色屏；低对比彩色素材可能在转换后消失。现有编码为 `luma-round-v1` 或固定 4×4 Bayer 的 `luma-bayer4-v1`，均使用固定亮度公式 `(54R + 183G + 19B + 128) >> 8`，无自适应调色板。可选择 `contain` 留黑边或 `cover` 居中裁切。
+
+传输帧为行优先打包的 4bit 灰度，**每帧 6656 字节**：字节低半字节存偶数像素，高半字节存后一个奇数像素，即 `packed[p] = gray[2*p] | (gray[2*p+1] << 4)`。这是内部编码格式，不是 v1–v4 允许新增的素材后缀或包轨道；作者通常交付 PNG/JPEG/GIF，程序负责转换，不把原始灰度文件伪装成 `screens` 媒体。
+
+目前没有“把屏幕角色绑定到键盘 OLED”的场景包入口，也没有独立 OLED 包字段。现有**本机、默认关闭的动画接口**可从当前已应用的普通屏幕场景取一项素材和它的共享 `TimelineId`，转换为 OLED 帧。具体工作流如下：
+
+1. 用现有包屏幕轨道准备素材，先按本指南将其绑定到受支持的普通屏幕并应用。静态 PNG/JPEG、GIF，以及已通过相应 v3/v4 导入验证的 MP4 / 分段素材均走现有素材库与合成器；OLED 不另设一个媒体导入器。完整循环、缓存和准备时限仍须通过，不能因原屏幕播放正常就假定 OLED 已准备成功。
+2. 调用 `IKeyboardDisplayService.GetKeyboardDisplayAnimationAsync()`，从返回的 `Choices` 读取实际 `AssetId`、`TimelineId`。任意上传但尚未进入当前共享屏幕场景的素材，不构成可选项；不要手编标识。现有键盘设置界面也使用同一套接口。
+3. Host 动画准入已开启时，通过 `PreviewKeyboardDisplayAnimationAsync(new KeyboardDisplayAnimationPreviewRequestDto(choice.AssetId, choice.TimelineId, "contain", "luma-round-v1"))` 取得少量位置的实际打包灰度预览；准入关闭或准备任务占用时会明确拒绝。`PositionMs` 是素材内位置，`PackedBase64` 是上述 6656 字节帧；解包后检查文字、裁切和灰阶。预览不发送硬件。
+4. 只有 Host 准入、设备与显示 owner 路径具备条件时，才可显式调用 `SetKeyboardDisplayAnimationAsync(new KeyboardDisplayAnimationSettingsDto(true, choice.AssetId, choice.TimelineId, "contain", "luma-round-v1", status.MinimumIntervalMs))`。这是 C# 既有契约调用（`status` / `choice` 来自第 2 步），不是写入 `scene.json` 的 JSON 示例，也不绕过当前固件阻塞。偏好保存在本机 `keyboard-display-animation.json`；更新包或换绑定后需重新选择实际有效项。
+
+程序按包共享时间选择当下 OLED 帧，不从第 0 帧另起时钟。原生菜单接管、且当前 owner 会话未声明原生画面支持时，通用动画被抑制，保留偏好而不抢写；若固件已声明该能力，现有代码允许约 1.2 秒入场 Logo 后选择已单独开启、绑定的动画，仍须实际验证，不能靠本机改标记冒充固件能力。状态页关闭、素材失效、共享时间轴阻止或上传超时也会导致不同的停止 / 回退状态，须读取返回的 `Admitted`、`State`、`Detail`，不能只看请求中的 `Enabled`。恢复键盘原动画是另一条路径，不与自制场景动画混称。
+
+动画最小上传间隔默认 **2000ms**，Host 允许配置的下限范围为 1000–10000ms，用户设置的间隔不得小于当前返回的 `MinimumIntervalMs`，且不得超过 10000ms。这是选择 / 上传节流，不是保证 0.5fps 或 1fps 可见播放；缓存采样默认 100ms、准备时合并相同灰度帧，也不会提高上传速度。默认整轮灰度缓存 16MiB，最大可配置 32MiB；准备失败不发布部分帧。当前路线不承诺 15/30/60fps OLED、彩色、原生 GIF 文件上传、固件常驻动画或自定义原生菜单项目。
+
+本节代码核对入口：`src/UnifiedRgb.Host/ScenePackages/ScenePackageService.cs`（精确灯位绑定）、同目录 `ScenePackageFrameSource.cs`（`ScenePackageTimeline`）；`src/UnifiedRgb.Host/Services/WiredKeyboardAdapter.cs`、`src/UnifiedRgb.Devices.AsusRog/RogPerKeyPlan.cs`、`src/UnifiedRgb.Devices.Abstractions/PerKey.cs`（本机映射与逐键门禁）；`src/UnifiedRgb.Core/Engine/RenderLoop.Followers.cs`（单点回退）；`src/UnifiedRgb.Screens/Runtime/ScreenManager.Keyboard.cs`、`src/UnifiedRgb.Screens/Keyboard/KeyboardOledFramePreparer.cs` / 同目录 `KeyboardOledEncoder.cs`、`src/UnifiedRgb.Host/Services/KeyboardDisplayAnimation.cs` / 同目录 `KeyboardDisplayService.cs`、`src/UnifiedRgb.Host/KeyboardDisplayOptions.cs`、`src/UnifiedRgb.Contracts/Dto/KeyboardDisplayAnimationDto.cs` / `src/UnifiedRgb.Contracts/KeyboardOledFormat.cs`（OLED 转换、时序和接口）。2026-10-29 用户分别确认 USB 与 RF 路线的单个 Esc 键显示红色；这只是单键验证，不是完整 81 键键表或完整主题验收。
+
 ## 本机场景库维护与单屏编辑
 
 “场景库 → 外部场景包”显示安装数量、占用和待清理空间。删除前检查当前灯光、当前屏幕、重启恢复文件、已保存场景及素材恢复任务；存在引用时列出来源并拒绝删除。先切换到其他场景或删除不再需要的保存记录，再重新检查。熄灯前自动备份受保护，不提供删除入口。

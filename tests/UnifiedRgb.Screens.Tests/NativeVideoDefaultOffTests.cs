@@ -67,13 +67,13 @@ public sealed class NativeVideoDefaultOffTests
         using var h = await NativeWorkerHarness.StartAsync(NativeWorkerHarness.NewTrial("wire", flags), customize: customize);
         var text = new StringBuilder();
         var written = 0;
-        void Step(string name)
+        async Task StepAsync(string name, int expectedPictures)
         {
+            var p = await CompletedPictureAsync(() => h.Worker.Performance, expectedPictures);
             var writes = h.Writes;
             text.Append("# ").Append(name).Append('\n');
             foreach (var packet in writes.Skip(written)) text.Append(NativeWorkerHarness.Line(packet)).Append('\n');
             written = writes.Length;
-            var p = h.Worker.Performance;
             var v = p.NativeVideo;
             text.Append("facts ").Append(v is null ? "null" : $"{v.AccessUnits} {v.OverlayWrites} {v.DeviceBufferStatus} {v.SourcePositionMs} {v.SourceFrameIndex} {v.SourceClock} {v.LoopWraps} {v.EncodingNote} | {v.OverlayEncodingNote}")
                 .Append(" frames ").Append(p.FramesWritten).Append(" dropped ").Append(p.Dropped).Append(" trial ").Append(p.TrialId).Append('\n');
@@ -82,27 +82,27 @@ public sealed class NativeVideoDefaultOffTests
         }
 
         await NativeWorkerHarness.SettleAsync(() => h.DataWrites >= 1, "first native access unit");
-        Step("begin");
+        await StepAsync("begin", 1);
         for (var i = 1; i <= 9; i++)
         {
             if (i is 3 or 6) h.SetTelemetry(10 + (10 * i));
             await h.StepAsync();
-            Step("step " + i);
+            await StepAsync("step " + i, i + 1);
         }
 
         await h.PostAsync(h.Assignment with { Overlay = "none" });
-        Step("overlay none");
+        await StepAsync("overlay none", 11);
         await h.StepAsync();
-        Step("overlay none step");
+        await StepAsync("overlay none step", 12);
         await h.PostAsync(h.Assignment with { Overlay = "dashboard" });
-        Step("overlay dashboard");
+        await StepAsync("overlay dashboard", 13);
         h.SetTelemetry(77);
         await h.StepAsync();
-        Step("telemetry 77");
+        await StepAsync("telemetry 77", 14);
         await h.PostAsync(h.Assignment with { Rotation = 180 });
-        Step("rotation 180");
+        await StepAsync("rotation 180", 15);
         await h.StepAsync();
-        Step("rotation step");
+        await StepAsync("rotation step", 16);
 
         var native = h.Writes.Select(NativeWorkerHarness.Stamp).ToArray();
         native.Should().OnlyHaveUniqueItems();
@@ -113,8 +113,24 @@ public sealed class NativeVideoDefaultOffTests
         h.Time.Advance(TimeSpan.FromMilliseconds(NativeWorkerHarness.PeriodMs));
         await NativeWorkerHarness.SettleAsync(() => h.Writes is { } all && all.Length > before + 3
             && NativeWorkerHarness.Command(all[before + 3]) == ScreenProtocol.PushPngCommand, "stop controls, then the normal image path");
-        Step("trial ended");
+        await StepAsync("trial ended", 17);
         return text.ToString();
+    }
+
+    private static async Task<ScreenPerformanceDto> CompletedPictureAsync(Func<ScreenPerformanceDto> snapshot, int expectedPictures)
+    {
+        ScreenPerformanceDto? completed = null;
+        // A fake data packet is visible before overlay/facts and Wrote finish. Samples
+        // is published under Add's lock after that work; both counters must reach this
+        // frozen-clock picture before its packets, facts and source rows are captured.
+        await Wait.UntilAsync(() =>
+        {
+            var p = snapshot();
+            if (p.FramesWritten < expectedPictures || p.Samples < expectedPictures) return false;
+            completed = p;
+            return true;
+        }, $"completed picture {expectedPictures}: frames and performance sample");
+        return completed!;
     }
 
     private static void Capture(string name, string text)

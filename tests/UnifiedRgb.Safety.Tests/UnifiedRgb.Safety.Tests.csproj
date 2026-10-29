@@ -3,5 +3,6 @@
     <ProjectReference Include="../../src/UnifiedRgb.Devices.Abstractions/UnifiedRgb.Devices.Abstractions.csproj" />
     <ProjectReference Include="../../src/UnifiedRgb.Transports.Win/UnifiedRgb.Transports.Win.csproj" />
     <ProjectReference Include="../../src/UnifiedRgb.Devices.LianLi/UnifiedRgb.Devices.LianLi.csproj" />
+    <ProjectReference Include="../../src/UnifiedRgb.Devices.AsusRog/UnifiedRgb.Devices.AsusRog.csproj" />
   </ItemGroup>
 </Project>

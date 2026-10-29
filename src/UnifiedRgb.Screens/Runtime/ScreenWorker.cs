@@ -421,6 +421,7 @@ internal sealed partial class ScreenWorker : IDisposable
                 int selectedIndex = -1;
                 long selectedPosition = 0;
                 var cacheHit = false;
+                var videoTelemetry = VideoTelemetry.PngLayer; // where this picture's TURZX overlay goes (baked: the access unit itself)
                 double composeMs = 0, encodeMs = 0;
                 var bootstrapping = false;
                 var powerChanging = false;
@@ -446,6 +447,14 @@ internal sealed partial class ScreenWorker : IDisposable
                         if (cachedEncoding != encoding) { animationCache.Clear(); cachedEncoding = encoding; }
                         // A cache hit NEVER bypasses a blocked/missing timeline, missing media or live telemetry.
                         var separateVideoOverlay = nativeVideo && family.Family == ScreenFamily.Turzx;
+                        // An explicit trial's own BakeTelemetry flag, else the configured TurzxCompositeTelemetry of a verified screen, composes
+                        // the exact overlay into the TURZX picture (the compositor's own layout) instead of the PNG layer: never cached, with a
+                        // display reading sampled at most every 2 s.
+                        if (separateVideoOverlay)
+                            videoTelemetry = TelemetryModeOf(_ctx.Options, family.Family, renderAssignment, videoTrial?.Info, _ctx.NativeVideoAllowed(_device.Id));
+                        var bakedTelemetry = videoTelemetry != VideoTelemetry.PngLayer;
+                        if (bakedTelemetry) separateVideoOverlay = false;
+                        else ResetTelemetrySample();
                         var sourceAsset = blocked is null && renderAssignment.BackgroundAssetId is { } id ? _ctx.Assets.Find(id) : null;
                         var cacheAsset = separateVideoOverlay || renderAssignment.Overlay == "none" && renderAssignment.OverlayLayout is null ? sourceAsset : null;
                         var frameIndex = sourceAsset?.FrameAt(elapsed) ?? 0;
@@ -461,12 +470,13 @@ internal sealed partial class ScreenWorker : IDisposable
                             var composeStart = _ctx.Time.GetTimestamp();
                             var composed = blocked is null
                                 ? compositor.Compose(family, separateVideoOverlay ? renderAssignment with { Overlay = "none", OverlayLayout = null } : renderAssignment,
-                                    elapsed, _ctx.Telemetry(), _ctx.Time.GetUtcNow())
+                                    elapsed, bakedTelemetry ? SampledTelemetry(renderAssignment, videoTelemetry, videoTrial?.Info.TrialId) : _ctx.Telemetry(),
+                                    _ctx.Time.GetUtcNow())
                                 : ScreenCompositor.ComposeBlocked(family, blocked);
                             warning = composed.Warning;
                             composeMs = _ctx.Time.GetElapsedTime(composeStart).TotalMilliseconds;
                             var encodeStart = _ctx.Time.GetTimestamp();
-                            frame = nativeVideo && warning is null ? EncodeVideo(composed.Canvas)
+                            frame = nativeVideo && warning is null ? EncodeVideo(composed.Canvas, videoTelemetry)
                                 : ScreenImage.Of(_ctx.Encode(family, composed.Canvas, _ctx.Options.TurzxLandscapeRotation,
                                     encoding.Quality == Encoding.ScreenEncodingPolicies.NativeH264IntraV1 ? Encoding.ScreenEncodingPolicies.Legacy : encoding.Quality, encoding.Indexed8Verified));
                             encodeMs = _ctx.Time.GetElapsedTime(encodeStart).TotalMilliseconds;
@@ -525,7 +535,7 @@ internal sealed partial class ScreenWorker : IDisposable
                         var beforeRead = _videoSession?.ReadMs ?? 0; var beforeBytes = _videoSession?.BytesWritten ?? 0;
                         var beforeNative = _videoSession?.Work ?? default;
                         var beforeOverlayCompose = _videoOverlayComposeMs; var beforeOverlayEncode = _videoOverlayEncodeMs;
-                        if (!SendVideo(frame, renderAssignment, stamp!, !correlationDisabled)) { StopVideo(); staticFrame = null; continue; }
+                        if (!SendVideo(frame, renderAssignment, stamp!, !correlationDisabled, videoTelemetry)) { StopVideo(); staticFrame = null; continue; }
                         packetMs = _videoSession!.PacketMs - beforePacket; writeMs = _videoSession.WriteMs - beforeWrite;
                         readMs = _videoSession.ReadMs - beforeRead; packetLength = checked((int)(_videoSession.BytesWritten - beforeBytes));
                         nativeWork = _videoSession.Work.Since(beforeNative);

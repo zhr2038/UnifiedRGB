@@ -249,6 +249,13 @@ public sealed unsafe class WinHidReportDevices : IHidReportDevices
     }
 
     public IHidReportChannel Open(HidCollectionInfo collection)
+        => OpenCore(collection, exclusiveWriter: false);
+
+    /// <summary>Owns the vendor collection's write access. Other readers are allowed; another writer fails before I/O.</summary>
+    public static IHidReportChannel OpenExclusiveWriter(HidCollectionInfo collection)
+        => OpenCore(collection, exclusiveWriter: true);
+
+    private static Channel OpenCore(HidCollectionInfo collection, bool exclusiveWriter)
     {
         ArgumentNullException.ThrowIfNull(collection);
         if (collection.Interface == 0 || collection.Path.Contains("mi_00", StringComparison.OrdinalIgnoreCase))
@@ -256,7 +263,7 @@ public sealed unsafe class WinHidReportDevices : IHidReportDevices
             throw new InvalidOperationException("MI_00 is never opened");
         }
 
-        var handle = WinUsbNative.CreateFile(collection.Path, WinUsbNative.GenericRead | WinUsbNative.GenericWrite, WinUsbNative.FileShareReadWrite,
+        var handle = WinUsbNative.CreateFile(collection.Path, WinUsbNative.GenericRead | WinUsbNative.GenericWrite, exclusiveWriter ? 1u : WinUsbNative.FileShareReadWrite,
             IntPtr.Zero, WinUsbNative.OpenExisting, WinUsbNative.FileFlagOverlapped, IntPtr.Zero);
         if (handle.IsInvalid)
         {

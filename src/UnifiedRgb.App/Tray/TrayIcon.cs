@@ -6,8 +6,8 @@ using Forms = System.Windows.Forms;
 namespace UnifiedRgb.App.Tray;
 
 /// <summary>
-/// Notification-area icon (ARCHITECTURE §9): grey = Host not connected, green = all controllers active, amber = something is
-/// blocked/contended/offline. Menu: Open, Rescan, Exit. The shared brand has a small grey/green/amber state badge.
+/// Notification-area icon: gold check = controllers active; gold triangle = attention; muted-gold minus = disconnected.
+/// Badge shapes and tooltip text distinguish status within the shared black/gold palette. Menu: Open, Rescan, Exit.
 /// </summary>
 public sealed class TrayIcon : IDisposable
 {

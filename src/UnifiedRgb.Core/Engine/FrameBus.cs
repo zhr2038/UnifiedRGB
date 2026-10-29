@@ -241,11 +241,15 @@ public sealed class FrameBus : IFrameSink, IDisposable
     /// discovery recompiles the plan; the old frame must neither crash the clock nor enter a replacement with the same id.
     /// The short gate also prevents disposal of the signal between the identity check and publication.
     /// </summary>
-    internal bool TryPublishCurrent(Mailbox expected, Frame frame)
+    internal bool TryPublishCurrent(Mailbox expected, Frame frame, Mailbox? dependency = null)
     {
         lock (_gate)
         {
             if (!_boxes.TryGetValue(expected.Controller.Id, out var current) || !ReferenceEquals(current, expected)) return false;
+            // A local follower may not display an old source generation after a detach/replacement. The renderer already
+            // owns this back buffer; publish black atomically with this check while discovery recompiles its plan.
+            if (dependency is not null && (!_boxes.TryGetValue(dependency.Controller.Id, out var source) || !ReferenceEquals(source, dependency)))
+                foreach (var zone in frame.Zones) Array.Clear(zone);
             current.Publish(frame);
             return true;
         }

@@ -10,7 +10,7 @@ namespace UnifiedRgb.Safety.Tests;
 public class LayeringTests
 {
     private static readonly string[] Adapters =
-        ["UnifiedRgb.Devices.LianLi", "UnifiedRgb.Devices.MsiGpu", "UnifiedRgb.Devices.OpenRgbSdk", "UnifiedRgb.Devices.Virtual", "UnifiedRgb.Devices.AsusAura", "UnifiedRgb.Devices.EneDram"];
+        ["UnifiedRgb.Devices.LianLi", "UnifiedRgb.Devices.MsiGpu", "UnifiedRgb.Devices.OpenRgbSdk", "UnifiedRgb.Devices.Virtual", "UnifiedRgb.Devices.AsusAura", "UnifiedRgb.Devices.EneDram", "UnifiedRgb.Devices.AsusRog"];
 
     public static TheoryData<string, string[]> Allowed() => new()
     {
@@ -25,6 +25,7 @@ public class LayeringTests
         { "UnifiedRgb.Devices.OpenRgbSdk", ["UnifiedRgb.Devices.Abstractions", "UnifiedRgb.Transports.Win", "Microsoft.Extensions.Logging.Abstractions"] },
         { "UnifiedRgb.Devices.AsusAura", ["UnifiedRgb.Devices.Abstractions", "UnifiedRgb.Transports.Win", "Microsoft.Extensions.Logging.Abstractions"] },
         { "UnifiedRgb.Devices.EneDram", ["UnifiedRgb.Devices.Abstractions", "UnifiedRgb.Transports.Win", "Microsoft.Extensions.Logging.Abstractions"] },
+        { "UnifiedRgb.Devices.AsusRog", ["UnifiedRgb.Devices.Abstractions", "UnifiedRgb.Transports.Win"] },
         { "UnifiedRgb.App", ["UnifiedRgb.Contracts", "UnifiedRgb.Core", "UnifiedRgb.Devices.Abstractions", "StreamJsonRpc", "Serilog", "Serilog.Sinks.File", "PresentationCore", "PresentationFramework", "WindowsBase", "System.Windows.Forms", "System.Drawing.Common", "System.Drawing.Primitives", "System.Xaml", "Microsoft.Win32.Registry" /* HKCU Run autostart */] },
         { "urgb", ["UnifiedRgb.Contracts", "StreamJsonRpc"] },
     };

@@ -34,6 +34,9 @@ public sealed class PipeClient : IHostConnection, IAsyncDisposable
     private volatile IScreenDeviceSettingsService? _screenSettings;
     private volatile IScreenPerformanceService? _screenPerformance;
     private volatile IScreenVideoService? _screenVideo;
+    private volatile IKeyboardDisplayService? _keyboardDisplay;
+    private volatile IPeripheralConfigurationService? _peripheralConfiguration;
+    private volatile INativeMenuService? _nativeMenu;
     private ConnectionState _state = ConnectionState.Disconnected;
     private volatile ConnectionDiagnostic? _diagnostic;
     private string? _uiFault;
@@ -90,6 +93,11 @@ public sealed class PipeClient : IHostConnection, IAsyncDisposable
     public IScreenService RequireScreens() => Gate(_screens);
     public IScreenPerformanceService RequireScreenPerformance() => Gate(_screenPerformance);
     public IScreenVideoService RequireScreenVideo() => Gate(_screenVideo);
+    public IKeyboardDisplayService RequireKeyboardDisplay() => Gate(_keyboardDisplay);
+    /// <summary>Optional keyboard/mouse handoff proxy; an older Host answers its calls with method-not-found.</summary>
+    public IPeripheralConfigurationService RequirePeripheralConfiguration() => Gate(_peripheralConfiguration);
+    /// <summary>Optional native-menu preference/status proxy; an older Host answers its calls with method-not-found.</summary>
+    public INativeMenuService RequireNativeMenu() => Gate(_nativeMenu);
     public IScenePackageService RequirePackages() => Gate(_packages);
     public ISceneLibraryService RequireLibrary() => Gate(_library);
 
@@ -209,6 +217,9 @@ public sealed class PipeClient : IHostConnection, IAsyncDisposable
                 _screenSettings = screenSettings;
                 _screenPerformance = screenPerformance;
                 _screenVideo = rpc.Attach<IScreenVideoService>();
+                _keyboardDisplay = rpc.Attach<IKeyboardDisplayService>();
+                _peripheralConfiguration = rpc.Attach<IPeripheralConfigurationService>();
+                _nativeMenu = rpc.Attach<INativeMenuService>();
                 Connections++;
                 attempt = 0;
                 _diagnostic = null;
@@ -235,6 +246,9 @@ public sealed class PipeClient : IHostConnection, IAsyncDisposable
                 _screenSettings = null;
                 _screenPerformance = null;
                 _screenVideo = null;
+                _keyboardDisplay = null;
+                _peripheralConfiguration = null;
+                _nativeMenu = null;
                 await pipe.DisposeAsync().ConfigureAwait(false);
             }
 

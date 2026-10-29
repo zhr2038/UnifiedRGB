@@ -87,6 +87,9 @@ public sealed partial class LightingEngine(
         }
         _uptime.Start();
         ApplyConfiguredCalibration();
+        if (options.ZoneFollowers is null || options.ZoneFollowers.Any(f => f is null))
+            throw new InvalidOperationException("Local zone followers cannot be null.");
+        _loop.SetFollowers(options.ZoneFollowers.Select(f => f.ToBinding()).ToArray());
         if (options.LianLi.UseDeviceClock)
         {
             LogDeviceClockEnabled(RenderLoop.DeviceClockMaxAgeSeconds);
@@ -408,14 +411,16 @@ public sealed partial class LightingEngine(
             var d = e.Descriptor;
             var budget = (e.Adapter as IFrameBudgetSource)?.FrameBudget(d.Id);
             var lease = e.BringupLease;
-            if (e.Writer is null)
+            // One Writer snapshot for state and counters: a retirement on another thread may clear e.Writer meanwhile.
+            var writer = e.Writer;
+            if (writer is null)
             {
                 var state = lease is not null ? ControllerStates.BringUp
                     : e.Verdict.State == GuardState.Clear ? ControllerStates.Offline : e.Verdict.State.ToString();
                 return WithBudget(new DeviceStatusDto(d.Id.Value, d.Name, state, lease ?? e.Verdict.Writer, 0, d.Capabilities.MaxFps, 0, 0, 0, null), budget);
             }
 
-            var w = e.Writer.GetStats();
+            var w = writer.GetStats();
             var live = lease is not null ? ControllerStates.BringUp : w.Paused ? ControllerStates.Contended : ControllerStates.Active;
             return WithBudget(new DeviceStatusDto(d.Id.Value, d.Name, live, lease ?? e.Verdict.Writer,
                 w.Fps, w.MaxFps, w.Written, w.Errors, w.Superseded, w.LastError, ToDto(w.LastUpload)), w.Budget ?? budget);
@@ -689,7 +694,7 @@ public sealed partial class LightingEngine(
         }
     }
 
-    private void RefreshControllers()
+    internal void RefreshControllers()
     {
         var entries = adapters.Controllers;
         var active = entries.Where(c => c.IsActive).Select(c => c.Descriptor).ToArray();

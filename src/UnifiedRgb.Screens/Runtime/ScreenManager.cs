@@ -356,11 +356,18 @@ public sealed partial class ScreenManager : IScreenService, IScreenSceneBinding,
             _previewCompositor ??= new ScreenCompositor(_assets, PreviewCacheBytes);
             _previewCompositor.ClearCache();
             var video = encoding.Quality == Encoding.ScreenEncodingPolicies.NativeH264IntraV1 || videoTrial is not null;
-            var composed = _previewCompositor.Compose(family, video && family.Family == ScreenFamily.Turzx ? shownAssignment with { Overlay = "none", OverlayLayout = null } : shownAssignment, 0, telemetry, now);
+            // the worker's own mode rule: a baked preview is the decoded access unit of the canvas WITH its overlay, no PNG layer
+            var videoTelemetry = video
+                ? ScreenWorker.TelemetryModeOf(_options, family.Family, shownAssignment, videoTrial, NativeVideoVerified(assignment.ScreenId))
+                : VideoTelemetry.PngLayer;
+            var separate = video && family.Family == ScreenFamily.Turzx && videoTelemetry == VideoTelemetry.PngLayer;
+            var composed = _previewCompositor.Compose(family, separate ? shownAssignment with { Overlay = "none", OverlayLayout = null } : shownAssignment, 0, telemetry, now);
             if (video)
             {
+                // the worker's own slicing rule too: a trial's own SingleSlice, else TurzxSingleSlice of a verified TURZX
                 var preview = ScreenWorker.PreviewVideo(family, shownAssignment, composed.Canvas, telemetry, now, rotation,
-                    videoTrial?.SingleSlice ?? false, videoTrial?.Quality ?? 95, videoTrial?.SimpleOverlayPng ?? false);
+                    ScreenWorker.SingleSliceOf(_options, family.Family, videoTrial, NativeVideoVerified(assignment.ScreenId)), videoTrial?.Quality ?? 95,
+                    videoTrial?.SimpleOverlayPng ?? false, videoTelemetry);
                 return (WpfCodec.EncodePng(preview.Shown), preview.Note);
             }
             EncodedFrame encoded;

@@ -55,7 +55,7 @@ public class ProcessScannerAndRecordingTests
     {
         KnownWriters.All.Select(w => w.Name).Should().BeEquivalentTo(
             "L-Connect-Service", "L-Connect-Service-Watcher", "L-Connect 3", "Mystic_Light_Service", "LightKeeperService",
-            "LEDKeeper2", "OpenRGB", "LConnectMSI5090Mirror", "LianliToMSIGPU-OpenRGB", "Aac3572MbHal_x86");
+            "LEDKeeper2", "OpenRGB", "LConnectMSI5090Mirror", "LianliToMSIGPU-OpenRGB", "Aac3572MbHal_x86", "GHelper");
 
         // NATIVE design §8: the MSI rows cover the GPU and the DRAM path; the ASUS HAL is a Process row (never a service we stop,
         // so its Windows DCOM host is never touched); candidates are informational only and never rows.
@@ -71,7 +71,7 @@ public class ProcessScannerAndRecordingTests
             || n.Equals("svchost", StringComparison.OrdinalIgnoreCase) || n.Equals("RpcSs", StringComparison.OrdinalIgnoreCase));
         KnownWriters.Candidates.Select(c => c.Name).Should().NotIntersectWith(KnownWriters.All.Select(w => w.Name));
         KnownWriters.All.Where(w => w.Affects.Contains(DeviceClass.OpenRgb)).Should().NotBeEmpty();
-        foreach (var cls in new[] { DeviceClass.LianLi, DeviceClass.MsiGpu, DeviceClass.OpenRgb, DeviceClass.AsusAura, DeviceClass.EneDram })
+        foreach (var cls in new[] { DeviceClass.LianLi, DeviceClass.MsiGpu, DeviceClass.OpenRgb, DeviceClass.AsusAura, DeviceClass.EneDram, DeviceClass.AsusRog })
         {
             KnownWriters.All.Should().Contain(w => w.Affects.Contains(cls), $"{cls} has a confirmed writer row");
         }

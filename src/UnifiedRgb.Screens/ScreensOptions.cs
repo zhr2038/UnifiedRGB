@@ -69,6 +69,18 @@ public sealed class ScreensOptions
     /// <summary>Exact H2/TURZX ids individually accepted for clock-driven all-IDR H.264. TURZX has a separate live PNG layer;
     /// H2 composites live information into each picture. Empty by default; a bounded trial does not save verification.</summary>
     public string[] NativeH264VerifiedScreenIds { get; set; } = [];
+    /// <summary>
+    /// Normal native TURZX output of an id in <see cref="NativeH264VerifiedScreenIds"/> composites the live overlay into each H.264
+    /// picture (display telemetry sampled at most once per 2 s) instead of the separate PNG layer. False by default: the PNG layer is
+    /// unchanged. An active explicit native trial always uses its own BakeTelemetry flag. Configuration only; no other gate changes.
+    /// </summary>
+    public bool TurzxCompositeTelemetry { get; set; }
+    /// <summary>
+    /// Normal native TURZX output of an id in <see cref="NativeH264VerifiedScreenIds"/> encodes each all-IDR picture as ONE IDR slice (the
+    /// encoder refuses to send anything else) instead of the encoder's default slicing; still Q95. False by default: the default encoder is
+    /// unchanged. An active explicit native trial always uses its own SingleSlice flag, false included. Configuration only; no other gate changes.
+    /// </summary>
+    public bool TurzxSingleSlice { get; set; }
 
     public ScreenFamilyOptions For(ScreenFamily family) => family switch
     {

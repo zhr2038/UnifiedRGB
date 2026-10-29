@@ -37,12 +37,14 @@ public sealed partial class AdapterHost(
     FrameBus bus,
     Func<IPreciseSleeper> sleeperFactory,
     ILogger<AdapterHost> logger,
-    UnifiedRgbOptions? options = null) : IAsyncDisposable
+    UnifiedRgbOptions? options = null,
+    PeripheralConfigurationGate? configurationGate = null) : IAsyncDisposable
 {
     // [LoggerMessage] in .NET 8 needs a field; primary-constructor parameters are not seen by the generator.
     private readonly ILogger _logger = logger;
 
     private readonly List<IDeviceAdapter> _adapters = [];
+    private readonly Dictionary<IDeviceAdapterFactory, IDeviceAdapter> _adapterFactories = new(ReferenceEqualityComparer.Instance);
     // Active discovery skipped by the guard (or not yet successful) must run once after unblock, even with no entries yet.
     private readonly HashSet<IDeviceAdapter> _deferredDiscovery = new(ReferenceEqualityComparer.Instance);
     private readonly List<ControllerEntry> _entries = [];
@@ -57,6 +59,8 @@ public sealed partial class AdapterHost(
 
     /// <summary>Raised once per adapter after it is created, before its first discovery (Lian Li mounting overrides are seeded here).</summary>
     public event Action<IDeviceAdapter>? AdapterCreated;
+
+    internal bool RogAcquisitionAllowed => configurationGate?.RogAcquisitionAllowed ?? true;
 
     /// <summary>Controllers whose device re-appeared (hotplug Arrived) since the last call; the engine re-publishes their loops.</summary>
     public IReadOnlyList<ControllerId> TakeArrivals()
@@ -89,28 +93,36 @@ public sealed partial class AdapterHost(
         if (options?.StartupRecoveryNotice is not null) return; // no factory/driver/adapter construction in repair mode
         foreach (var factory in factories)
         {
-            var adapter = factory.Create(services);
-            adapter.Hotplug += OnHotplug;
-            lock (_gate)
-            {
-                _adapters.Add(adapter);
-                if (adapter is IActiveDiscovery)
-                {
-                    _deferredDiscovery.Add(adapter);
-                }
-            }
-
-            AdapterCreated?.Invoke(adapter);
+            if (factory.Class == DeviceClass.AsusRog && !RogAcquisitionAllowed) continue;
+            AddAdapter(factory);
         }
 
         await RescanAsync(ct).ConfigureAwait(false);
+    }
+
+    private IDeviceAdapter AddAdapter(IDeviceAdapterFactory factory)
+    {
+        var adapter = factory.Create(services);
+        adapter.Hotplug += OnHotplug;
+        lock (_gate)
+        {
+            _adapters.Add(adapter);
+            _adapterFactories.Add(factory, adapter);
+            if (adapter is IActiveDiscovery) _deferredDiscovery.Add(adapter);
+        }
+        AdapterCreated?.Invoke(adapter);
+        return adapter;
     }
 
     /// <summary>
     /// ARCHITECTURE §7.1 for every adapter: Takeover (if enabled) → WriterGuard → discovery → open what is Clear. Already
     /// known controllers keep their writers; newly found ones are added. Returns true when anything changed.
     /// </summary>
-    public async Task<bool> RescanAsync(CancellationToken ct)
+    public Task<bool> RescanAsync(CancellationToken ct) => configurationGate is null
+        ? RescanCoreAsync(ct)
+        : configurationGate.RunExclusiveAsync(RescanCoreAsync, ct);
+
+    private async Task<bool> RescanCoreAsync(CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
         Interlocked.Exchange(ref _rescanRequested, 0);
@@ -138,7 +150,11 @@ public sealed partial class AdapterHost(
     /// The 5 s guard check (ARCHITECTURE §7.5): a reappearing vendor pauses our writers unless Takeover can stop it. On unblock,
     /// deferred active discovery runs before opening controllers; successful adapters are not rediscovered by guard checks.
     /// </summary>
-    public async Task<bool> RecheckAsync(CancellationToken ct)
+    public Task<bool> RecheckAsync(CancellationToken ct) => configurationGate is null
+        ? RecheckCoreAsync(ct)
+        : configurationGate.RunExclusiveAsync(RecheckCoreAsync, ct);
+
+    private async Task<bool> RecheckCoreAsync(CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
         var changed = false;
@@ -160,6 +176,75 @@ public sealed partial class AdapterHost(
         }
 
         return changed;
+    }
+
+    public async Task ReleaseForPeripheralConfigurationAsync(CancellationToken ct)
+    {
+        var errors = new List<Exception>();
+        var entries = Controllers.Where(e => e.Descriptor.Class == DeviceClass.AsusRog).ToArray();
+        foreach (var entry in entries)
+        {
+            try
+            {
+                if (entry.Writer is { } writer)
+                {
+                    await writer.QuiesceAsync().ConfigureAwait(false);
+                    await writer.StopAsync().ConfigureAwait(false);
+                    bus.Unregister(entry.Descriptor.Id);
+                    writer.Dispose();
+                    entry.Writer = null;
+                }
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException) { errors.Add(ex); }
+        }
+
+        if (errors.Count != 0) throw new AggregateException("ROG writers did not become quiescent; adapter disposal was refused.", errors);
+        var adapters = Adapters.Where(a => a.Class == DeviceClass.AsusRog).ToArray();
+        foreach (var adapter in adapters)
+        {
+            try
+            {
+                if (adapter is UnifiedRgb.Devices.AsusRog.IRogPeripheralConfigurationLifetime configuration)
+                    await configuration.ReleaseForConfigurationAsync(ct).ConfigureAwait(false);
+                else if (adapter is IAsyncDisposable asyncDisposable)
+                    await asyncDisposable.DisposeAsync().ConfigureAwait(false);
+                else
+                    (adapter as IDisposable)?.Dispose();
+                adapter.Hotplug -= OnHotplug;
+                lock (_gate)
+                {
+                    _adapters.Remove(adapter);
+                    foreach (var pair in _adapterFactories.Where(p => ReferenceEquals(p.Value, adapter)).ToArray())
+                        _adapterFactories.Remove(pair.Key);
+                    _deferredDiscovery.Remove(adapter);
+                    _entries.RemoveAll(e => ReferenceEquals(e.Adapter, adapter));
+                }
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException) { errors.Add(ex); }
+        }
+        if (errors.Count != 0) throw new AggregateException("One or more ROG adapter resources did not release cleanly; failed participants remain retained for explicit recovery.", errors);
+    }
+
+    public async Task ResumeAfterPeripheralConfigurationAsync(CancellationToken ct)
+    {
+        var added = new List<IDeviceAdapter>();
+        var errors = new List<Exception>();
+        IDeviceAdapterFactory[] pending;
+        lock (_gate) pending = factories.Where(f => f.Class == DeviceClass.AsusRog && !_adapterFactories.ContainsKey(f)).ToArray();
+        foreach (var factory in pending)
+        {
+            try { added.Add(AddAdapter(factory)); }
+            catch (Exception ex) when (ex is not OutOfMemoryException) { errors.Add(ex); }
+        }
+        foreach (var adapter in added)
+        {
+            try { await DiscoverAndApplyAsync(adapter, ct, throwOnError: true).ConfigureAwait(false); }
+            catch (Exception ex) when (ex is not OutOfMemoryException) { errors.Add(ex); }
+        }
+        foreach (var entry in Controllers.Where(e => added.Contains(e.Adapter, ReferenceEqualityComparer.Instance)
+                     && e.Writer is null && e.Adapter is INativeBringup native && native.IsControlVerified(e.Descriptor.Id)))
+            errors.Add(new IOException($"Fresh ROG resource {entry.Descriptor.Id.Value} is present but could not open: {entry.Verdict.Writer ?? "offline, asleep or busy"}."));
+        if (errors.Count != 0) throw new AggregateException("Fresh ROG adapter construction, discovery or current-settings open was incomplete.", errors);
     }
 
     /// <summary>
@@ -339,6 +424,7 @@ public sealed partial class AdapterHost(
 
             _sleepers.Clear();
             _adapters.Clear();
+            _adapterFactories.Clear();
             _deferredDiscovery.Clear();
         }
     }
@@ -385,7 +471,7 @@ public sealed partial class AdapterHost(
     }
 
     /// <summary>Discovery admitted by the guard; only a completed, uncancelled discovery consumes a deferred retry.</summary>
-    private async Task<bool> DiscoverAndApplyAsync(IDeviceAdapter adapter, CancellationToken ct)
+    private async Task<bool> DiscoverAndApplyAsync(IDeviceAdapter adapter, CancellationToken ct, bool throwOnError = false)
     {
         ct.ThrowIfCancellationRequested();
         if (Volatile.Read(ref _stopping)) return false;
@@ -399,6 +485,7 @@ public sealed partial class AdapterHost(
 #pragma warning restore CA1031
         {
             LogDiscoveryFailed(adapter.Vendor, ex);
+            if (throwOnError) throw;
             return false;
         }
 
@@ -474,6 +561,12 @@ public sealed partial class AdapterHost(
         if (Volatile.Read(ref _stopping))
         {
             entry.Verdict = previous; // Host stop: nothing opens; the entry keeps the verdict it had
+            return;
+        }
+
+        if (entry.Descriptor.Class == DeviceClass.AsusRog && !RogAcquisitionAllowed && configurationGate?.FreshResumeAllowed != true)
+        {
+            entry.Verdict = GuardVerdict.Blocked("peripheral configuration handoff");
             return;
         }
 

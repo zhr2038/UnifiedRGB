@@ -68,7 +68,7 @@ public static class KnownWriters
     private static readonly DeviceClass[] AsusHal = [DeviceClass.AsusAura, DeviceClass.EneDram];
 
     private static readonly DeviceClass[] AllHardware =
-        [DeviceClass.LianLi, DeviceClass.MsiGpu, DeviceClass.OpenRgb, DeviceClass.AsusAura, DeviceClass.EneDram];
+        [DeviceClass.LianLi, DeviceClass.MsiGpu, DeviceClass.OpenRgb, DeviceClass.AsusAura, DeviceClass.EneDram, DeviceClass.AsusRog];
 
     /// <summary>Process name of any OpenRGB instance; it is a writer unless its PID is one we supervise.</summary>
     public const string OpenRgbProcessName = "OpenRGB";
@@ -88,6 +88,8 @@ public static class KnownWriters
         new("LConnectMSI5090Mirror", WriterKind.Process | WriterKind.Service, Msi),
         new("LianliToMSIGPU-OpenRGB", WriterKind.Process, Msi),
         new(AsusHalProcessName, WriterKind.Process, AsusHal),
+        // Direct receiver writers. Process blockers only: never stop input services or vendor services automatically.
+        new("GHelper", WriterKind.Process, [DeviceClass.AsusRog]),
     ];
 
     /// <summary>Informational only (NATIVE design §8): never stopped, never part of the verdict.</summary>

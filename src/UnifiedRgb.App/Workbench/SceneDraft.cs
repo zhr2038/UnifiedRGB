@@ -16,7 +16,8 @@ public sealed class StudioZone(ControllerDto controller, ZoneDto zone) : Observa
     public ZoneDto Zone { get; private set; } = zone;
     public ZoneRefDto Ref => new(Controller.Id, Zone.Id);
     public string Name => DisplayNames.Zone(Controller, Zone);
-    public string Detail => $"{DisplayNames.State(Controller.State)} · {Zone.LedCount} 个逻辑灯位{(Zone.Mapped ? string.Empty : " · 未定位")}";
+    public string Detail => $"{DisplayNames.State(Controller.State)} · {Zone.LedCount} 个逻辑灯位{(Zone.Mapped ? string.Empty : " · 未定位")}"
+        + (Zone.PerKey is null ? string.Empty : " · " + PerKeyDisplay.Zone(Zone));
     public bool IsChosen { get => _chosen; set => SetProperty(ref _chosen, value); }
     internal void Update(ControllerDto updatedController, ZoneDto updatedZone)
     {

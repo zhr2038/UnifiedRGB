@@ -1,0 +1,89 @@
+<UserControl x:Class="UnifiedRgb.App.Views.CaseControlPanelView" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:w="clr-namespace:UnifiedRgb.App.Workbench">
+ <UserControl.Resources><ResourceDictionary><ResourceDictionary.MergedDictionaries><ResourceDictionary Source="/UnifiedRgb.App;component/Themes/StudioTheme.xaml"/></ResourceDictionary.MergedDictionaries></ResourceDictionary></UserControl.Resources>
+ <StackPanel>
+  <TextBlock Text="光域控制面板" Style="{StaticResource SectionTitle}"/>
+  <Border Background="Black" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="6" Padding="8" Margin="0,10,0,8">
+   <Viewbox Stretch="Uniform"><w:CaseControlDisplay Width="208" Height="64" State="{Binding Display}" AutomationProperties.Name="光域状态屏内容预览，实际发送状态见下方"/></Viewbox>
+  </Border>
+  <TextBlock Text="{Binding KeyboardTransportNote}" Style="{StaticResource Caption}" TextWrapping="Wrap"/>
+  <Button Content="{Binding KeyboardToggleLabel}" Command="{Binding ToggleKeyboardDisplayCommand}" IsEnabled="{Binding CanToggleKeyboardDisplay}" Margin="0,4,0,4" Style="{StaticResource QuietButton}" ToolTip="只切换键盘显示：光域状态屏或键盘原动画；不改变 RGB 灯光跟随、机箱场景和拨杆模式。"/>
+  <TextBlock Text="{x:Static w:CaseControlPanelViewModel.KeyboardDisplayGuide}" Visibility="{Binding HasKeyboardDisplayService, Converter={StaticResource Visible}}" Style="{StaticResource Caption}" TextWrapping="Wrap"/>
+  <Button Content="重连键盘灯光" Command="{Binding ReconnectKeyboardLightingCommand}" IsEnabled="{Binding CanReconnectKeyboardLighting}" Margin="0,6,0,2" Style="{StaticResource QuietButton}" ToolTip="后台报告键盘错误时，按回读的光域状态屏开关原样请求一次以重新接入键盘灯光；不切换显示，不另发亮度、机箱场景或外设配置指令，未答复不自动重发。" AutomationProperties.HelpText="{Binding KeyboardReconnectNote}"/>
+  <TextBlock Text="{Binding KeyboardReconnectNote}" Style="{StaticResource Caption}" TextWrapping="Wrap"/>
+  <TextBlock Text="{Binding ObservationNote}" Style="{StaticResource Caption}" Margin="0,6,0,8" TextWrapping="Wrap"/>
+  <UniformGrid Columns="2"><Button Content="全机熄灯" Command="{Binding OffCommand}" Margin="0,0,4,0"/><Button Content="恢复当前场景" Command="{Binding OnCommand}" Style="{StaticResource QuietButton}" Margin="4,0,0,0" ToolTip="仅在熄灯模式下恢复熄灯前场景，保留当前屏幕内容与本机设置。"/></UniformGrid>
+  <Border Visibility="{Binding HasNativeMenu, Converter={StaticResource Visible}, FallbackValue=Collapsed}" BorderBrush="{StaticResource LineBrush}" BorderThickness="0,1,0,0" Margin="0,14,0,0" Padding="0,12,0,0">
+   <StackPanel DataContext="{Binding NativeMenu}">
+    <TextBlock Text="原生菜单联动" FontWeight="SemiBold"/>
+    <TextBlock Text="{x:Static w:NativeMenuViewModel.Guide}" Style="{StaticResource Caption}" TextWrapping="Wrap"/>
+    <TextBlock Text="{Binding StateTitle}" Margin="0,6,0,0" TextWrapping="Wrap"/>
+    <TextBlock Text="{Binding StatusLine}" Style="{StaticResource Caption}" TextWrapping="Wrap"/>
+    <TextBlock Text="{Binding Detail}" Visibility="{Binding HasDetail, Converter={StaticResource Visible}}" Style="{StaticResource Caption}" TextWrapping="Wrap"/>
+    <TextBlock Text="{Binding LastOutcomeText}" Visibility="{Binding HasLastOutcome, Converter={StaticResource Visible}}" Style="{StaticResource Caption}" TextWrapping="Wrap"/>
+    <TextBlock Text="{Binding LastErrorText}" Visibility="{Binding HasLastError, Converter={StaticResource Visible}}" Foreground="{StaticResource AccentBrush}" FontSize="13" TextWrapping="Wrap"/>
+    <TextBlock Text="{Binding Message}" Style="{StaticResource Caption}" TextWrapping="Wrap"/>
+    <Button Content="{Binding ToggleLabel}" Command="{Binding ToggleCommand}" Margin="0,8,0,4" Style="{StaticResource QuietButton}" ToolTip="只保存本机偏好（默认关闭）；不发送机箱、屏幕或键盘指令，不进入或退出外设配置。是否生效以后台回读的“实际”为准。" AutomationProperties.HelpText="{Binding Message}"/>
+   </StackPanel>
+  </Border>
+  <Border Visibility="{Binding HasKeyboardAnimation, Converter={StaticResource Visible}, FallbackValue=Collapsed}" BorderBrush="{StaticResource LineBrush}" BorderThickness="0,1,0,0" Margin="0,14,0,0" Padding="0,12,0,0">
+   <StackPanel DataContext="{Binding KeyboardAnimation}">
+    <TextBlock Text="键盘屏幕动画" FontWeight="SemiBold"/>
+    <TextBlock Text="{x:Static w:KeyboardAnimationViewModel.Scope}" Style="{StaticResource Caption}" TextWrapping="Wrap"/>
+    <TextBlock Text="{x:Static w:KeyboardAnimationViewModel.NativeNote}" Style="{StaticResource Caption}" TextWrapping="Wrap"/>
+    <TextBlock Text="{Binding StateTitle}" Margin="0,6,0,0" TextWrapping="Wrap"/>
+    <TextBlock Text="{Binding StatusLine}" Style="{StaticResource Caption}" TextWrapping="Wrap"/>
+    <TextBlock Text="{Binding Detail}" Style="{StaticResource Caption}" TextWrapping="Wrap"/>
+    <TextBlock Text="{Binding Message}" Style="{StaticResource Caption}" TextWrapping="Wrap"/>
+    <TextBlock Text="{Binding RebindHint}" Visibility="{Binding NeedsRebind, Converter={StaticResource Visible}}" Style="{StaticResource Caption}" Margin="0,6,0,0" TextWrapping="Wrap"/>
+    <TextBlock Text="素材（当前场景中按共享时间轴播放的屏幕素材）" Style="{StaticResource Caption}" Margin="0,8,0,2"/>
+    <ComboBox ItemsSource="{Binding Choices}" SelectedItem="{Binding SelectedChoice}" IsEnabled="{Binding CanEdit}" AutomationProperties.Name="键盘动画素材">
+     <ComboBox.ItemTemplate>
+      <DataTemplate>
+       <TextBlock><Run Text="{Binding Name, Mode=OneWay}"/><Run Text=" · "/><Run Text="{Binding FrameCount, Mode=OneWay}"/><Run Text=" 帧 · "/><Run Text="{Binding ScreenId, Mode=OneWay}"/></TextBlock>
+      </DataTemplate>
+     </ComboBox.ItemTemplate>
+    </ComboBox>
+    <UniformGrid Columns="3" Margin="0,6,0,0">
+     <ComboBox ItemsSource="{Binding Fits}" SelectedItem="{Binding SelectedFit}" DisplayMemberPath="Label" IsEnabled="{Binding CanEdit}" Margin="0,0,4,0" AutomationProperties.Name="适配方式"/>
+     <ComboBox ItemsSource="{Binding Encodings}" SelectedItem="{Binding SelectedEncoding}" DisplayMemberPath="Label" IsEnabled="{Binding CanEdit}" Margin="4,0" AutomationProperties.Name="灰度编码"/>
+     <ComboBox ItemsSource="{Binding Intervals}" SelectedItem="{Binding SelectedInterval}" DisplayMemberPath="Label" IsEnabled="{Binding CanEdit}" Margin="4,0,0,0" AutomationProperties.Name="最短更新间隔"/>
+    </UniformGrid>
+    <TextBlock Text="{Binding IntervalNote}" Style="{StaticResource Caption}" TextWrapping="Wrap"/>
+    <UniformGrid Columns="3" Margin="0,8,0,4">
+     <Button Content="{Binding EnableLabel}" Command="{Binding EnableCommand}" Margin="0,0,4,0" ToolTip="只保存本机偏好；后台准许且键盘状态屏运行时才会按共享时间轴发送画面。"/>
+     <Button Content="停用键盘动画" Command="{Binding DisableCommand}" Style="{StaticResource QuietButton}" Margin="4,0" ToolTip="回到键盘状态屏；保留所选素材与选项。"/>
+     <Button Content="生成预览" Command="{Binding PreviewCommand}" Style="{StaticResource QuietButton}" Margin="4,0,0,0" ToolTip="由后台按所选选项实际编码几帧并解码显示；不发送到键盘。"/>
+    </UniformGrid>
+    <TextBlock Text="{Binding PreviewMessage}" Style="{StaticResource Caption}" TextWrapping="Wrap"/>
+    <ItemsControl ItemsSource="{Binding Preview}" Visibility="{Binding HasPreview, Converter={StaticResource Visible}}">
+     <ItemsControl.ItemsPanel><ItemsPanelTemplate><WrapPanel/></ItemsPanelTemplate></ItemsControl.ItemsPanel>
+     <ItemsControl.ItemTemplate>
+      <DataTemplate>
+       <StackPanel Margin="0,4,8,4">
+        <Image Source="{Binding Image}" Width="208" Height="64" Stretch="Fill" RenderOptions.BitmapScalingMode="NearestNeighbor"/>
+        <TextBlock Text="{Binding Label}" Style="{StaticResource Caption}"/>
+       </StackPanel>
+      </DataTemplate>
+     </ItemsControl.ItemTemplate>
+    </ItemsControl>
+   </StackPanel>
+  </Border>
+  <Border Visibility="{Binding HasPeripheralConfiguration, Converter={StaticResource Visible}, FallbackValue=Collapsed}" BorderBrush="{StaticResource LineBrush}" BorderThickness="0,1,0,0" Margin="0,14,0,0" Padding="0,12,0,0">
+   <StackPanel DataContext="{Binding Peripherals}">
+    <TextBlock Text="键鼠外设配置" FontWeight="SemiBold"/>
+    <TextBlock Text="只暂停键盘、鼠标的外设联动；机箱灯光和屏幕照常运行。" Style="{StaticResource Caption}" TextWrapping="Wrap"/>
+    <TextBlock Text="{Binding StateTitle}" Margin="0,6,0,0" TextWrapping="Wrap"/>
+    <TextBlock Text="{Binding StatusLine}" Style="{StaticResource Caption}" TextWrapping="Wrap"/>
+    <TextBlock Text="{Binding OriginNote}" Visibility="{Binding HasOriginNote, Converter={StaticResource Visible}, FallbackValue=Collapsed}" Style="{StaticResource Caption}" TextWrapping="Wrap"/>
+    <TextBlock Text="{Binding Detail}" Visibility="{Binding HasDetail, Converter={StaticResource Visible}}" Style="{StaticResource Caption}" TextWrapping="Wrap"/>
+    <TextBlock Text="{Binding LastErrorText}" Visibility="{Binding HasLastError, Converter={StaticResource Visible}}" Foreground="{StaticResource AccentBrush}" FontSize="13" TextWrapping="Wrap"/>
+    <TextBlock Text="{Binding Guidance}" Visibility="{Binding HasStatus, Converter={StaticResource Visible}}" Style="{StaticResource Caption}" TextWrapping="Wrap"/>
+    <TextBlock Text="{Binding Message}" Style="{StaticResource Caption}" TextWrapping="Wrap"/>
+    <TextBlock Text="{Binding NextStep}" Style="{StaticResource Caption}" Margin="0,4,0,0" TextWrapping="Wrap"/>
+    <Button Content="{Binding EnterLabel, FallbackValue=配置键鼠（暂时交给网页）}" Command="{Binding EnterCommand}" Margin="0,8,0,4" ToolTip="请求后台暂时释放键盘、鼠标接口；就绪前不会打开网页。"/>
+    <Button Content="{Binding ExitLabel, FallbackValue=完成配置，恢复联动}" Command="{Binding ExitCommand}" Style="{StaticResource QuietButton}" Margin="0,0,0,4" ToolTip="请求后台重新接管键盘、鼠标并恢复联动。" AutomationProperties.HelpText="{Binding NextStep}"/>
+    <Button Content="打开 Gear Link 网页" Command="{Binding OpenGearLinkCommand}" Style="{StaticResource QuietButton}" ToolTip="https://gearlink.asus.com · 仅在点击时用系统浏览器打开，不会自动打开或连接设备。" AutomationProperties.HelpText="{Binding NextStep}"/>
+   </StackPanel>
+  </Border>
+ </StackPanel>
+</UserControl>

@@ -24,14 +24,24 @@ internal sealed partial class ScreenWorker
     private bool _lastVideoOverlaySimplePng;
     private string? _videoOverlayEncodingNote;
 
-    private ScreenImage EncodeVideo(PixelFrame canvas)
+    /// <summary>
+    /// The one slicing rule of worker and preview: an active explicit trial's own SingleSlice flag (false included, so a trial can A/B against
+    /// the configured mode), else <see cref="ScreensOptions.TurzxSingleSlice"/> for an individually verified screen. Only native TURZX is ever
+    /// single-slice; the quality stays the trial's own or Q95.
+    /// </summary>
+    internal static bool SingleSliceOf(ScreensOptions options, ScreenFamily family, NativeVideoTrialDto? trial, bool verified) =>
+        family == ScreenFamily.Turzx && (trial is not null ? trial.SingleSlice : options.TurzxSingleSlice && verified);
+
+    /// <param name="telemetry">Baked: the TURZX canvas already contains the live overlay (a BakeTelemetry trial or the configured mode).</param>
+    private ScreenImage EncodeVideo(PixelFrame canvas, VideoTelemetry telemetry = VideoTelemetry.PngLayer)
     {
         var turzx = _device.Family.Family == ScreenFamily.Turzx;
         if (_device.Family.Family is not (ScreenFamily.Turzx or ScreenFamily.H2) || !_ctx.NativeVideoAllowed(_device.Id))
             throw new ScreenEncodeException("Native H.264 needs a verified H2/TURZX or an explicit bounded trial.");
         var native = turzx ? PixelOps.Rotate(canvas, _ctx.Options.TurzxLandscapeRotation) : canvas;
         var trial = _ctx.VideoTrialOf(_device.Id)?.Info;
-        var variant = (SingleSlice: turzx && trial?.SingleSlice == true, Quality: turzx ? trial?.Quality ?? 95 : 95);
+        var variant = (SingleSlice: SingleSliceOf(_ctx.Options, _device.Family.Family, trial, _ctx.NativeVideoAllowed(_device.Id)),
+            Quality: turzx ? trial?.Quality ?? 95 : 95);
         if (_videoEncoderVariant != variant)
         {
             _videoEncoder?.Dispose(); _videoEncoder = null;
@@ -41,14 +51,22 @@ internal sealed partial class ScreenWorker
             singleSlice: variant.SingleSlice, quality: variant.Quality);
         var bytes = _videoEncoder.Encode(native);
         return new(Protocol.TurzxVideoProtocol.DataCommand, bytes, turzx
-            ? $"H.264 all-IDR Baseline Q{variant.Quality}, {_videoEncoder.LastSliceCount} slices; host/shared-clock-selected picture; live PNG overlay"
+            ? $"H.264 all-IDR Baseline Q{variant.Quality}, {_videoEncoder.LastSliceCount} slices; host/shared-clock-selected picture; "
+                + TelemetryNote(telemetry)
             : "H2 H.264 all-IDR Baseline; host/shared-clock-selected picture; telemetry composited before encoding");
     }
 
-    private bool SendVideo(ScreenImage frame, ScreenAssignmentDto assignment, ScreenTimestamp stamp, bool allowCorrelatedReplies)
+    /// <param name="telemetry">
+    /// Decided with THIS picture's composition (never re-read from the trial here, which may have ended meanwhile). A baked access unit
+    /// carries the overlay, so no layer is rendered and the existing overlay-disabled path clears a plane this session drew, once,
+    /// BEFORE that access unit (never a drawn PNG across a baked picture). Every other picture keeps the access unit first.
+    /// </param>
+    private bool SendVideo(ScreenImage frame, ScreenAssignmentDto assignment, ScreenTimestamp stamp, bool allowCorrelatedReplies,
+        VideoTelemetry telemetry = VideoTelemetry.PngLayer)
     {
         if (_channel is null) throw new InvalidOperationException("No video channel.");
         if (!_ctx.NativeVideoAllowed(_device.Id)) return false; // normal trial expiry/cancel is not a dropped/error frame
+        var bakedTelemetry = telemetry != VideoTelemetry.PngLayer;
         if (_videoSession is null)
         {
             if (_device.Family.Family == ScreenFamily.Turzx)
@@ -61,14 +79,36 @@ internal sealed partial class ScreenWorker
             _lastVideoOverlay = null; _lastVideoOverlayAssignment = null; _videoOverlayEncodingNote = null;
             OnVideoSessionBegan();
         }
+        if (bakedTelemetry) VideoOverlayStep(_videoSession, null, assignment);
         _videoSession.SendFrame(frame.Image);
-        var overlayStart = System.Diagnostics.Stopwatch.GetTimestamp();
-        var layer = _device.Family.Family == ScreenFamily.Turzx
-            ? RenderVideoOverlay(_videoOverlay, _device.Family, assignment, _ctx.Telemetry(), _ctx.Time.GetUtcNow()) : null;
-        _videoOverlayComposeMs += System.Diagnostics.Stopwatch.GetElapsedTime(overlayStart).TotalMilliseconds;
+        if (!bakedTelemetry)
+        {
+            var overlayStart = System.Diagnostics.Stopwatch.GetTimestamp();
+            var layer = _device.Family.Family == ScreenFamily.Turzx
+                ? RenderVideoOverlay(_videoOverlay, _device.Family, assignment, _ctx.Telemetry(), _ctx.Time.GetUtcNow()) : null;
+            _videoOverlayComposeMs += System.Diagnostics.Stopwatch.GetElapsedTime(overlayStart).TotalMilliseconds;
+            VideoOverlayStep(_videoSession, layer, assignment);
+        }
+        if (assignment.TimelineId is not null && _videoPosition < _previousVideoPosition) _videoWraps++;
+        _previousVideoPosition = _videoPosition;
+        var overlayNote = telemetry switch
+        {
+            VideoTelemetry.BakedTrial => BakedOverlayNote,
+            VideoTelemetry.BakedConfigured => CompositedOverlayNote,
+            _ => _videoOverlayEncodingNote,
+        };
+        Volatile.Write(ref _videoFacts, new(_videoSession.AccessUnits, _videoSession.OverlayWrites, _videoSession.LastQueueDepth,
+            _videoPosition, _videoFrameIndex, TimelineSource ?? "local-epoch", _videoWraps)
+            { EncodingNote = frame.Note, OverlayEncodingNote = overlayNote });
+        return true;
+    }
+
+    /// <summary>One picture's overlay decision: the prepared path, else the inline PNG of a changed layer or one clear of a drawn plane.</summary>
+    private void VideoOverlayStep(INativeVideoSession session, PixelFrame? layer, ScreenAssignmentDto assignment)
+    {
         var trial = _ctx.VideoTrialOf(_device.Id)?.Info;
         var simplePng = trial?.SimpleOverlayPng == true;
-        if (!PreparedOverlayStep(_videoSession, layer, assignment, simplePng, trial)
+        if (!PreparedOverlayStep(session, layer, assignment, simplePng, trial)
             && (!ReferenceEquals(layer, _lastVideoOverlay) || assignment != _lastVideoOverlayAssignment || simplePng != _lastVideoOverlaySimplePng))
         {
             if (layer is not null)
@@ -77,22 +117,16 @@ internal sealed partial class ScreenWorker
                 var pixels = OverlayCanvas(layer, assignment, _ctx.Options.TurzxLandscapeRotation);
                 var (encoded, note) = EncodeOverlayPng(pixels, simplePng);
                 _videoOverlayEncodeMs += System.Diagnostics.Stopwatch.GetElapsedTime(encodeStart).TotalMilliseconds;
-                SendVideoOverlay(_videoSession, encoded, clear: false, prepared: false, trial);
+                SendVideoOverlay(session, encoded, clear: false, prepared: false, trial);
                 _videoOverlayEncodingNote = note;
             }
             else
             {
-                if (_lastVideoOverlay is not null) SendVideoOverlay(_videoSession, _transparentVideoLayer!, clear: true, prepared: false, trial);
+                if (_lastVideoOverlay is not null) SendVideoOverlay(session, _transparentVideoLayer!, clear: true, prepared: false, trial);
                 _videoOverlayEncodingNote = null;
             }
             _lastVideoOverlay = layer; _lastVideoOverlayAssignment = assignment; _lastVideoOverlaySimplePng = simplePng;
         }
-        if (assignment.TimelineId is not null && _videoPosition < _previousVideoPosition) _videoWraps++;
-        _previousVideoPosition = _videoPosition;
-        Volatile.Write(ref _videoFacts, new(_videoSession.AccessUnits, _videoSession.OverlayWrites, _videoSession.LastQueueDepth,
-            _videoPosition, _videoFrameIndex, TimelineSource ?? "local-epoch", _videoWraps)
-            { EncodingNote = frame.Note, OverlayEncodingNote = _videoOverlayEncodingNote });
-        return true;
     }
 
     private void StopVideo()
@@ -100,6 +134,7 @@ internal sealed partial class ScreenWorker
         var session = _videoSession; _videoSession = null;
         Volatile.Write(ref _videoFacts, null); _previousVideoPosition = 0; _videoWraps = 0;
         _lastVideoOverlay = null; _lastVideoOverlayAssignment = null; _videoOverlayEncodingNote = null;
+        ResetTelemetrySample(); // a new session starts with a fresh display reading
         StopPreparedOverlay(); // invalidates older prepared work before the stop controls; no join here
         session?.Stop();
     }
@@ -137,9 +172,10 @@ internal sealed partial class ScreenWorker
         throw new ScreenEncodeException("Neither the original live overlay nor its lossless repack fits the TURZX image budget.");
     }
 
+    /// <param name="videoTelemetry">Baked: <paramref name="background"/> already contains the overlay; the decoded access unit is all that is shown.</param>
     internal static (PixelFrame Shown, string Note) PreviewVideo(ScreenFamilyInfo family, ScreenAssignmentDto assignment,
         PixelFrame background, PcTelemetryDto? telemetry, DateTimeOffset now, int internalRotation,
-        bool singleSlice = false, int quality = 95, bool simpleOverlayPng = false)
+        bool singleSlice = false, int quality = 95, bool simpleOverlayPng = false, VideoTelemetry videoTelemetry = VideoTelemetry.PngLayer)
     {
         if (family.Family is not (ScreenFamily.Turzx or ScreenFamily.H2)) throw new ScreenEncodeException("Native H.264 protocol is not verified for this family.");
         var turzx = family.Family == ScreenFamily.Turzx;
@@ -148,6 +184,10 @@ internal sealed partial class ScreenWorker
         var data = encoder.Encode(native);
         var decoded = MfH264IntraEncoder.Decode(data, native.Width, native.Height, fullRange: turzx);
         var shown = turzx ? PixelOps.Rotate(decoded, 360 - internalRotation) : decoded;
+        if (turzx && videoTelemetry != VideoTelemetry.PngLayer)
+            return (shown, $"H.264 Baseline all-IDR Q{quality}, {encoder.LastSliceCount} slices, {data.Length} B; decoded actual access unit with the live "
+                + $"overlay composited before encoding ({(videoTelemetry == VideoTelemetry.BakedTrial ? "BakeTelemetry trial" : "TurzxCompositeTelemetry")}; "
+                + "no PNG overlay); not sent");
         var layer = turzx ? RenderVideoOverlay(new OverlayRenderer(), family, assignment, telemetry, now) : null;
         string? overlayNote = null;
         if (layer is not null)

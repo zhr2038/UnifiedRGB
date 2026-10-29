@@ -25,6 +25,12 @@ public sealed record ZoneDescriptor(ZoneId Id, string Name, ZoneLayout Layout)
 
     /// <summary>Optional owner-entered position in case coordinates (design §7.6); null = none.</summary>
     public ZonePlacement? Placement { get; init; }
+
+    /// <summary>True per-key readiness; null for zones that do not claim independently addressable keyboard keys.</summary>
+    public PerKeyCapability? PerKey { get; init; }
+
+    /// <summary>Sparse local key coordinates in key-map order. Null uses the ordinary dense <see cref="Layout"/> projection.</summary>
+    public IReadOnlyList<ZonePoint>? PerKeyPoints { get; init; }
 }
 
 /// <summary>Media kind of a zone. The screen seam (design §7.8) adds kinds later; native lighting uses RGB only.</summary>

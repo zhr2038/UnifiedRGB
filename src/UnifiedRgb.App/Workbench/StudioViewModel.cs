@@ -15,13 +15,14 @@ public sealed record StudioAssignment(AssignmentDto Dto, int Index)
 }
 
 /// <summary>Unelevated authoring workspace. All edits are local until an explicit apply; reads never send frames.</summary>
-public sealed class StudioViewModel : ObservableObject
+public sealed class StudioViewModel : ObservableObject, IDisposable
 {
-    public const string BeforeLightsOffProfile = "Before Lights Off";
+    public const string BeforeLightsOffProfile = CasePowerActions.BackupProfileName;
     private static readonly JsonSerializerOptions JsonOptions = ContractsJson.Configure(new JsonSerializerOptions());
     private readonly IHostConnection _client;
     private readonly IUiDispatcher _ui;
     private readonly Func<string, bool> _confirm;
+    private readonly CasePowerActions _casePower;
     private SceneDto _scene = new([]);
     private StudioAssignment? _assignment;
     private StudioZone? _zone;
@@ -39,11 +40,14 @@ public sealed class StudioViewModel : ObservableObject
     private string? _activePackageContentId;
     public string? ActivePackageContentId => _activePackageContentId;
 
-    public StudioViewModel(IHostConnection client, IUiDispatcher ui, Action<Exception> onError, Func<string, bool>? confirm = null)
+    public StudioViewModel(IHostConnection client, IUiDispatcher ui, Action<Exception> onError, Func<string, bool>? confirm = null, Func<IScreenService>? screens = null,
+        Func<IKeyboardDisplayService>? keyboardDisplay = null)
     {
         _client = client;
         _ui = ui;
         _confirm = confirm ?? (_ => true);
+        _casePower = new(() => _client.Require());
+        ControlPanel = new(_casePower, _client.Require, screens, ui, onError, keyboardDisplay: keyboardDisplay);
         Draft.ChangedDraft += (_, _) => OnPropertyChanged(nameof(SceneDescription));
         ReadCommand = new AsyncCommand(ReadReplacingDraftAsync, onError);
         ApplyCommand = new AsyncCommand(_ => ApplyAsync(), onError, _ => CanEditDraft);
@@ -60,6 +64,7 @@ public sealed class StudioViewModel : ObservableObject
     }
 
     public SceneDraft Draft { get; } = new();
+    public CaseControlPanelViewModel ControlPanel { get; }
     public ObservableCollection<StudioZone> Zones { get; } = [];
     public ObservableCollection<StudioAssignment> Assignments { get; } = [];
     public AsyncCommand ReadCommand { get; }
@@ -190,7 +195,7 @@ public sealed class StudioViewModel : ObservableObject
         ArgumentNullException.ThrowIfNull(status);
         _ui.Post(() =>
         {
-            var real = status.Devices.Where(d => d.Id != "enedram:p0" && d.Id != "enedram:p1").ToArray();
+            var real = status.Devices.Where(d => !DisplayNames.IsDiscoveryPortId(d.Id)).ToArray();
             var active = real.Count(d => d.State == ControllerStates.Active);
             Health = real.Length == 0 ? "未发现灯光设备" : $"{active} / {real.Length} 台灯光控制器运行中";
             Clock = $"{status.Clock.Fps:0.0} fps";
@@ -213,6 +218,8 @@ public sealed class StudioViewModel : ObservableObject
         var originalIndex = selected?.Index;
         var baseline = JsonSerializer.Serialize(_scene.Assignments, JsonOptions);
         var service = _client.Require();
+        // Per-key admission on a fresh controller list, before the scene read and any write: a refusal sends nothing.
+        PerKeyDisplay.RequireAdmitted(next.Targets, await service.ListControllersAsync().ConfigureAwait(true));
         var current = await service.GetSceneAsync().ConfigureAwait(true);
         // Compare only RGB assignments: another screen edit must not erase screen content.
         if (JsonSerializer.Serialize(current.Assignments, JsonOptions) != baseline)
@@ -278,36 +285,25 @@ public sealed class StudioViewModel : ObservableObject
     }
     public async Task BlackoutAsync()
     {
-        var service = _client.Require();
-        var current = await service.GetSceneAsync().ConfigureAwait(true);
-        if (IsPersistedBlackout(current))
-        { Message = "灯光已处于熄灭状态；长屏休眠请求保持，不覆盖原有恢复点。实际状态见屏幕内容。"; return; }
-        var controllers = await service.ListControllersAsync().ConfigureAwait(true);
-        var targets = controllers.SelectMany(c => c.Zones.Select(z => new ZoneRefDto(c.Id, z.Id))).ToArray();
-        if (targets.Length == 0) throw new InvalidOperationException("没有可以熄灭的灯光分区。");
-        await service.SaveProfileAsync(new(BeforeLightsOffProfile, new(current.Assignments, Package: current.Package))).ConfigureAwait(true);
-        await service.SetSceneAsync(new([new(targets, "StaticColor", ["#000000"], Brightness: 0, Strategy: "Vendor")])).ConfigureAwait(true);
-        Message = "已保存熄灯前场景并关闭灯光；已接管的屏幕将关闭背光并停止发帧，点击恢复后唤醒。";
+        Message = (await ControlPanel.OffAsync().ConfigureAwait(true)).Message;
     }
-    internal static bool IsPersistedBlackout(SceneDto scene) => scene.Package is null && scene.Assignments.Count > 0
-        && scene.Assignments.All(a => a.EffectId == "StaticColor" && a.FrameSetId is null
-            && (a.Brightness == 0 || a.Colors.Count > 0 && a.Colors.All(c => c.Equals("#000000", StringComparison.OrdinalIgnoreCase))));
+    internal static bool IsPersistedBlackout(SceneDto scene) => CasePowerActions.IsBlackout(scene);
     private async Task RestoreAsync()
     {
-        var service = _client.Require();
-        var backup = await service.LoadProfileAsync(BeforeLightsOffProfile).ConfigureAwait(true);
-        await service.SetSceneAsync(new(backup.Scene.Assignments, Package: backup.Scene.Package)).ConfigureAwait(true);
+        var result = await ControlPanel.RestoreBackupAsync().ConfigureAwait(true);
         await RefreshAsync(true).ConfigureAwait(true);
-        Message = "已恢复熄灯前保存的场景；屏幕在新画面就绪后恢复背光。";
+        Message = result.Message;
     }
     private void NotifyDraftAccess() { OnPropertyChanged(nameof(CanEditDraft)); OnPropertyChanged(nameof(SceneDescription)); ApplyCommand.RaiseCanExecuteChanged(); }
     public void SetConnected(bool connected)
     {
+        ControlPanel.SetConnected(connected);
         if (connected) return;
         Health = "后台未连接 · 显示上次读取";
         Clock = "—"; Period = "—";
         PreviewPlaying = false;
     }
+    public void Dispose() => _casePower.Dispose();
     private static void TryLocal(Action action, Action<Exception> onError)
     {
         try { action(); }

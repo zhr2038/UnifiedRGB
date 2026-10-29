@@ -33,4 +33,7 @@ public enum DeviceClass
 
     /// <summary>ENE DRAM over native SMBus through PawnIO (NATIVE-3).</summary>
     EneDram,
+
+    /// <summary>ROG keyboard/mouse receiver vendor HID, independent of the Aura mainboard protocol.</summary>
+    AsusRog,
 }
