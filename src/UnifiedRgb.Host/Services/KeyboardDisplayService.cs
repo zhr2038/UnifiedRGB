@@ -553,7 +553,8 @@ public sealed class KeyboardDisplayService : BackgroundService, IKeyboardDisplay
                         return artwork;
                     },
                 nativeWake: nativeMenu is null ? null : () => nativeMenu.HasChanges,
-                nativeStopped: nativeMenu is null ? null : token => nativeMenu.StopAsync(token)).ConfigureAwait(false);
+                nativeStopped: nativeMenu is null ? null : token => nativeMenu.StopAsync(token),
+                perKeyPacing: _options.AsusRog.KeyboardPerKey).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is not OutOfMemoryException) { failure = ex; }
         finally

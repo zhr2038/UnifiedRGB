@@ -1,3 +1,5 @@
+using System.Diagnostics;
+using System.Globalization;
 using UnifiedRgb.Devices;
 using UnifiedRgb.Devices.AsusRog;
 using UnifiedRgb.Devices.Safety;
@@ -21,6 +23,10 @@ public sealed class WiredKeyboardAdapter : IWholeFrameAdapter, INativeBringup, I
     private volatile bool _open;
     private PerKeyFrame? _lastPerKeyFrame;
     private long _perKeyFrames;
+    // Host software counters of completed normal per-key frames (probe only): never optical or physical refresh evidence.
+    private readonly int _offerCeilingFps;
+    private readonly int _rfReportDelayMs;
+    private long _uniquePerKeyFrames, _completionTicks, _lastCompletionTicks;
     private NormalFrame? _lastNormalFrame;
     private NormalFrame? _bringupFrame;
     private string? _bringupTransport;
@@ -38,7 +44,11 @@ public sealed class WiredKeyboardAdapter : IWholeFrameAdapter, INativeBringup, I
         if (options.HasVerifiedWiredLighting) routes.Add(RogPerKeyLighting.WiredTransport);
         if (options.HasVerifiedWirelessLighting) routes.Add(RogPerKeyLighting.WirelessTransport);
         _verifiedRoutes = routes.ToArray();
+        perKey?.ValidatePacing();
         _perKey = RogPerKeyPlanner.Plan(perKey, routes, bridge.KeyFrameTransport);
+        // Opt-in offer ceiling for a Ready per-key map only; absent, aggregate and not-Ready keep the legacy 10.
+        _offerCeilingFps = _perKey?.Ready == true && perKey?.MaximumFps is { } fps ? fps : RogPerKeyOptions.LegacyMaximumFps;
+        _rfReportDelayMs = perKey?.RfReportDelayMs ?? RogPerKeyOptions.LegacyRfReportDelayMs;
         var zone = _perKey switch
         {
             null => AggregateZone.Descriptor("Keyboard"),
@@ -50,7 +60,7 @@ public sealed class WiredKeyboardAdapter : IWholeFrameAdapter, INativeBringup, I
             var plan => AggregateZone.Descriptor("Keyboard") with { PerKey = plan.Capability },
         };
         _descriptor = new(new("asusr:wired:" + stableKey), "ASUS ROG", _perKey?.Ready == true ? "ROG 夜魔 X（逐键）" : "ROG 夜魔 X（整区）",
-            DeviceType.Keyboard, DeviceClass.AsusRog, string.Empty, [zone], Capabilities.DirectOnly(10));
+            DeviceType.Keyboard, DeviceClass.AsusRog, string.Empty, [zone], Capabilities.DirectOnly(_offerCeilingFps));
         _bridge.AvailabilityChanged += Changed;
     }
     public string Vendor => "ASUS ROG";
@@ -75,10 +85,19 @@ public sealed class WiredKeyboardAdapter : IWholeFrameAdapter, INativeBringup, I
     {
         Require(id); ct.ThrowIfCancellationRequested();
         if (probe != "per-key-status") throw new ArgumentException("Unknown keyboard probe.", nameof(probe));
+        var completed = Interlocked.Read(ref _perKeyFrames);
+        var total = Interlocked.Read(ref _completionTicks);
         return Task.FromResult(new NativeProbeResult(probe, true, "Shared actor route only; physical LED mapping is unverified.", [])
         {
             Fields = new Dictionary<string, string> { ["transport"] = _bridge.KeyFrameTransport ?? "unavailable", ["channel"] = "per-key-led",
-                ["markerChannel"] = "1", ["physicalMap"] = "unverified" },
+                ["markerChannel"] = "1", ["physicalMap"] = "unverified",
+                ["offerCeilingFps"] = _offerCeilingFps.ToString(CultureInfo.InvariantCulture),
+                ["configuredRfReportDelayMs"] = _rfReportDelayMs.ToString(CultureInfo.InvariantCulture),
+                ["completedFrames"] = completed.ToString(CultureInfo.InvariantCulture),
+                ["uniqueFrames"] = Interlocked.Read(ref _uniquePerKeyFrames).ToString(CultureInfo.InvariantCulture),
+                ["lastCompletionMs"] = Milliseconds(Interlocked.Read(ref _lastCompletionTicks)),
+                ["meanCompletionMs"] = Milliseconds(completed == 0 ? 0 : total / completed),
+                ["counters"] = "host software counters of completed normal per-key frames (enqueue to actor completion); not optical or physical refresh evidence" },
         });
     }
     public async Task<NativeProbeResult> BeginMarkerAsync(ControllerId id, NativeMarker marker, CancellationToken ct)
@@ -166,11 +185,22 @@ public sealed class WiredKeyboardAdapter : IWholeFrameAdapter, INativeBringup, I
             keys[i] = new((byte)cell.LedId, color);
             frame[i] = new((byte)cell.LedId, cell.Key, cell.Row, cell.Column, color);
         }
+        var previous = Volatile.Read(ref _lastNormalFrame);
+        var enqueued = Stopwatch.GetTimestamp();
         _bridge.WriteKeysAsync(keys, transport, CancellationToken.None).GetAwaiter().GetResult();
+        var completion = Stopwatch.GetTimestamp() - enqueued;
+        // Counting only: every frame is still written, in order, with its own colours.
+        var unique = previous?.Keys is not { } prior || previous.Transport != transport || !prior.SequenceEqual(keys);
         Volatile.Write(ref _lastNormalFrame, new(null, Array.AsReadOnly(keys), transport));
+        if (unique) Interlocked.Increment(ref _uniquePerKeyFrames);
+        Interlocked.Add(ref _completionTicks, completion);
+        Interlocked.Exchange(ref _lastCompletionTicks, completion);
         Volatile.Write(ref _lastPerKeyFrame, new(Interlocked.Increment(ref _perKeyFrames), Array.AsReadOnly(frame)));
         return true;
     }
+
+    private static string Milliseconds(long ticks) =>
+        (ticks * 1000.0 / Stopwatch.Frequency).ToString("F3", CultureInfo.InvariantCulture);
     public PerKeyFrame? ReadPerKeyFrame(ControllerId id) { Require(id); return Volatile.Read(ref _lastPerKeyFrame); }
     public Task SetFirmwareModeAsync(ControllerId id, FirmwareMode mode, CancellationToken ct) => throw new NotSupportedException();
     public Telemetry? ReadTelemetry(ControllerId id) => null;

@@ -1,8 +1,16 @@
+using System.Diagnostics;
+
 namespace UnifiedRgb.Devices.AsusRog;
 
 /// <summary>Single OLED actor. Upload/lease readers are joined before any next transaction or restoration.</summary>
 public sealed class RogWiredOledSession(IRogOledConnection connection)
 {
+    // Responsive per-key pacing targets, derived from the connections' current 80 ms lease cadence and today's post-frame
+    // observation cadence at 10 fps. Host targets only, not a measured keepalive or panel limit.
+    private static readonly TimeSpan RenewalInterval = TimeSpan.FromMilliseconds(80);
+    private static readonly TimeSpan ObservationInterval = TimeSpan.FromMilliseconds(100);
+    private long? _lastRenewal, _lastObservation;
+
     public long Frames { get; private set; }
     public long Renewals { get; private set; }
     public byte OriginalBrightness { get; private set; }
@@ -21,6 +29,9 @@ public sealed class RogWiredOledSession(IRogOledConnection connection)
     {
         init { if (connection is RogWirelessOledConnection wireless) wireless.KeyReportDelay = value; }
     }
+
+    // Fake-only clock seam for the renewal/observation pacing decisions (Stopwatch timestamps).
+    internal Func<long> Timestamp { get; init; } = Stopwatch.GetTimestamp;
 
     public Task<byte[]> ExchangeAsync(byte[] request, bool zeroAck, CancellationToken ct) =>
         connection.ExchangeAsync(request, zeroAck, ct);
@@ -185,14 +196,33 @@ public sealed class RogWiredOledSession(IRogOledConnection connection)
         CurrentNativeBrightness = brightness;
     }
 
-    public async Task RunAsync(Func<byte[]> latest, Action acknowledged, CancellationToken ct,
+    /// <summary>The original 13-parameter entry point, kept for existing compiled callers: legacy pacing, no per-key options.</summary>
+    public Task RunAsync(Func<byte[]> latest, Action acknowledged, CancellationToken ct,
         RogWiredLightingBridge.Owner? lighting = null, bool display = true, Func<bool>? displayEnabled = null,
         byte brightness = 100, Action<bool>? displayChanged = null,
         Func<CancellationToken, Task<byte>>? restoreNativeGoal = null,
         Func<byte, CancellationToken, Task>? nativeBrightnessChanged = null,
         Func<CancellationToken, Task<bool>>? nativeTick = null, Func<bool>? nativeWake = null,
-        Func<CancellationToken, Task>? nativeStopped = null)
+        Func<CancellationToken, Task>? nativeStopped = null) =>
+        RunAsync(latest, acknowledged, ct, lighting, display, displayEnabled, brightness, displayChanged, restoreNativeGoal,
+            nativeBrightnessChanged, nativeTick, nativeWake, nativeStopped, null);
+
+    /// <summary>The same actor loop with explicit local per-key pacing (null keeps legacy pacing). Every argument is required.</summary>
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1068:CancellationToken parameters must come last",
+        Justification = "Mirrors the original entry point's order; required-only parameters avoid optional-overload ambiguity.")]
+    public async Task RunAsync(Func<byte[]> latest, Action acknowledged, CancellationToken ct,
+        RogWiredLightingBridge.Owner? lighting, bool display, Func<bool>? displayEnabled,
+        byte brightness, Action<bool>? displayChanged,
+        Func<CancellationToken, Task<byte>>? restoreNativeGoal,
+        Func<byte, CancellationToken, Task>? nativeBrightnessChanged,
+        Func<CancellationToken, Task<bool>>? nativeTick, Func<bool>? nativeWake,
+        Func<CancellationToken, Task>? nativeStopped, RogPerKeyOptions? perKeyPacing)
     {
+        // Local opt-in pacing only. Without MaximumFps the actor's waits are exactly the legacy ones; RfReportDelayMs only
+        // tunes the real RF owner's pause before each report.
+        perKeyPacing?.ValidatePacing();
+        var responsive = perKeyPacing?.MaximumFps is not null;
+        if (perKeyPacing?.RfReportDelayMs is { } rfDelay && connection is RogWirelessOledConnection rf) rf.KeyReportDelayMs = rfDelay;
         byte[]? sent = null;
         var nativeWasActive = false;
         // PER-KEY: service complete key frames only on this actor's owned route.
@@ -258,8 +288,10 @@ public sealed class RogWiredOledSession(IRogOledConnection connection)
                 }
                 else keys.Completion.TrySetCanceled();
             }
-            if (!nativeActive && !display)
+            // Responsive per-key output bounds only this post-frame observation; every key frame keeps its own fresh scope.
+            if (!nativeActive && !display && (!responsive || !_keyOutputActive || Elapsed(_lastObservation) >= ObservationInterval))
             {
+                _lastObservation = Timestamp();
                 await RequireCurrentScopeAsync(ct).ConfigureAwait(false);
                 var current = (await ExchangeAsync(RogWiredOledProtocol.Query(0x23, 3), false, ct).ConfigureAwait(false))[5];
                 if (current > 100) throw new InvalidDataException("Native brightness observation is invalid.");
@@ -271,9 +303,14 @@ public sealed class RogWiredOledSession(IRogOledConnection connection)
                 }
             }
             nativeWasActive = nativeActive;
-            if (nativeActive || display) await LeaseAsync(() => lighting?.HasWork == true || nativeWake?.Invoke() == true
-                || (!nativeActive && (displayEnabled?.Invoke() ?? display) != display)
-                || (!nativeActive && !latest().AsSpan().SequenceEqual(sent)), ct).ConfigureAwait(false);
+            if (nativeActive || display)
+            {
+                Func<bool> changed = () => lighting?.HasWork == true || nativeWake?.Invoke() == true
+                    || (!nativeActive && (displayEnabled?.Invoke() ?? display) != display)
+                    || (!nativeActive && !latest().AsSpan().SequenceEqual(sent));
+                if (!responsive || !_keyOutputActive || lighting is null) await LeaseAsync(changed, ct).ConfigureAwait(false);
+                else if (!await PerKeyLeaseAsync(lighting, changed, ct).ConfigureAwait(false)) return;
+            }
             else if (lighting is not null)
             {
                 using var poll = CancellationTokenSource.CreateLinkedTokenSource(ct); poll.CancelAfter(200);
@@ -287,5 +324,59 @@ public sealed class RogWiredOledSession(IRogOledConnection connection)
     }
 
     private Task LeaseAsync(Func<bool> changed, CancellationToken ct) =>
-        connection.LeaseAsync(changed, () => Renewals++, ct);
+        connection.LeaseAsync(changed, Renewed, ct);
+
+    private void Renewed() { Renewals++; _lastRenewal = Timestamp(); }
+
+    private TimeSpan Elapsed(long? since) => since is { } start ? Stopwatch.GetElapsedTime(start, Timestamp()) : TimeSpan.MaxValue;
+
+    // Responsive per-key pacing between frames while the display or native artwork needs the 67/02 lease. A due renewal is
+    // written first even when a frame is already queued; otherwise queued work is served at once, and an idle actor waits
+    // without wire I/O until work arrives or the renewal falls due. False: the lighting queue completed (as at the
+    // display-off wait).
+    private async Task<bool> PerKeyLeaseAsync(RogWiredLightingBridge.Owner lighting, Func<bool> changed, CancellationToken ct)
+    {
+        while (true)
+        {
+            var since = Elapsed(_lastRenewal);
+            if (since >= RenewalInterval)
+            {
+                await WakeableLeaseAsync(lighting, changed, ct).ConfigureAwait(false);
+                return true;
+            }
+            if (changed()) return true;
+            using var due = CancellationTokenSource.CreateLinkedTokenSource(ct); due.CancelAfter(RenewalInterval - since);
+            try { if (!await lighting.WaitAsync(due.Token).ConfigureAwait(false)) return false; }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested && due.IsCancellationRequested) { }
+        }
+    }
+
+    // One ordinary lease whose early wake for lighting work is armed only after its first admitted renewal completed, so a
+    // work-ready signal can never cancel before LeaseAsync entered and renewed. Afterwards lighting work cancels the lease
+    // promptly. The watcher is cancelled and joined on every path and the connection joins its own reader; an admitted
+    // write retires on its bounded deadline, and any protocol/I/O failure propagates instead of the wake cancellation.
+    private async Task WakeableLeaseAsync(RogWiredLightingBridge.Owner lighting, Func<bool> changed, CancellationToken ct)
+    {
+        using var wake = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var renewed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var lease = connection.LeaseAsync(() => renewed.Task.IsCompleted && changed(), () => { Renewed(); renewed.TrySetResult(); }, wake.Token);
+        var watcher = WatchAsync();
+        try { await lease.ConfigureAwait(false); }
+        catch (OperationCanceledException) when (wake.IsCancellationRequested && !ct.IsCancellationRequested) { }
+        finally
+        {
+            wake.Cancel();
+            await watcher.ConfigureAwait(false);
+        }
+
+        async Task WatchAsync()
+        {
+            try
+            {
+                await renewed.Task.WaitAsync(wake.Token).ConfigureAwait(false);
+                if (await lighting.WaitAsync(wake.Token).ConfigureAwait(false)) wake.Cancel();
+            }
+            catch (OperationCanceledException) when (wake.IsCancellationRequested) { }
+        }
+    }
 }

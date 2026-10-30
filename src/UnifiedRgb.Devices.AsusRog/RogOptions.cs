@@ -32,11 +32,37 @@ public sealed record RogOptions
 /// </summary>
 public sealed record RogPerKeyOptions
 {
+    public const int LegacyMaximumFps = 10;
+    public const int MaximumFpsLimit = 30;
+    public const int LegacyRfReportDelayMs = 8;
+
     public bool Enabled { get; init; }
     public RogPerKeyMapOptions[] Maps { get; init; } = [];
 
+    /// <summary>
+    /// Opt-in host offer ceiling (1..30 complete per-key frames per second) for a Ready per-key map; it also enables the
+    /// shared actor's responsive per-key pacing while per-key output is active. Absent keeps the legacy 10 and today's actor
+    /// pacing. Not a measured or physical refresh rate: completed writes depend on the owner's route.
+    /// </summary>
+    public int? MaximumFps { get; init; }
+
+    /// <summary>
+    /// Opt-in pause before every 2.4 GHz C0 81 report, 0..8 ms; absent keeps the earlier 8 ms mitigation. Zero sends without
+    /// an intentional wait. Packet bytes, order and the asynchronous colour-reply drain are unchanged; never delivery evidence.
+    /// </summary>
+    public int? RfReportDelayMs { get; init; }
+
     /// <summary>False when nothing at all is configured: the adapter then reports no per-key status.</summary>
     public bool Configured => Enabled || Maps.Length > 0;
+
+    /// <summary>Rejects a present pacing value outside its local range; absent values are always valid.</summary>
+    public void ValidatePacing()
+    {
+        if (MaximumFps is < 1 or > MaximumFpsLimit)
+            throw new InvalidOperationException($"Per-key MaximumFps must be 1..{MaximumFpsLimit} (a host offer ceiling) or absent.");
+        if (RfReportDelayMs is < 0 or > LegacyRfReportDelayMs)
+            throw new InvalidOperationException($"Per-key RfReportDelayMs must be 0..{LegacyRfReportDelayMs} or absent.");
+    }
 }
 
 /// <summary>One bindable local map. <see cref="KeyOrderVerified"/> is the physical key-order check of this transport's scan.</summary>

@@ -26,6 +26,23 @@ public sealed class RogWirelessOledConnection : IRogOledConnection
     private readonly bool[] _writtenColourCounts = new bool[15];
     private const int ColourReplyDrainLimit = 128;
     internal Func<TimeSpan, CancellationToken, Task> KeyReportDelay { get; set; } = Task.Delay;
+    private int _keyReportDelayMs = RogPerKeyOptions.LegacyRfReportDelayMs;
+
+    /// <summary>
+    /// Pause before every C0 81 report: 0..8 ms, default 8 (the earlier freeze mitigation, not a protocol rule). Zero writes
+    /// without an intentional wait. Set only by the owning actor; bytes, order and colour-reply draining never change.
+    /// </summary>
+    public int KeyReportDelayMs
+    {
+        get => Volatile.Read(ref _keyReportDelayMs);
+        set
+        {
+            ArgumentOutOfRangeException.ThrowIfNegative(value);
+            ArgumentOutOfRangeException.ThrowIfGreaterThan(value, RogPerKeyOptions.LegacyRfReportDelayMs);
+            Volatile.Write(ref _keyReportDelayMs, value);
+        }
+    }
+
     private RogPairingEvidence? _evidence;
     private bool _busy, _disposed;
 
@@ -120,13 +137,14 @@ public sealed class RogWirelessOledConnection : IRogOledConnection
         ArgumentNullException.ThrowIfNull(keys);
         // Validate and translate the entire frame before entering the existing exclusive owner or writing anything.
         var packets = RogPerKeyLighting.BoundaryFrame(keys.ToArray()).Select(ToWireless).ToArray();
+        var spacing = KeyReportDelayMs;
         Enter(ct);
         try
         {
             foreach (var packet in packets)
             {
                 // The first report also follows an earlier control command. This spacing is not delivery evidence.
-                await KeyReportDelay(TimeSpan.FromMilliseconds(8), ct).ConfigureAwait(false);
+                if (spacing > 0) await KeyReportDelay(TimeSpan.FromMilliseconds(spacing), ct).ConfigureAwait(false);
                 using var deadline = new CancellationTokenSource(1000);
                 var attempted = false;
                 try
