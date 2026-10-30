@@ -10,6 +10,8 @@ namespace UnifiedRgb.Host.Services;
 /// connection or dispatches a case action. Only the exact input-only vendor collection is opened, only after opt-in and
 /// current GYM1 capability/physical identity admission. All control transactions occur inside Actor.Step/Stop, after the
 /// existing owner's previous upload/renew reader has joined. No timer, independent animation clock, or RPC injection seam.
+/// Control (ARM, input reader, cookie, genuine-neutral admission) does not depend on Host artwork: a step without artwork keeps
+/// the lever live while the keyboard shows its own content; <see cref="IsPresent"/> reports that control availability.
 /// </summary>
 public sealed class RogNativeMenuSource(KeyboardNativeMenuOptions options, IHidInputReportDevices? inputs = null,
     IHidContainerResolver? containers = null, TimeProvider? time = null, Func<ulong>? cookie = null,
@@ -93,7 +95,8 @@ public sealed class RogNativeMenuSource(KeyboardNativeMenuOptions options, IHidI
         private RogNativeCapability? _armed;
         private (uint Epoch, ulong Cookie)? _disarmAttempted;
         private byte[]? _sent;
-        private Func<byte[]>? _latest;
+        private Func<byte[]?>? _latest;
+        private bool _rearmIdle;
         private HidPhysicalContainer? _physical;
         public bool PhysicalScopeLost { get; private set; }
         private bool _joinFailed;
@@ -118,12 +121,27 @@ public sealed class RogNativeMenuSource(KeyboardNativeMenuOptions options, IHidI
 
         public bool HasChanges => _source.Requested != _observedRequested || !_queue.IsEmpty
             || (_armed is not null && (_retired || _reader?.IsCompleted == true
-                || _latest is not null && _sent is not null && !_latest().AsSpan().SequenceEqual(_sent)));
+                || _latest is not null && ArtworkChanged(_latest(), _sent)));
 
         public bool Armed { get { lock (_sync) return _state.Scope is not null && !_retired && !_stopped; } }
 
-        /// <summary>Runs after the previous owner lease/reader joined; returns whether mode9 owns this tick's artwork.</summary>
-        public async Task<bool> StepAsync(Func<byte[]> latest, CancellationToken ct)
+        /// <summary>The native context (input reader, cookie, genuine-neutral admission) is live, with or without Host artwork.</summary>
+        public bool ControlArmed => Armed;
+
+        /// <summary>Host artwork is this live context's acknowledged overlay; false while the keyboard shows its own content.</summary>
+        public bool ArtworkActive { get { lock (_sync) return _state.Scope is not null && !_retired && !_stopped && _sent is not null; } }
+
+        /// <summary>The previous context ended only because Host artwork ended for device idle; the next step ARMs a fresh context
+        /// without Host artwork. Not a native-mode exit, so the presentation keeps its entry (no second Logo).</summary>
+        public bool RearmingForDeviceIdle => Volatile.Read(ref _rearmIdle);
+
+        /// <summary>
+        /// Runs after the previous owner lease/reader joined; returns whether Host artwork is active (mode9 owns this tick's artwork).
+        /// A null <paramref name="latest"/> answer asks for no Host artwork: the context is still ARMed (or kept) with its input
+        /// reader and neutral admission, and nothing is uploaded. When Host artwork was active, a null answer retires, joins and
+        /// DISARMs that context through the existing lifecycle; the next step ARMs a fresh context without artwork.
+        /// </summary>
+        public async Task<bool> StepAsync(Func<byte[]?> latest, CancellationToken ct)
         {
             ArgumentNullException.ThrowIfNull(latest);
             Enter();
@@ -134,6 +152,7 @@ public sealed class RogNativeMenuSource(KeyboardNativeMenuOptions options, IHidI
                 _observedRequested = _source.Requested;
                 if (!_observedRequested || _stopped || _rejected || _transport == 0 || !_source.AcceptsScope(_key, _firmware, _kind))
                 {
+                    Volatile.Write(ref _rearmIdle, false);
                     if (_armed is not null || _reader is not null) await LeaveAsync("disabled or unavailable", ct).ConfigureAwait(false);
                     return false;
                 }
@@ -177,11 +196,22 @@ public sealed class RogNativeMenuSource(KeyboardNativeMenuOptions options, IHidI
                     return false;
                 }
                 var pixels = latest();
-                if (pixels.Length != RogWiredOledProtocol.PixelBytes) throw new InvalidDataException("Native artwork must be exactly6656 bytes.");
+                if (pixels is not null && pixels.Length != RogWiredOledProtocol.PixelBytes)
+                    throw new InvalidDataException("Native artwork must be exactly6656 bytes.");
+                if (pixels is null && _armed is not null && _sent is not null)
+                {
+                    // Host artwork ended for device idle: retire/join/DISARM through the existing lifecycle. The session then runs
+                    // its existing artwork-to-idle restore; the next step ARMs a fresh context without artwork (clearing the
+                    // overlay), which again needs a genuine neutral. No held frame stands in for the keyboard's own content.
+                    await LeaveAsync("host artwork ended for device idle", ct, capability).ConfigureAwait(false);
+                    Volatile.Write(ref _rearmIdle, true);
+                    return false;
+                }
                 if (_armed is null)
                 {
-                    // Only the first frame establishes an epoch/input context; replacements keep it and queued neutral/presses.
-                    Retire("initial artwork epoch", disconnected: false);
+                    // The first step establishes an epoch/input context, with or without Host artwork; replacements keep it and
+                    // queued neutral/presses.
+                    Retire("initial native epoch", disconnected: false);
                     await JoinReaderAsync().ConfigureAwait(false);
                     if (!_source.Requested) { await LeaveAsync("disabled", ct).ConfigureAwait(false); return false; }
                     var prepared = PrepareInput(); // exact positive descriptor + same physical container; no control open
@@ -204,12 +234,13 @@ public sealed class RogNativeMenuSource(KeyboardNativeMenuOptions options, IHidI
                     }
                     catch (Exception ex) when (ex is not OutOfMemoryException)
                     { LatchUnknown(ex, "unvalidated native ARM mutation reply"); throw; }
+                    Volatile.Write(ref _rearmIdle, false);
                     Volatile.Write(ref _source._present, 1);
                     _source.Emit(new NativeMenuContextBegun(_session, armed.Epoch, armed.Profile, 0));
                     _readerStop = new CancellationTokenSource();
                     _reader = ReadAsync(prepared, _readerStop.Token);
                 }
-                if (_sent is null || !pixels.AsSpan().SequenceEqual(_sent))
+                if (pixels is not null && (_sent is null || !pixels.AsSpan().SequenceEqual(_sent)))
                 {
                     using var upload = CancellationTokenSource.CreateLinkedTokenSource(ct);
                     upload.CancelAfter(TimeSpan.FromSeconds(8));
@@ -232,10 +263,13 @@ public sealed class RogNativeMenuSource(KeyboardNativeMenuOptions options, IHidI
                     if (!_source.Requested || _retired) { await LeaveAsync("admission closed after native renewal", ct).ConfigureAwait(false); return false; }
                     _sent = (byte[])pixels.Clone();
                 }
-                return Armed;
+                return ArtworkActive;
             }
             finally { Exit(); }
         }
+
+        private static bool ArtworkChanged(byte[]? latest, byte[]? sent) =>
+            latest is null ? sent is not null : sent is null || !latest.AsSpan().SequenceEqual(sent);
 
         /// <summary>
         /// Null when this RF route's pairing proof is current; wired routes carry none. Owner evidence keeps the initial
@@ -413,6 +447,7 @@ public sealed class RogNativeMenuSource(KeyboardNativeMenuOptions options, IHidI
 
         private async Task LeaveAsync(string reason, CancellationToken ct, RogNativeCapability? observed = null, bool noWire = false)
         {
+            Volatile.Write(ref _rearmIdle, false);
             Retire(reason, false);
             await JoinReaderAsync().ConfigureAwait(false);
             var old = _armed;

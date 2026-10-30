@@ -352,8 +352,8 @@ PNG 优化器只使用已支持的非交错 RGBA8 PNG，保持图片上限 **524
 | 键盘整区 RGB | 普通 `lighting` 角色，`ledCount: 1`，一个 RGB 值覆盖整键盘；通过共享键盘 owner 输出 | 已有整区场景输出路径。它不能表现独立 W/A/S/D 或逐键波浪；必须绑定当前发现的整区灯区 |
 | 键盘逐灯 RGB | 本机能力为 `Ready` 时，同一灯区暴露 N 个独立灯位，普通 RGB24 轨道写 N 个颜色 | 本机已启用 85 灯位表；USB 与 2.4G 各完成一轮 3 分钟彩虹实测，主人确认持续播放、空格正常。空格五颗分别寻址，不强制合色。键表来自当前设备固件表与实机抽测，不宣称每个地址都逐一目视验收；蓝牙未测 |
 | Harpe Edition20 鼠标 RGB | 普通 `lighting` 角色，`ledCount: 1`，对应 area0 整区点 | 已有跟随机箱及熄灯实测；没有已确认的鼠标独立灯珠地址，不能制作鼠标内部逐灯跑马 |
-| 键盘 OLED 状态页 / 原生菜单呈现 | 独立键盘显示服务；与场景包屏幕轨道分开 | 不等于场景素材播放器。2026-10-30 本机已更新应用，用户确认切档只显示一次 Logo、按压亮灭正常；场景名称更新独立于背景动画刷新间隔。主题包无需为此改动素材或共享时间轴，不把软件预览写成设备已显示 |
-| 键盘 OLED 场景动画 | 已有素材转换、共享时间轴选择及本机动画 API；默认关闭，受准入与显示 owner 限制 | 本次未核验当前场景动画开启 / 绑定及实机播放；保留原生菜单 / 拨杆时恢复键盘原动画的接口仍有固件阻塞。不能宣传任意包可直接投放 OLED 或高帧率播放 |
+| 键盘 OLED 空闲动画 / 拨杆提示 | 独立键盘显示服务；与场景包屏幕轨道分开 | 2026-10-30 本机应用更新后，用户确认原生光域档空闲播放设备原动画，拨杆操作显示临时提示后自动返回，开关灯正常；不需要追加刷固件。后台指标刷新不会主动弹出提示 |
+| 键盘 OLED 自制动画 | 已有素材转换、共享时间轴选择及本机动画 API；默认关闭 | 场景素材动画与设备内保存的原动画是不同路径；自制空闲素材选择／导入入口正在迭代，尚未据此宣称任意文件或原生高帧率播放已经实测 |
 
 这里的整表彩虹实测只证明当次 USB / 2.4G 播放与主人观察；不是所有按键事件、长期运行、跨屏光学同步、蓝牙或 Home Assistant 验收。主机写入、设备回执与实际可见画面分别记录。RF 颜色流允许后续帧持续覆盖更新，不因缺少一次颜色回执就终止整条连接；拨杆与设置指令仍走独立的请求应答。
 
@@ -440,7 +440,7 @@ python .\tools\scene-packages\pack_scene.py build .\my-scenes\peripheral-demo .\
 1. 用现有包屏幕轨道准备素材，先按本指南将其绑定到受支持的普通屏幕并应用。静态 PNG/JPEG、GIF，以及已通过相应 v3/v4 导入验证的 MP4 / 分段素材均走现有素材库与合成器；OLED 不另设一个媒体导入器。完整循环、缓存和准备时限仍须通过，不能因原屏幕播放正常就假定 OLED 已准备成功。
 2. 调用 `IKeyboardDisplayService.GetKeyboardDisplayAnimationAsync()`，从返回的 `Choices` 读取实际 `AssetId`、`TimelineId`。任意上传但尚未进入当前共享屏幕场景的素材，不构成可选项；不要手编标识。现有键盘设置界面也使用同一套接口。
 3. Host 动画准入已开启时，通过 `PreviewKeyboardDisplayAnimationAsync(new KeyboardDisplayAnimationPreviewRequestDto(choice.AssetId, choice.TimelineId, "contain", "luma-round-v1"))` 取得少量位置的实际打包灰度预览；准入关闭或准备任务占用时会明确拒绝。`PositionMs` 是素材内位置，`PackedBase64` 是上述 6656 字节帧；解包后检查文字、裁切和灰阶。预览不发送硬件。
-4. 只有 Host 准入、设备与显示 owner 路径具备条件时，才可显式调用 `SetKeyboardDisplayAnimationAsync(new KeyboardDisplayAnimationSettingsDto(true, choice.AssetId, choice.TimelineId, "contain", "luma-round-v1", status.MinimumIntervalMs))`。这是 C# 既有契约调用（`status` / `choice` 来自第 2 步），不是写入 `scene.json` 的 JSON 示例，也不绕过当前固件阻塞。偏好保存在本机 `keyboard-display-animation.json`；更新包或换绑定后需重新选择实际有效项。
+4. Host、设备和当前显示 owner 具备相应能力时，可显式调用 `SetKeyboardDisplayAnimationAsync(new KeyboardDisplayAnimationSettingsDto(true, choice.AssetId, choice.TimelineId, "contain", "luma-round-v1", status.MinimumIntervalMs))`。这是 C# 既有契约调用（`status` / `choice` 来自第 2 步），不是写入 `scene.json` 的 JSON 示例。偏好保存在本机 `keyboard-display-animation.json`；更新包或换绑定后需重新选择实际有效项。包时间轴不可用时保留绑定并回退设备空闲动画，不私自另起一个包时钟。
 
 程序按包共享时间选择当下 OLED 帧，不从第 0 帧另起时钟。原生菜单接管、且当前 owner 会话未声明原生画面支持时，通用动画被抑制，保留偏好而不抢写；若固件已声明该能力，现有代码可在入场 Logo 后选择已单独开启、绑定的动画。Host 自绘 Logo 默认约 1.2 秒；设备已自行显示入口 Logo 时，本机 `KeyboardDisplay.DeviceShowsNativeEntryLogo: true` 会跳过第二次 Host Logo 上传，直接衔接后续画面。这只是本机呈现设置，不是包字段，也不能赋予设备原本不存在的播放能力。状态页关闭、素材失效、共享时间轴阻止或上传超时也会导致不同的停止 / 回退状态，须读取返回的 `Admitted`、`State`、`Detail`，不能只看请求中的 `Enabled`。恢复键盘原动画是另一条路径，不与自制场景动画混称。
 

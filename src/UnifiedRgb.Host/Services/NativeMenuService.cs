@@ -72,7 +72,8 @@ public sealed class UnavailableNativeMenuSource : INativeMenuSource
 /// unanswered), never resent. Fresh readbacks of the latest press go to the keyboard display's own artwork. Validated Up/Down
 /// steps (<see cref="NativeMenuSceneBrowse"/>) go only to the optional <see cref="KeyboardSceneCycleBridge"/>, under the same
 /// context, preference, handoff, sequence, neutral and freshness rules; the center path is unchanged and the bridge only hears of
-/// its admissions and outcomes.
+/// its admissions and outcomes. Only these valid actions notify the keyboard display's transient status popup (an accepted press
+/// until its outcome, a queued step); nothing else does.
 /// </summary>
 public sealed class NativeMenuService : IHostedService, IAsyncDisposable, INativeMenuService
 {
@@ -326,6 +327,8 @@ public sealed class NativeMenuService : IHostedService, IAsyncDisposable, INativ
         Record($"{press} accepted");
         // Notification only: a scene selection that was not written yet yields to this center action (nothing is sent here).
         _sceneCycle?.CenterAccepted(ticket);
+        // Notification only: a valid center action opens the keyboard's transient status popup until its outcome, plus a hold.
+        _display?.NativeInteractionBegan(awaitsCompletion: true);
         _observers.RemoveAll(t => t.IsCompleted);
         _observers.Add(Task.Run(() => ObserveAsync(outcome, armed.Generation, ticket)));
     }
@@ -363,7 +366,10 @@ public sealed class NativeMenuService : IHostedService, IAsyncDisposable, INativ
         if (browse.Timestamp > now + NativeMenuCaseActionCoordinator.MaxClockSkew) { Record($"{step} rejected: future timestamp"); return; }
         if (now - browse.Timestamp > NativeMenuCaseActionCoordinator.MaxIntentAge) { Record($"{step} rejected: expired"); return; }
         if (_sceneCycle is null) { Record($"{step} ignored: no scene cycle"); return; }
-        Record(_sceneCycle.Browse(browse.Move) ? $"{step} accepted" : $"{step} dropped: scene cycle busy or stopped");
+        var queued = _sceneCycle.Browse(browse.Move);
+        Record(queued ? $"{step} accepted" : $"{step} dropped: scene cycle busy or stopped");
+        // Notification only: a valid browse step briefly pops up the status and the scene caption (kept while it is shown).
+        if (queued) _display?.NativeInteractionBegan(awaitsCompletion: false);
     }
 
     // Under _sync. Arming acts on nothing; only a later fresh press can.
@@ -416,12 +422,19 @@ public sealed class NativeMenuService : IHostedService, IAsyncDisposable, INativ
         }
         // Notification only, after the center outcome: a held scene selection is applied by the bridge only after a restore.
         _sceneCycle?.CenterCompleted(ticket, outcome, latest);
-        if (!present || _display is null) return;
+        if (!present || _display is null) { _display?.NativeInteractionCompleted(); return; }
         bool shown;
         try { shown = _display.PresentCaseObservation(outcome.Readback!, () => { lock (_sync) return Latest(generation, ticket); }); }
 #pragma warning disable CA1031 // Artwork is feedback only; it never changes the outcome.
-        catch (Exception ex) when (ex is not OutOfMemoryException) { lock (_sync) Record($"artwork #{sequence} failed: {ex.GetType().Name}"); return; }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            _display.NativeInteractionCompleted();
+            lock (_sync) Record($"artwork #{sequence} failed: {ex.GetType().Name}");
+            return;
+        }
 #pragma warning restore CA1031
+        // The readback is in the artwork before the popup's brief hold starts.
+        _display.NativeInteractionCompleted();
         lock (_sync) Record(shown ? $"artwork #{sequence}: {outcome.Readback!.State}" : $"artwork #{sequence} refused");
     }
 

@@ -30,24 +30,34 @@ internal enum KeyboardNativeArtwork
     None = 0,
     /// <summary>The bounded entry logo.</summary>
     Logo = 1,
-    /// <summary>Status page ON: the case status (or the separately saved, default-off authored frame the selector picks).</summary>
+    /// <summary>Ordinary page: the case status (or the separately saved, default-off authored frame the selector picks).</summary>
     StatusPage = 2,
-    /// <summary>Status page OFF asks for the keyboard's stock animation. No verified in-epoch request shows it with the lever
-    /// kept, the existing OFF output is retained (never the status page, an authored frame or black); reported, never claimed.</summary>
-    StockOriginalUnavailable = 3,
+    /// <summary>Native idle: no Host artwork, so the keyboard's stored original animation is requested (control stays armed; the
+    /// fresh ARM clears the overlay and the session restores the stored selector). Requested, never optically confirmed.</summary>
+    DeviceAnimation = 3,
+    /// <summary>Native idle: the owner's prepared custom animation frame at the current shared-timeline position.</summary>
+    CustomAnimation = 4,
+    /// <summary>The transient status/scene-name popup of a valid lever action.</summary>
+    InteractionStatus = 5,
 }
 
 /// <summary>
-/// Pure presentation of one owner session whose firmware declared native presentation. A true native-mode entry (the first
-/// artwork request after session start or after the native tick last reported not armed) shows the Guangyu logo first, for
-/// <see cref="EntryLogoMs"/> from its acknowledged upload; nothing else is offered before it. Afterwards the status-page
-/// preference decides: ON presents the bytes <see cref="KeyboardDisplayAnimation.Select"/> picks (the case status unless an
-/// authored animation is separately enabled and playable), passed through the optional scene overlay; OFF would be the
-/// keyboard's stock animation, which has no verified in-epoch request, so the existing post-logo selection is retained and
-/// <see cref="KeyboardNativeArtwork.StockOriginalUnavailable"/> is reported. A preference change inside an entry only re-selects
-/// artwork in the same epoch. Repeated mode9 ticks continue the same entry. Native control ownership is a separate input: the
-/// native tick decides it and this only answers which bytes it asks for. Owner actor only (status readers use the volatile
-/// reports); the actor's artwork comparison and lease wake are its clock, so there is no timer or sender here.
+/// Pure presentation of one owner session. <see cref="Latest"/> serves the ordinary (non-native) display unchanged: entry logo
+/// for <see cref="EntryLogoMs"/> from its acknowledged upload, then the bytes <see cref="KeyboardDisplayAnimation.Select"/> picks
+/// through the optional scene overlay.
+/// <para>
+/// <see cref="Native"/> serves an owner whose firmware declared native presentation. A true native-mode entry (the first request
+/// after session start or after the native tick last reported control not armed) shows the Host logo once when one is rendered
+/// (none when the keyboard draws its own entry logo). Then idle is either the custom animation (the existing animation
+/// preference is on and its prepared frames play on the shared timeline) or, otherwise, no Host artwork at all: the keyboard's
+/// stored original animation. Only a valid lever action (<see cref="InteractionBegan"/>) overlays the status page with the scene
+/// caption, while the action is pending plus <see cref="InteractionHoldMs"/>, bounded by <see cref="InteractionMaximumMs"/>;
+/// afterwards custom idle resumes at the current shared-timeline position. Background status pixels, ARM/CAP, RGB frames and
+/// ordinary rendering never open or prolong it. The case status-page preference does not choose native idle.
+/// </para>
+/// Native control ownership is a separate input: the native tick decides it and this only answers which bytes it asks for. Owner
+/// actor only, except the interaction notifications and the volatile status reports; the actor's artwork comparison and lease
+/// wake are its clock, so there is no timer or sender here.
 /// </summary>
 internal sealed class KeyboardNativePresentation(KeyboardDisplayAnimation animation, byte[]? logo, TimeProvider time,
     Func<byte[], byte[]>? overlay = null, Action<byte[]>? frameAcknowledged = null, Func<long>? overlayRevision = null)
@@ -55,13 +65,23 @@ internal sealed class KeyboardNativePresentation(KeyboardDisplayAnimation animat
     /// <summary>Nominal entry overlay; it ends at this bound after the logo's acknowledged upload, never later.</summary>
     internal const int EntryLogoMs = 1200;
 
-    private bool _entered;
+    /// <summary>Brief hold of the native interaction popup after a valid action began or its pending outcome arrived.</summary>
+    internal const int InteractionHoldMs = 2500;
+
+    /// <summary>The popup never outlasts this bound after the latest valid action, even when an outcome never arrives.</summary>
+    internal const int InteractionMaximumMs = 15_000;
+
+    private readonly object _interaction = new();
+    private long? _interactionAt; // guarded by _interaction, like the two below
+    private long _interactionHold;
+    private int _pendingInteractions;
+    private bool _entered, _resumeIdle;
     private long? _logoUntil;
     private byte[]? _chosen, _chosenBase, _shown, _shownBase, _overlayBase, _overlaid;
     private KeyboardNativeArtwork _chosenKind;
     private long _overlayNext;
     private long _overlaidRevision;
-    private int _shownKind, _reported;
+    private int _shownKind, _idle, _reported;
     private string? _overlayProblem;
 
     /// <summary>Inside one native-mode entry: the legacy selector must not touch the animation's held frame meanwhile.</summary>
@@ -72,10 +92,113 @@ internal sealed class KeyboardNativePresentation(KeyboardDisplayAnimation animat
     /// <summary>What the current entry last had acknowledged (None outside an entry). Any thread.</summary>
     public KeyboardNativeArtwork Shown => (KeyboardNativeArtwork)Volatile.Read(ref _shownKind);
 
+    /// <summary>The latest native idle selection: None before one, <see cref="KeyboardNativeArtwork.CustomAnimation"/>, or
+    /// <see cref="KeyboardNativeArtwork.DeviceAnimation"/> (custom animation off or not playable now). Any thread.</summary>
+    public KeyboardNativeArtwork IdleChoice => (KeyboardNativeArtwork)Volatile.Read(ref _idle);
+
     /// <summary>Why the scene overlay was last unavailable (the ordinary frame was presented instead), or null. Any thread.</summary>
     public string? OverlayProblem => Volatile.Read(ref _overlayProblem);
 
-    /// <summary>The native artwork for now (native tick and lease wake). Without a rendered logo the overlay is skipped.</summary>
+    /// <summary>
+    /// The declared native artwork for now (native tick and lease wake), or null for no Host artwork: the keyboard's stored
+    /// original animation. Order: the entry logo, the popup of a valid lever action, the custom animation, else null. The popup
+    /// is the status page through the scene overlay; it neither selects nor acknowledges an animation frame, and the shared
+    /// timeline keeps its own position meanwhile. After the logo or a popup the custom animation restarts its selection at the
+    /// current shared-timeline position (never a held or zero frame). A custom animation that is not playable now (off, not
+    /// admitted, preparing, unbound, blocked timeline, tripped breaker) yields null, never the status page or a held frame.
+    /// </summary>
+    public byte[]? Native(byte[] status, bool newEntry = false)
+    {
+        // As in Latest: a fresh actor context discards the previous entry even without a separate not-armed tick.
+        if (newEntry) Stepped(false);
+        if (!_entered) { _entered = true; _logoUntil = null; _resumeIdle = true; }
+        var now = time.GetTimestamp();
+        if (logo is not null && (_logoUntil is not { } until || now < until))
+            return Choose(logo, logo, KeyboardNativeArtwork.Logo);
+        if (InteractionOpen(now))
+        {
+            _resumeIdle = true;
+            return Choose(Overlay(status), status, KeyboardNativeArtwork.InteractionStatus);
+        }
+        if (_resumeIdle)
+        {
+            animation.EndSession(); // the next selection is the current shared position; no frame held from before
+            _resumeIdle = false;
+        }
+        // The custom idle follows the animation preference alone, independently of the case status-page preference.
+        var selected = animation.Select(status, pageEnabled: true, nativeOwnsDisplay: false);
+        if (!ReferenceEquals(selected, status))
+        {
+            Volatile.Write(ref _idle, (int)KeyboardNativeArtwork.CustomAnimation);
+            return Choose(selected, selected, KeyboardNativeArtwork.CustomAnimation);
+        }
+        Volatile.Write(ref _idle, (int)KeyboardNativeArtwork.DeviceAnimation);
+        _chosen = _chosenBase = null;
+        _chosenKind = KeyboardNativeArtwork.DeviceAnimation;
+        return null;
+    }
+
+    /// <summary>After each native tick of a declared presentation. Control neither armed nor re-arming for device idle ends the
+    /// entry. Active Host artwork was the acknowledged upload of the chosen bytes (see <see cref="Stepped"/>); without it the
+    /// keyboard's stored animation was requested. Returns whether Host artwork is active.</summary>
+    public bool SteppedNative(bool controlArmed, bool artworkActive)
+    {
+        if (!controlArmed) return Stepped(false);
+        if (artworkActive)
+        {
+            Acknowledge();
+            return true;
+        }
+        if (_chosen is null)
+        {
+            _shown = _shownBase = null;
+            Volatile.Write(ref _shownKind, (int)KeyboardNativeArtwork.DeviceAnimation);
+        }
+        return false;
+    }
+
+    /// <summary>A valid physical lever action began (centre press accepted or browse step queued). With
+    /// <paramref name="awaitsCompletion"/> the popup stays open until <see cref="InteractionCompleted"/>; either way it then
+    /// holds <see cref="InteractionHoldMs"/>, within <see cref="InteractionMaximumMs"/> of the latest action. Any thread.</summary>
+    public void InteractionBegan(bool awaitsCompletion)
+    {
+        var now = time.GetTimestamp();
+        lock (_interaction)
+        {
+            if (_interactionAt is not { } at || now - at >= Ticks(InteractionMaximumMs)) _pendingInteractions = 0;
+            _interactionAt = now;
+            if (awaitsCompletion) _pendingInteractions++;
+            _interactionHold = Math.Max(_interactionHold, now + Ticks(InteractionHoldMs));
+        }
+    }
+
+    /// <summary>The outcome of a pending valid action arrived. Without a pending action it neither opens nor prolongs. Any thread.</summary>
+    public void InteractionCompleted()
+    {
+        var now = time.GetTimestamp();
+        lock (_interaction)
+        {
+            if (_pendingInteractions == 0) return;
+            _pendingInteractions--;
+            _interactionHold = Math.Max(_interactionHold, now + Ticks(InteractionHoldMs));
+        }
+    }
+
+    private bool InteractionOpen(long now)
+    {
+        lock (_interaction)
+        {
+            if (_interactionAt is not { } at || now - at >= Ticks(InteractionMaximumMs)) return false;
+            if (_pendingInteractions > 0 || now < _interactionHold) return true;
+        }
+        // The scene caption of that action (loading, then its result) may keep the popup within the bound; it never opens one.
+        return overlayRevision?.Invoke() is { } revision && revision != 0;
+    }
+
+    private long Ticks(int ms) => ms * time.TimestampFrequency / 1000;
+
+    /// <summary>The ordinary (non-native) display artwork for now (upload check and lease wake). Without a rendered logo the
+    /// overlay is skipped.</summary>
     public byte[] Latest(byte[] status, bool pageEnabled, bool newEntry = false)
     {
         // The actor chooses bytes before ARM. A fresh actor context must discard the previous entry even when no separate
@@ -98,6 +221,8 @@ internal sealed class KeyboardNativePresentation(KeyboardDisplayAnimation animat
             _entered = false; _logoUntil = null;
             _chosen = _chosenBase = _shown = _shownBase = _overlayBase = _overlaid = null;
             Volatile.Write(ref _shownKind, (int)KeyboardNativeArtwork.None);
+            Volatile.Write(ref _idle, (int)KeyboardNativeArtwork.None);
+            lock (_interaction) { _interactionAt = null; _interactionHold = 0; _pendingInteractions = 0; }
             return false;
         }
         Acknowledge();
@@ -105,7 +230,7 @@ internal sealed class KeyboardNativePresentation(KeyboardDisplayAnimation animat
     }
 
     /// <summary>The ordinary owner's completed upload uses the same entry bound without a native ARM or firmware capability.
-    /// Returns whether the acknowledged image was an authored animation frame; the logo never counts as one.</summary>
+    /// Returns whether the acknowledged image was an authored animation frame; neither the logo nor a popup counts as one.</summary>
     public bool Acknowledge()
     {
         if (_chosen is not { } chosen) return false;
@@ -113,7 +238,8 @@ internal sealed class KeyboardNativePresentation(KeyboardDisplayAnimation animat
         if (_shown is null || !chosen.AsSpan().SequenceEqual(_shown))
         {
             if (ReferenceEquals(_chosenBase, logo)) _logoUntil ??= time.GetTimestamp() + EntryLogoMs * time.TimestampFrequency / 1000;
-            else if (!ReferenceEquals(_chosenBase, _shownBase)) animated = animation.Uploaded();
+            else if (_chosenKind != KeyboardNativeArtwork.InteractionStatus && !ReferenceEquals(_chosenBase, _shownBase))
+                animated = animation.Uploaded();
         }
         _shown = chosen; _shownBase = _chosenBase;
         Volatile.Write(ref _shownKind, (int)_chosenKind);
@@ -121,10 +247,10 @@ internal sealed class KeyboardNativePresentation(KeyboardDisplayAnimation animat
         return animated;
     }
 
-    /// <summary>True once per change of what the owner status must say (acknowledged artwork kind, overlay availability).</summary>
+    /// <summary>True once per change of what the owner status must say (acknowledged artwork kind, idle choice, overlay availability).</summary>
     public bool TakeChanged()
     {
-        var report = Volatile.Read(ref _shownKind) * 2 + (Volatile.Read(ref _overlayProblem) is null ? 0 : 1);
+        var report = Volatile.Read(ref _shownKind) * 16 + Volatile.Read(ref _idle) * 2 + (Volatile.Read(ref _overlayProblem) is null ? 0 : 1);
         if (report == _reported) return false;
         _reported = report;
         return true;

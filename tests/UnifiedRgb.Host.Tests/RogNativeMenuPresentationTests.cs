@@ -48,15 +48,27 @@ public sealed partial class RogNativeMenuSourceTests
             mode: 7, animation: false, deviceShowsLogo: true);
         await rig.Owner.StartAsync(default);
         await rig.RunningNative(); await rig.Declared();
+        var restores = rig.Control.NativeRestores;
         rig.Control.Mode = RogNativeMenuCodec.NativeMode;
-        await Until(() => rig.Control.ImageBegins == 1 && rig.Shows(rig.Owner.ArtworkPixels.ToArray()));
-        rig.Shows(rig.Logo).Should().BeFalse("the physical entry already displayed the device's Logo");
-        rig.Input.Send(Notice(1, 0, 3)); rig.Input.Send(Notice(2, 2, 1));
-        await Until(() => rig.Events.OfType<NativeMenuPress>().Count() == 1);
+        // Control-only device idle: the device's own Logo and stored animation; ARM keeps the lever without any Host image.
+        await Until(() => rig.Control.Arms == 1 && rig.Source!.IsPresent);
+        await rig.NextTick(); await rig.NextTick();
+        rig.Control.ImageBegins.Should().Be(0, "neither a second Logo nor a status/black frame is uploaded by the Host");
+        rig.Control.RejectedImages.Should().Be(0);
+        rig.Events.OfType<NativeMenuContextBegun>().Should().ContainSingle();
+        // Genuine-neutral scope: a press before the context's fresh neutral is no action; neutral, then a press, is one.
+        rig.Input.Send(Notice(1, 2, 1)); rig.Input.Send(Notice(2, 0, 3)); rig.Input.Send(Notice(3, 2, 1));
+        await Until(() => rig.Events.OfType<NativeMenuPress>().Any());
+        var press = rig.Events.OfType<NativeMenuPress>().Should().ContainSingle().Which.Intent;
+        press.Sequence.Should().Be(3); press.NeutralArmSequence.Should().Be(2); press.Action.Should().Be(DesiredAction.Toggle);
+        press.ContextGeneration.Should().Be(rig.Control.Epoch);
         rig.Clock.Advance(TimeSpan.FromSeconds(3));
-        await rig.NextTick();
-        rig.Control.ImageBegins.Should().Be(1, "no deferred second Logo is queued");
-        rig.Control.Arms.Should().Be(1);
+        await rig.NextTick(); await rig.NextTick();
+        rig.Control.ImageBegins.Should().Be(0, "no deferred Logo or artwork is queued");
+        rig.Control.Arms.Should().Be(1); rig.Control.Disarms.Should().Be(0);
+        rig.Control.NativeRestores.Should().Be(restores, "no Host artwork ended, so no artwork-to-idle restore ran");
+        rig.Events.OfType<NativeMenuPress>().Should().ContainSingle();
+        rig.Timeline.Reads.Should().Be(0);
     }
 
     [Fact]
@@ -131,14 +143,32 @@ public sealed partial class RogNativeMenuSourceTests
         await rig.NextTick();
         var restores = rig.Control.NativeRestores;
         rig.Clock.Advance(TimeSpan.FromMilliseconds(KeyboardNativePresentation.EntryLogoMs));
-        await Until(() => rig.Control.ImageBegins == 2 && rig.Shows(rig.Owner.ArtworkPixels.ToArray()));
+        // Without authored content the Logo now expires into control-only device idle: the Logo context is retired, its reader
+        // joined and DISARMed, the existing artwork-to-idle restore runs, then one fresh context is ARMed without Host artwork.
+        await Until(() => rig.Control.Disarms == 1 && rig.Control.Arms == 2 && rig.Control.NativeRestores > restores);
+        rig.Events.OfType<NativeMenuContextEnded>().Should().ContainSingle(e => !e.Disconnected && e.Reason.Contains("device idle", StringComparison.Ordinal));
+        rig.Events.OfType<NativeMenuContextBegun>().Should().HaveCount(2);
+        rig.Input.Opens.Should().Be(2); rig.Input.LiveHandles.Should().Be(1, "only the fresh context's reader is open");
+        rig.Control.ArmWhileInputReading.Should().BeFalse();
         rig.Timeline.Reads.Should().Be(0);
         (await rig.Owner.GetKeyboardDisplayAnimationAsync()).State.Should().Be(KeyboardDisplayAnimationStates.Off);
+        var idleRestores = rig.Control.NativeRestores;
         rig.Clock.Advance(TimeSpan.FromSeconds(10));
         await Task.Delay(300);
-        rig.Control.ImageBegins.Should().Be(2, "the status artwork stays; no logo comes back without a new entry");
-        rig.Control.Disarms.Should().Be(0);
-        rig.Control.NativeRestores.Should().Be(restores, "selecting the base presentation is not a native restore");
+        rig.Control.ImageBegins.Should().Be(1, "no status page, held Logo or black frame; no Logo comes back without a new entry");
+        rig.Control.Arms.Should().Be(2); rig.Control.Disarms.Should().Be(1);
+        rig.Control.NativeRestores.Should().Be(idleRestores, "one artwork-to-idle restore, no restore or re-ARM loop");
+
+        // Fresh input in the fresh scope only after its genuine neutral; the artwork stays inactive.
+        var epoch = rig.Control.Epoch;
+        rig.Input.Send(ScopedNotice(1, 2, 1, epoch, Cookie + 1));
+        rig.Input.Send(ScopedNotice(2, 0, 3, epoch, Cookie + 1));
+        rig.Input.Send(ScopedNotice(3, 2, 1, epoch, Cookie + 1));
+        await Until(() => rig.Events.OfType<NativeMenuPress>().Any());
+        var press = rig.Events.OfType<NativeMenuPress>().Should().ContainSingle().Which.Intent;
+        press.ContextGeneration.Should().Be(epoch); press.Sequence.Should().Be(3); press.NeutralArmSequence.Should().Be(2);
+        await rig.NextTick();
+        rig.Control.ImageBegins.Should().Be(1); rig.Control.Arms.Should().Be(2);
     }
 
     [Fact]

@@ -51,7 +51,7 @@ public sealed class KeyboardDisplayService : BackgroundService, IKeyboardDisplay
         ? "键盘屏幕由已安装的原生光域菜单策略管理；状态屏偏好已保留；" + NativePresentationNote()
         : "键盘原动画已恢复；") + $"native-brightness-policy={_lastRestoreOrigin}";
 
-    // nativeFrameOverlay: optional pure scene overlay for post-logo native artwork only (never the logo). It gets a copy of the
+    // nativeFrameOverlay: optional pure scene overlay for the native interaction popup only (never the logo or idle). It gets a copy of the
     // selected packed frame and returns a packed frame of the same size; no I/O. Throwing or invalid answers keep the ordinary
     // frame and native control and are reported as unavailable.
     public KeyboardDisplayService(UnifiedRgbOptions options, IRgbService rgb, IScreenService screens,
@@ -96,43 +96,84 @@ public sealed class KeyboardDisplayService : BackgroundService, IKeyboardDisplay
     // Installed-native ownership suppresses the animation unless THIS owner session's firmware declared native presentation.
     private bool AnimationSuppressed => NativeOwnsDisplay && Volatile.Read(ref _presentation) is null;
 
+    // A declared native presentation chooses its idle from the animation preference alone; the case status-page preference keeps
+    // its ordinary meaning for non-native output.
+    private bool AnimationPageEnabled => _enabled || (NativeOwnsDisplay && Volatile.Read(ref _presentation) is not null);
+
     public async Task<KeyboardDisplayAnimationStatusDto> GetKeyboardDisplayAnimationAsync(CancellationToken ct = default)
     {
         await _animation.RefreshAsync(_screens, ct).ConfigureAwait(false);
-        return AnimationStatus(_animation.Status(_enabled, AnimationSuppressed));
+        return AnimationStatus(_animation.Status(AnimationPageEnabled, AnimationSuppressed));
     }
 
     public async Task<KeyboardDisplayAnimationStatusDto> SetKeyboardDisplayAnimationAsync(KeyboardDisplayAnimationSettingsDto settings, CancellationToken ct = default) =>
-        AnimationStatus(await _animation.SaveAsync(settings, _screens, _enabled, AnimationSuppressed, ct).ConfigureAwait(false));
+        AnimationStatus(await _animation.SaveAsync(settings, _screens, AnimationPageEnabled, AnimationSuppressed, ct).ConfigureAwait(false));
 
     private KeyboardDisplayAnimationStatusDto AnimationStatus(KeyboardDisplayAnimationStatusDto status)
     {
         if (!NativeOwnsDisplay || Volatile.Read(ref _presentation) is null) return status;
-        // Page OFF under a declared native presentation is not the legacy stock animation: the legacy wording must not claim it.
-        var detail = _enabled ? status.Detail : status.State switch
+        // Under a declared native presentation the existing animation preference chooses the idle: ON = the custom animation,
+        // OFF = the keyboard's stored original animation. Legacy "status page" fallback wording is clarified, never claimed.
+        var detail = status.State switch
         {
-            KeyboardDisplayAnimationStates.Off => "键盘动画未开启",
-            KeyboardDisplayAnimationStates.PageOff => "键盘状态屏偏好为关，不发送动画画面",
-            KeyboardDisplayAnimationStates.NotAdmitted => "主机未准许键盘动画（" + _animation.AdmissionProblem + "）；已保存的偏好保持不变",
-            _ => status.Detail,
+            KeyboardDisplayAnimationStates.Off => "自定义键盘动画未开启：原生光域待机时请求键盘自带原动画",
+            KeyboardDisplayAnimationStates.NotAdmitted => "主机未准许键盘动画（" + _animation.AdmissionProblem
+                + "）；已保存的偏好保持不变；原生光域待机时请求键盘自带原动画",
+            KeyboardDisplayAnimationStates.Playing => status.Detail,
+            _ => status.Detail + "；原生光域下自定义动画未播放时，改为请求键盘自带原动画（不是状态屏）",
         };
         return status with { Detail = detail + "；固件已声明原生光域画面支持：" + NativePresentationNote() + "拨杆仍由原生菜单控制" };
     }
 
-    /// <summary>What the running declared presentation does, as the owner status must say it: each true native entry shows the
-    /// logo first; then status page ON shows the case status, OFF asks for the stock animation, which has no verified in-epoch
-    /// request with the lever kept and is reported as unavailable (the logo is held, never presented as the stock animation).</summary>
+    /// <summary>What the running declared presentation does, as the owner status must say it: the entry logo once, then the idle
+    /// chosen by the animation preference (custom animation, or the keyboard's stored original animation, also whenever the
+    /// custom animation is not playable, with its concrete reason), and a brief status popup only after a valid lever action. The
+    /// stored animation is only requested through the existing restore; its reload or visibility is never claimed.</summary>
     private string NativePresentationNote()
     {
         if (Volatile.Read(ref _presentation) is not { } presentation) return string.Empty;
         var note = _options.KeyboardDisplay.DeviceShowsNativeEntryLogo
-            ? "进入光域时由键盘显示一次标志，程序直接衔接所选画面；"
-            : presentation.LogoAvailable ? "每次进入原生光域模式先显示光域标志约 1.2 秒，" : "光域标志渲染失败，进入原生光域模式直接显示所选画面，";
-        note += _enabled ? "随后显示机箱状态（或已单独开启并绑定的键盘动画）；"
-            : "状态屏偏好为关：原生模式下保留拨杆的键盘原动画尚无已验证接口，" + "沿用更新前的关闭页面输出" + "（不是原动画）；";
-        if (presentation.OverlayProblem is { } problem) note += problem + "，场景叠加暂不可用，显示普通画面；";
+            ? "进入原生光域时由键盘自行显示一次标志；"
+            : presentation.LogoAvailable ? "进入原生光域时主机显示一次光域标志约 1.2 秒；"
+            : "光域标志渲染失败，进入原生光域后直接进入待机；";
+        var custom = _animation.Status(pageEnabled: true, nativeOwnsDisplay: false);
+        note += custom.State switch
+        {
+            KeyboardDisplayAnimationStates.Off => "待机：键盘动画偏好为关，请求键盘自带原动画；",
+            KeyboardDisplayAnimationStates.NotAdmitted => "待机：主机未准许键盘动画，请求键盘自带原动画；",
+            KeyboardDisplayAnimationStates.SettingsError => "待机：键盘动画设置无法读取，请求键盘自带原动画；",
+            _ when presentation.IdleChoice == KeyboardNativeArtwork.DeviceAnimation =>
+                "待机：自定义键盘动画当前无法播放（" + CustomIdleReason(custom.State) + "），改为请求键盘自带原动画；",
+            _ => "待机：按共享场景时间轴的当前位置播放自定义键盘动画；",
+        };
+        note += "只有有效的拨杆上下拨或按下操作会在操作期间及之后短暂显示状态或场景名称，随后恢复待机；状态屏偏好不改变原生待机；"
+            + "键盘原动画仅通过现有恢复请求申请，主机不能确认其已重新加载或可见，以键盘实际显示为准；";
+        if (presentation.OverlayProblem is { } problem) note += problem + "，场景名称叠加暂不可用，显示普通状态画面；";
         return note;
     }
+
+    // The concrete reason a custom idle is not playable now; the state code stays as the diagnostic value.
+    private static string CustomIdleReason(string state) => state switch
+    {
+        KeyboardDisplayAnimationStates.Preparing => "正在后台准备画面",
+        KeyboardDisplayAnimationStates.Unavailable => "所选素材不在当前场景的共享时间轴上",
+        KeyboardDisplayAnimationStates.Error => "画面准备失败",
+        KeyboardDisplayAnimationStates.Fallback => "共享时间轴不可用",
+        KeyboardDisplayAnimationStates.BreakerTripped => "动画上传超出预算已停止",
+        KeyboardDisplayAnimationStates.Ready => "已准备，等待更新间隔",
+        _ => "当前不可播放",
+    } + "，状态 " + state;
+
+    /// <summary>
+    /// A valid physical lever action admitted by the native-menu owner (a centre press accepted, or a browse step queued). Under a
+    /// declared native presentation it opens the transient status/scene-name popup; <paramref name="awaitsCompletion"/> keeps it
+    /// open until <see cref="NativeInteractionCompleted"/>, then a brief hold. Notification only: no I/O, never blocks; background
+    /// refreshes, ARM/CAP, RGB frames and ordinary rendering never call it. Without a running declared presentation it is ignored.
+    /// </summary>
+    internal void NativeInteractionBegan(bool awaitsCompletion) => Volatile.Read(ref _presentation)?.InteractionBegan(awaitsCompletion);
+
+    /// <summary>The pending valid action's outcome (and its readback artwork, if any) arrived; the popup's brief hold starts now.</summary>
+    internal void NativeInteractionCompleted() => Volatile.Read(ref _presentation)?.InteractionCompleted();
 
     public Task<KeyboardDisplayAnimationPreviewDto> PreviewKeyboardDisplayAnimationAsync(KeyboardDisplayAnimationPreviewRequestDto request, CancellationToken ct = default) =>
         _animation.PreviewAsync(request, _screens, ct);
@@ -479,7 +520,7 @@ public sealed class KeyboardDisplayService : BackgroundService, IKeyboardDisplay
             // The animation selector is the display's only cadence gate. Without declared native presentation the native ticks keep
             // reading the status pixels directly; with it, a native entry asks the presentation, and the legacy selector then
             // leaves the animation's held frame alone. Installed ownership keeps display false, so the legacy path never uploads
-            // and the presentation's logo is the first image of every native entry (ARM, then logo, then the page's artwork).
+            // and the presentation's logo is the first image of every native entry (ARM, then logo, then the chosen idle).
             await session.RunAsync(() => ordinaryPresentation is not null && LegacyDisplayEnabled
                     ? ordinaryPresentation.Latest(Volatile.Read(ref _pixels), pageEnabled: true)
                     : presentation?.Entered == true ? Volatile.Read(ref _pixels)
@@ -501,11 +542,15 @@ public sealed class KeyboardDisplayService : BackgroundService, IKeyboardDisplay
                     ? token => nativeMenu.StepAsync(() => Volatile.Read(ref _pixels), token)
                     : async token =>
                     {
-                        var armed = presentation.Stepped(await nativeMenu.StepAsync(
-                            () => presentation.Latest(Volatile.Read(ref _pixels), _enabled, newEntry: !nativeMenu.Armed), token).ConfigureAwait(false));
+                        // Control and Host artwork are separate: a null answer keeps the lever armed while the keyboard shows its
+                        // own stored animation; the device-idle re-ARM gap continues the same entry (no second logo). The return
+                        // stays artwork-active, so the session's existing artwork-to-idle restore runs when artwork ends.
+                        var artwork = await nativeMenu.StepAsync(() => presentation.Native(Volatile.Read(ref _pixels),
+                            newEntry: !nativeMenu.ControlArmed && !nativeMenu.RearmingForDeviceIdle), token).ConfigureAwait(false);
+                        presentation.SteppedNative(nativeMenu.ControlArmed || nativeMenu.RearmingForDeviceIdle, artwork);
                         if (presentation.TakeChanged() && Volatile.Read(ref _status) is { LastError: null } current)
                             Publish(current.State, InactiveDisplayDetail, session);
-                        return armed;
+                        return artwork;
                     },
                 nativeWake: nativeMenu is null ? null : () => nativeMenu.HasChanges,
                 nativeStopped: nativeMenu is null ? null : token => nativeMenu.StopAsync(token)).ConfigureAwait(false);
