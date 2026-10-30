@@ -29,7 +29,7 @@
    <StackPanel DataContext="{Binding KeyboardAnimation}">
     <TextBlock Text="键盘屏幕动画" FontWeight="SemiBold"/>
     <TextBlock Text="{x:Static w:KeyboardAnimationViewModel.Scope}" Style="{StaticResource Caption}" TextWrapping="Wrap"/>
-    <TextBlock Text="{x:Static w:KeyboardAnimationViewModel.NativeNote}" Style="{StaticResource Caption}" TextWrapping="Wrap"/>
+    <TextBlock Text="动画与场景灯光共用同一条共享时间轴，需单独开启（默认关闭）；不可用时的原因以后台给出的详情为准。" Style="{StaticResource Caption}" TextWrapping="Wrap"/>
     <TextBlock Text="{Binding StateTitle}" Margin="0,6,0,0" TextWrapping="Wrap"/>
     <TextBlock Text="{Binding StatusLine}" Style="{StaticResource Caption}" TextWrapping="Wrap"/>
     <TextBlock Text="{Binding Detail}" Style="{StaticResource Caption}" TextWrapping="Wrap"/>

@@ -37,6 +37,7 @@
   <ItemGroup>
     <Content Include="../../design/SCENE-PACKAGE-DEVELOPER-GUIDE.zh-CN.md" Link="Docs/ScenePackages/场景包开发规范.md" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="../../tools/scene-packages/pack_scene.py" Link="Docs/ScenePackages/pack_scene.py" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="../../tools/scene-packages/make_peripheral_led_demo.py" Link="Docs/ScenePackages/make_peripheral_led_demo.py" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="../../assets/scenes/examples/aurora-starter-v1.zip" Link="Docs/ScenePackages/aurora-starter-v1.zip" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="../../assets/scenes/examples/aurora-starter/**/*" Link="Docs/ScenePackages/aurora-starter/%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>

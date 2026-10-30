@@ -84,11 +84,13 @@ public sealed class RogWiredOledTests
     }
 
     [Fact]
-    public async Task Firmware_change_fails_before_any_mutation()
+    public async Task First_firmware_label_is_diagnostic_but_a_change_within_the_owner_is_rejected()
     {
         using var io = new OledFake { FirmwareByte = 0x25 };
         using var connection = new RogWiredOledConnection(io, () => true);
         var session = new RogWiredOledSession(connection);
+        (await session.SnapshotAsync("001200000024000100", default)).Should().Be(io.Brightness);
+        io.FirmwareByte = 0x26;
         await ((Func<Task>)(() => session.SnapshotAsync("001200000024000100", default))).Should().ThrowAsync<InvalidDataException>();
         io.Mutations.Should().Be(0); session.Touched.Should().BeFalse();
     }

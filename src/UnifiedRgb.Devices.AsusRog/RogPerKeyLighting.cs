@@ -48,17 +48,27 @@ public static class RogPerKeyLighting
         return Array.AsReadOnly(result);
     }
 
+    /// <summary>The original unpaced entry point, retained for existing compiled callers.</summary>
+    public static Task WriteAsync(Func<byte[], bool, CancellationToken, Task<byte[]>> exchange, IReadOnlyList<RogKeyColor> keys,
+        CancellationToken ct) => WriteAsync(exchange, keys, ct, TimeSpan.Zero, null);
+
     /// <summary>
     /// Sends one complete frame through the owner's exchange, one report and one reply at a time. Only the stock C0/82 reply
     /// with matching count/reserved, 23 opaque bytes and zero tail is accepted. No retry or partial-frame resume is allowed.
+    /// A positive <paramref name="reportDelay"/> is awaited (cancellably, via <paramref name="delay"/>, default
+    /// <see cref="Task.Delay(TimeSpan, CancellationToken)"/>) before EVERY report, including the first; zero sends unpaced.
+    /// Report bytes, order and reply checks are identical either way.
     /// </summary>
     public static async Task WriteAsync(Func<byte[], bool, CancellationToken, Task<byte[]>> exchange, IReadOnlyList<RogKeyColor> keys,
-        CancellationToken ct)
+        CancellationToken ct, TimeSpan reportDelay = default, Func<TimeSpan, CancellationToken, Task>? delay = null)
     {
         ArgumentNullException.ThrowIfNull(exchange);
         ArgumentNullException.ThrowIfNull(keys);
+        ArgumentOutOfRangeException.ThrowIfLessThan(reportDelay, TimeSpan.Zero);
+        delay ??= Task.Delay;
         foreach (var report in BoundaryFrame(keys.ToArray()))
         {
+            if (reportDelay > TimeSpan.Zero) await delay(reportDelay, ct).ConfigureAwait(false);
             var reply = await exchange(report, false, ct).ConfigureAwait(false);
             RequireReply(reply, report);
         }
@@ -70,6 +80,10 @@ public static class RogPerKeyLighting
     internal static bool MatchesReplyHeader(ReadOnlySpan<byte> reply, ReadOnlySpan<byte> request) => IsFrameRequest(request)
         && reply.Length == BoundaryReportLength && reply[0] == request[0] && reply[1] == 0xC0 && reply[2] == 0x82
         && reply[3] == request[3] && reply[4] == 0;
+
+    internal static bool IsColourReply(ReadOnlySpan<byte> reply) => reply.Length == BoundaryReportLength
+        && reply[0] == 0 && reply[1] == 0xC0 && reply[2] == 0x82 && reply[3] is >= 1 and <= 14 && reply[4] == 0
+        && !reply[28..].ContainsAnyExcept((byte)0);
 
     internal static void RequireReply(ReadOnlySpan<byte> reply, ReadOnlySpan<byte> request)
     {

@@ -11,12 +11,12 @@ namespace UnifiedRgb.Host.Services;
 public static class DtoMapper
 {
     /// <summary>
-    /// No backend reports a complete original-lighting snapshot with a positively verified restore path yet, so every per-key
-    /// status carries restoration Unproven and no per-key output request is admitted (PerKeyAdmission). A backend restoration
-    /// source (INTERFACE-PROPOSAL) replaces this; nothing here may turn it Verified.
+    /// No backend reports itemised original-lighting restoration diagnostics yet, so every per-key status truthfully carries
+    /// restoration Unproven with this note. It is informational: the shared Host actor still owns writes and its own restore, and
+    /// a Ready map is admitted (PerKeyAdmission). Nothing here may turn it Verified.
     /// </summary>
     internal const string RestorationNotReported =
-        "No backend reports a complete original-lighting snapshot with a verified restore path; per-key output is not admitted.";
+        "Restoration diagnostics are not reported by this backend (informational); the shared keyboard actor performs its own restore.";
 
     public static ControllerDto ToDto(ControllerEntry e)
     {

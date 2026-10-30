@@ -22,6 +22,10 @@ public sealed class RogWirelessOledConnection : IRogOledConnection
     private Exception? _fault;
     private byte[]? _observed;
     private readonly Queue<byte[]> _completedReplies = new();
+    // Only packet sizes actually written by this owner's asynchronous colour stream. No acknowledgement or pairing evidence.
+    private readonly bool[] _writtenColourCounts = new bool[15];
+    private const int ColourReplyDrainLimit = 128;
+    internal Func<TimeSpan, CancellationToken, Task> KeyReportDelay { get; set; } = Task.Delay;
     private RogPairingEvidence? _evidence;
     private bool _busy, _disposed;
 
@@ -111,6 +115,38 @@ public sealed class RogWirelessOledConnection : IRogOledConnection
         }
     }
 
+    public async Task WriteLightingFrameAsync(IReadOnlyList<RogKeyColor> keys, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(keys);
+        // Validate and translate the entire frame before entering the existing exclusive owner or writing anything.
+        var packets = RogPerKeyLighting.BoundaryFrame(keys.ToArray()).Select(ToWireless).ToArray();
+        Enter(ct);
+        try
+        {
+            foreach (var packet in packets)
+            {
+                // The first report also follows an earlier control command. This spacing is not delivery evidence.
+                await KeyReportDelay(TimeSpan.FromMilliseconds(8), ct).ConfigureAwait(false);
+                using var deadline = new CancellationTokenSource(1000);
+                var attempted = false;
+                try
+                {
+                    ValueTask write;
+                    lock (_state) { RequireUsable(); ct.ThrowIfCancellationRequested(); attempted = true; write = _channel.WriteAsync(packet, deadline.Token); }
+                    // Retire an admitted write even if the caller stops. There is deliberately no mandatory RGB reply/read.
+                    await write.ConfigureAwait(false);
+                    _writtenColourCounts[packet[3]] = true;
+                }
+                catch (Exception ex) when (ex is not OutOfMemoryException)
+                { if (!attempted) throw; throw Fail(ex, packet, null, 0, 0, "colour-write", false, deadline.IsCancellationRequested); }
+                ct.ThrowIfCancellationRequested();
+            }
+        }
+        finally { Exit(); }
+    }
+
+    private bool IsWrittenColourReply(byte[] reply) => RogPerKeyLighting.IsColourReply(reply) && _writtenColourCounts[reply[3]];
+
     public async Task<byte[]> ExchangeAsync(byte[] request, bool zeroAck, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(request); request = (byte[])request.Clone();
@@ -126,14 +162,23 @@ public sealed class RogWirelessOledConnection : IRogOledConnection
                 ValueTask write;
                 lock (_state) { RequireUsable(); ct.ThrowIfCancellationRequested(); attempted = true; write = _channel.WriteAsync(packet, timeout.Token); }
                 await write.ConfigureAwait(false);
-                for (var n = 0; n < 8; n++)
+                // Keep the existing eight ordinary-report budget, plus a separate finite allowance for streamed RGB replies.
+                // The same one-second deadline bounds all reads, including late/duplicate colour replies.
+                for (int n = 0, colourReplies = 0; n < 8;)
                 {
-                    stage = "read"; ordinal = n + 1; length = 0; Array.Clear(buffer);
+                    stage = "read"; ordinal++; length = 0; Array.Clear(buffer);
                     length = await Read(buffer, timeout.Token).ConfigureAwait(false);
                     stage = "envelope"; RequireNotEof(length);
                     var reply = FromWireless(buffer, length);
                     if (reply[1] == 0xFF && reply[2] == 0xAA)
                         throw new InvalidDataException("Wireless keyboard OLED refused its envelope; no retry.");
+                    if (IsWrittenColourReply(reply))
+                    {
+                        stage = "buffered-colour-reply";
+                        if (++colourReplies > ColourReplyDrainLimit) throw new InvalidDataException("Wireless colour reply drain budget exceeded.");
+                        continue;
+                    }
+                    n++;
                     var perKey = RogPerKeyLighting.IsFrameRequest(request);
                     if (perKey ? RogPerKeyLighting.MatchesReplyHeader(reply, request) : reply.AsSpan(0, 5).SequenceEqual(request.AsSpan(0, 5)))
                     {
@@ -189,14 +234,20 @@ public sealed class RogWirelessOledConnection : IRogOledConnection
         var packet = ToWireless(RogWiredOledProtocol.Renew()); Exception? failure = null; Exception? writerFailure = null;
         async Task ReaderAsync()
         {
-            var buffer = new byte[64]; var length = 0; var ordinal = 0;
+            var buffer = new byte[64]; var length = 0; var ordinal = 0; var colourReplies = 0;
             try
             {
                 while (!stop.IsCancellationRequested)
                 {
                     length = 0; Array.Clear(buffer); ordinal++;
                     length = await Read(buffer, stop.Token).ConfigureAwait(false); RequireNotEof(length);
-                    RogWiredOledProtocol.RequireRenewalReply(FromWireless(buffer, length));
+                    var reply = FromWireless(buffer, length);
+                    if (IsWrittenColourReply(reply))
+                    {
+                        if (++colourReplies > ColourReplyDrainLimit) throw new InvalidDataException("Wireless colour reply drain budget exceeded.");
+                        continue;
+                    }
+                    RogWiredOledProtocol.RequireRenewalReply(reply);
                 }
             }
             catch (OperationCanceledException) when (stop.IsCancellationRequested) { }

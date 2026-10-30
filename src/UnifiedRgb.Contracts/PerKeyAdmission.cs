@@ -8,15 +8,14 @@ public enum PerKeyAdmissionVerdict
     NotPerKey = 0,
     /// <summary>The per-key capability is not Ready (unsupported, disabled, missing/invalid map, unverified, ...).</summary>
     CapabilityBlocked,
+    /// <summary>Retained so every later value keeps its number; no longer produced (unproven restoration is diagnostic only).</summary>
     RestorationUnproven,
+    /// <summary>The backend reports an actual failure: the status word, the capability or one of its components is Failed.</summary>
     RestorationFailed,
     Admitted,
-    /// <summary>
-    /// Restoration is reported Verified, but the itemised capability is absent, not Verified, or does not verify every
-    /// required component exactly once.
-    /// </summary>
+    /// <summary>Retained so the enum keeps its values; no longer produced.</summary>
     RestorationIncomplete,
-    /// <summary>The capability names another contract version, another or no transport, no scope, or a component v1 does not define.</summary>
+    /// <summary>Retained so the enum keeps its values; no longer produced.</summary>
     RestorationMismatch,
 }
 
@@ -26,12 +25,13 @@ public sealed record PerKeyAdmissionResult(PerKeyAdmissionVerdict Verdict, strin
 }
 
 /// <summary>
-/// Client-side admission before any request that would make a zone's per-key representation output: the capability must be
-/// Ready, restoration Verified AND the <see cref="PerKeyRestorationContract.Version"/> capability must verify every required
-/// component (effect, inactive static bank, brightness, profile, RF scope) for the same transport and a stated scope. It is
-/// checked before the request is sent, never left to a release-time failure. The zone's shape decides whether output would be
-/// per-key: an unmapped Point zone only carries aggregate colour whatever its per-key status, so aggregate scenes, followers
-/// and lights-off are untouched. The Host remains the write gate; this never makes a device or map supported.
+/// Client-side admission before any request that would make a zone's per-key representation output. A Ready capability (a
+/// local route map that passed the backend's map gates) is admitted: the Host's shared actor owns every write and its own
+/// restore. Restoration words and the itemised capability are diagnostics only; an Unproven, unknown or missing report never
+/// blocks, and only an actual Failed report (status word, capability or component) does. Anything not Ready stays blocked. The
+/// zone's shape decides whether output would be per-key: an unmapped Point zone only carries aggregate colour whatever its
+/// per-key status, so aggregate scenes, followers and lights-off are untouched. This never makes a device or map supported and
+/// says nothing about optical output.
 /// </summary>
 public static class PerKeyAdmission
 {
@@ -39,7 +39,6 @@ public static class PerKeyAdmission
     public const string AggregateLayout = "Point";
 
     private const string DefaultFailed = "The original-lighting snapshot or restore preflight failed.";
-    private const string DefaultUnproven = "Complete original-lighting restoration is not proven.";
 
     /// <summary>The aggregate whole-device shape: one unmapped Point whose single colour the adapter replicates.</summary>
     public static bool IsAggregate(ZoneDto zone)
@@ -63,7 +62,7 @@ public static class PerKeyAdmission
 
     /// <summary>
     /// The verdict a per-key status would get as a per-key target, whatever the zone's shape (readiness text uses it for the
-    /// aggregate zone too). Any Failed word wins over every other restoration word; nothing unknown is read as Verified.
+    /// aggregate zone too): CapabilityBlocked when not Ready, RestorationFailed only for an actual Failed report, else Admitted.
     /// </summary>
     public static PerKeyAdmissionResult EvaluateStatus(PerKeyStatusDto status)
     {
@@ -74,45 +73,21 @@ public static class PerKeyAdmission
             return new(PerKeyAdmissionVerdict.RestorationFailed, status.RestorationReason ?? DefaultFailed);
 
         var capability = status.RestorationCapability;
-        var components = Components(capability);
-        var failed = components.Where(c => c.State == PerKeyRestorationStates.Failed).Select(c => c.Component).ToArray();
+        var failed = Components(capability).Where(c => c.State == PerKeyRestorationStates.Failed).Select(c => c.Component).ToArray();
         if (capability?.State == PerKeyRestorationStates.Failed || failed.Length > 0)
             return new(PerKeyAdmissionVerdict.RestorationFailed,
                 $"The restoration capability reports a failure{(failed.Length > 0 ? $" ({string.Join(", ", failed)})" : string.Empty)}: {capability!.Reason}");
-        if (status.Restoration != PerKeyRestorationStates.Verified)
-            return new(PerKeyAdmissionVerdict.RestorationUnproven, status.RestorationReason ?? DefaultUnproven);
 
-        if (capability is null)
-            return new(PerKeyAdmissionVerdict.RestorationIncomplete,
-                $"Restoration is reported Verified without the itemised {PerKeyRestorationContract.Version} capability; {Join(PerKeyRestorationContract.Required)} are not proven.");
-        if (capability.Contract != PerKeyRestorationContract.Version)
-            return new(PerKeyAdmissionVerdict.RestorationMismatch,
-                $"Restoration contract '{capability.Contract}' is not {PerKeyRestorationContract.Version}.");
-        if (status.Transport is null || capability.Transport != status.Transport)
-            return new(PerKeyAdmissionVerdict.RestorationMismatch,
-                $"Restoration transport '{capability.Transport}' does not match the per-key transport '{status.Transport}'.");
-        if (string.IsNullOrWhiteSpace(capability.Scope))
-            return new(PerKeyAdmissionVerdict.RestorationMismatch, "The restoration capability states no device scope.");
-        if (capability.Components?.Any(c => c is null) == true)
-            return new(PerKeyAdmissionVerdict.RestorationMismatch, "The restoration capability carries an empty component entry.");
-        var unknown = components.Select(c => c.Component).Where(n => !PerKeyRestorationContract.Required.Contains(n, StringComparer.Ordinal))
-            .Distinct(StringComparer.Ordinal).ToArray();
-        if (unknown.Length > 0)
-            return new(PerKeyAdmissionVerdict.RestorationMismatch,
-                $"Component(s) {Join(unknown.Select(n => $"'{n}'"))} are not defined by {PerKeyRestorationContract.Version}.");
-
-        var unproven = UnprovenComponents(status);
-        if (unproven.Count > 0)
-            return new(PerKeyAdmissionVerdict.RestorationIncomplete, $"Original-lighting restoration is incomplete: {Join(unproven)} not verified.");
-        if (capability.State != PerKeyRestorationStates.Verified)
-            return new(PerKeyAdmissionVerdict.RestorationIncomplete, $"The restoration capability is {capability.State}: {capability.Reason}");
+        var restoration = status.Restoration == PerKeyRestorationStates.Verified
+            ? "restoration diagnostics report Verified"
+            : $"restoration diagnostics report {(string.IsNullOrWhiteSpace(status.Restoration) ? "nothing" : status.Restoration)} (informational only)";
         return new(PerKeyAdmissionVerdict.Admitted,
-            $"Per-key map gates and complete {PerKeyRestorationContract.Version} restoration are verified for {status.Transport} ({capability.Scope}); optical output is not certified.");
+            $"Per-key map is Ready for {status.Transport ?? "its route"} ({status.KeyCount} keys); {restoration}; optical output is not certified.");
     }
 
     /// <summary>
-    /// The required components not reported exactly once as Verified, in <see cref="PerKeyRestorationContract.Required"/> order;
-    /// all of them when no capability is reported.
+    /// Diagnostics only: the <see cref="PerKeyRestorationContract.Required"/> components not reported exactly once as Verified,
+    /// in that order; all of them when no capability is reported. Never used to admit or refuse output.
     /// </summary>
     public static IReadOnlyList<string> UnprovenComponents(PerKeyStatusDto status)
     {
@@ -141,11 +116,9 @@ public static class PerKeyAdmission
         return blocked;
     }
 
-    // A wire report may omit the list or carry null entries: neither is ever read as Verified (a null entry is also a mismatch).
+    // A wire report may omit the list or carry null entries: neither is ever read as Verified or as Failed.
     private static PerKeyRestorationComponentDto[] Components(PerKeyRestorationCapabilityDto? capability) =>
         capability?.Components?.Where(c => c is not null).ToArray() ?? [];
-
-    private static string Join(IEnumerable<string> names) => string.Join(", ", names);
 }
 
 public sealed record PerKeyBlockedTarget(ZoneRefDto Target, ControllerDto Controller, ZoneDto Zone, PerKeyAdmissionResult Result);

@@ -37,11 +37,13 @@ public sealed class RogWirelessOledTests
     [Theory]
     [InlineData(5)]
     [InlineData(12)]
-    public async Task Receiver_and_keyboard_firmware_are_independently_pinned(int changedIndex)
+    public async Task Initial_receiver_and_keyboard_version_notes_are_diagnostic_and_live_changes_are_rejected(int changedIndex)
     {
         using var io = new WirelessFake { IdentityMutationIndex = changedIndex };
         using var connection = Connection(io);
         var session = new RogWiredOledSession(connection);
+        (await session.SnapshotAsync(Header, default)).Should().Be(io.Brightness);
+        io.IdentityMutationIndex = null;
         await ((Func<Task>)(() => session.SnapshotAsync(Header, default))).Should().ThrowAsync<InvalidDataException>();
         io.Inner.Mutations.Should().Be(0);
     }
@@ -229,7 +231,7 @@ public sealed class RogWirelessOledTests
         public RogWiredOledTests.OledFake Inner { get; } = new();
         public List<byte[]> Requests { get; } = [];
         public ReceiverModel Model { get; } = new();
-        public int? IdentityMutationIndex { get; init; }
+        public int? IdentityMutationIndex { get; set; }
         public byte Brightness { get => Inner.Brightness; set => Inner.Brightness = value; }
 
         public async ValueTask WriteAsync(ReadOnlyMemory<byte> report, CancellationToken ct)

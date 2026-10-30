@@ -83,7 +83,7 @@ public sealed class WiredKeyboardPerKeyTests
         var dto = DtoMapper.ToDto(zone);
         PerKeyAdmission.IsAggregate(dto).Should().BeTrue();
         PerKeyAdmission.Evaluate(dto).AllowsOutput.Should().BeTrue("aggregate colour is never per-key output");
-        PerKeyDisplay.Zone(dto).Should().Be("逐键不可用 · 待物理逐键扫描");
+        PerKeyDisplay.Zone(dto).Should().Be("逐键需校准 · 待物理逐键扫描");
 
         var owner = bridge.Attach(); owner.AcceptKeyFrames(Wired);
         await adapter.OpenAsync(d.Id, default);
@@ -108,7 +108,7 @@ public sealed class WiredKeyboardPerKeyTests
         zone.PerKeyPoints.Should().HaveCount(81);
         var dto = DtoMapper.ToDto(zone);
         PerKeyAdmission.IsPerKeyTarget(dto).Should().BeTrue();
-        PerKeyAdmission.Evaluate(dto).Verdict.Should().Be(PerKeyAdmissionVerdict.RestorationUnproven, "the App still refuses per-key output until restoration is proven");
+        PerKeyAdmission.Evaluate(dto).Verdict.Should().Be(PerKeyAdmissionVerdict.Admitted, "a Ready route map is admitted; unproven restoration is diagnostic only");
 
         var owner = bridge.Attach();
         await adapter.OpenAsync(d.Id, default);

@@ -15,6 +15,12 @@ public interface IRogOledConnection : IDisposable
     bool SameDevice();
     void RequireFirmwareIdentity(byte[] identity, string expectedHeader);
     Task<byte[]> ExchangeAsync(byte[] request, bool zeroAck, CancellationToken ct);
+    /// <summary>
+    /// Writes one complete per-key frame through this owner. The default route requires each strict C0/82 reply;
+    /// the real RF route completes on bounded Windows writes only, without claiming receiver or optical acknowledgement.
+    /// </summary>
+    Task WriteLightingFrameAsync(IReadOnlyList<RogKeyColor> keys, CancellationToken ct) =>
+        RogPerKeyLighting.WriteAsync(ExchangeAsync, keys, ct);
     Task LeaseAsync(Func<bool> changed, Action renewed, CancellationToken ct);
 
     /// <summary>

@@ -22,6 +22,16 @@ public sealed class ZoneFollowerTests
         return result;
     }
 
+    // Synthetic 85-LED key zone shaped like the adapter's Ready per-key descriptor; every LED is independent, no aliases.
+    private static PerKeyCapability ReadyKeys(int keys) => new(PerKeyState.Ready, "synthetic", "synthetic-transport", keys, 128);
+    private static ControllerDescriptor Keys(PerKeyCapability? perKey, bool mapped = true)
+    {
+        var map = new PerKeyMap("synthetic", "synthetic-transport",
+            Enumerable.Range(0, 85).Select(i => new PerKeyCell(i, $"k{i}", i / 17, i % 17)).ToArray(), true, true, "synthetic");
+        return Keyboard with { Zones = [new(new ZoneId(0), "keys", ZoneLayout.Linear(85))
+            { PerKey = perKey, PerKeyPoints = perKey is null ? null : PerKeyProjection.Project(map), Mapped = mapped }] };
+    }
+
     [Fact]
     public void Defaults_do_not_attach_new_devices_to_old_scenes()
     {
@@ -145,6 +155,77 @@ public sealed class ZoneFollowerTests
         render.FollowerStatus.Single().State.Should().Be("SourcePixelUnavailable");
         render.SetFollowers([new(Z(Keyboard), 0, Z(Source))]); render.RenderFrame(1, 1d / 60);
         render.FollowerStatus.Single().State.Should().Be("TargetMustBeSingleAggregatePoint");
+    }
+
+    [Fact]
+    public void Ready_per_key_keyboard_takes_the_source_colour_on_every_LED_in_the_same_tick()
+    {
+        using var bus = new FrameBus(); using var render = new RenderLoop(EffectRegistry.Default, bus);
+        var keys = Keys(ReadyKeys(85));
+        render.SetControllers([Source, keys]); render.SetFollowers([Follow(keys)]);
+        render.SetScene(new([Assignment.ForZone(Z(Source), BreathingEffect.EffectId, new([new(200, 80, 20)]))]));
+        render.FollowerStatus.Single().State.Should().Be("Ready");
+        var seen = new HashSet<Rgb>();
+        for (var i = 0; i < 120; i++)
+        {
+            render.RenderFrame(i / 60d, 1d / 60);
+            var source = Consume(bus, Source); var keyboard = Consume(bus, keys); var colour = source.Zones[0][3];
+            keyboard.Zones[0].Should().HaveCount(85).And.OnlyContain(c => c == colour);
+            keyboard.Index.Should().Be(source.Index); keyboard.T.Should().Be(source.T); seen.Add(colour);
+        }
+        seen.Count.Should().BeGreaterThan(10, "the source really changes while every key follows it");
+        foreach (var expected in new[] { Rgb.Black, new Rgb(30, 60, 90), Rgb.Black })
+        {
+            render.SetScene(Solid(Source, expected)); render.RenderFrame(3, 1d / 60);
+            Consume(bus, Source).Zones[0][3].Should().Be(expected); Consume(bus, keys).Zones[0].Should().OnlyContain(c => c == expected);
+        }
+    }
+
+    [Fact]
+    public void Explicit_authored_assignment_gives_each_per_key_LED_its_own_colour_and_removal_restores_the_fallback()
+    {
+        using var bus = new FrameBus(); using var render = new RenderLoop(EffectRegistry.Default, bus);
+        var keys = Keys(ReadyKeys(85));
+        var authored = Enumerable.Range(0, 85).Select(i => new Rgb((byte)i, (byte)(255 - i), (byte)(i * 3))).ToArray();
+        var frames = new InMemoryFrameSetSource(); frames.Add(new("keys", 1, 100, [85], [TestSupport.ToBytes(authored)]));
+        render.FrameSets = frames; render.SetControllers([Source, keys]); render.SetFollowers([Follow(keys)]);
+        var source = Solid(Source, new(10, 20, 30));
+        var target = Assignment.ForZone(Z(keys), StaticColorEffect.EffectId) with { Strategy = ContentStrategy.Frames, FrameSetId = "keys" };
+        render.SetScene(new([.. source.Assignments, target])); render.RenderFrame(0, 1d / 60);
+        render.FollowerStatus.Single().State.Should().Be("SceneAssigned");
+        var keyboard = Consume(bus, keys).Zones[0];
+        keyboard.Should().Equal(authored); keyboard.Distinct().Should().HaveCount(85);
+        render.SetScene(source); render.RenderFrame(1, 1d / 60);
+        render.FollowerStatus.Single().State.Should().Be("Ready");
+        Consume(bus, keys).Zones[0].Should().OnlyContain(c => c == new Rgb(10, 20, 30));
+    }
+
+    [Theory]
+    [InlineData("not-ready")] [InlineData("count-mismatch")] [InlineData("unmapped")] [InlineData("ordinary")]
+    public void Multi_LED_targets_without_a_matching_Ready_per_key_capability_are_not_filled(string kind)
+    {
+        using var bus = new FrameBus(); using var render = new RenderLoop(EffectRegistry.Default, bus);
+        var keys = kind switch
+        {
+            "not-ready" => Keys(ReadyKeys(85) with { State = PerKeyState.KeyOrderUnverified }),
+            "count-mismatch" => Keys(ReadyKeys(84)),
+            "unmapped" => Keys(null, mapped: false),
+            _ => Keys(null),
+        };
+        render.SetControllers([Source, keys]); render.SetFollowers([Follow(keys)]); render.SetScene(Solid(Source, Rgb.White));
+        render.RenderFrame(0, 1d / 60);
+        render.FollowerStatus.Single().State.Should().Be("TargetMustBeSingleAggregatePoint");
+        Consume(bus, keys).Zones[0].Should().OnlyContain(c => c == Rgb.Black);
+    }
+
+    [Fact]
+    public void Aggregate_point_with_a_not_ready_per_key_capability_keeps_following()
+    {
+        using var bus = new FrameBus(); using var render = new RenderLoop(EffectRegistry.Default, bus);
+        var point = Keyboard with { Zones = [AggregateZone.Descriptor("Keyboard") with { PerKey = ReadyKeys(85) with { State = PerKeyState.Disabled } }] };
+        render.SetControllers([Source, point]); render.SetFollowers([Follow(point)]); render.SetScene(Solid(Source, new(40, 50, 60)));
+        render.RenderFrame(0, 1d / 60);
+        render.FollowerStatus.Single().State.Should().Be("Ready"); Consume(bus, point).Zones[0].Should().Equal(new Rgb(40, 50, 60));
     }
 
     [Fact]

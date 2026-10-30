@@ -1,6 +1,7 @@
 <UserControl x:Class="UnifiedRgb.App.Views.DevicesView"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:wb="clr-namespace:UnifiedRgb.App.Workbench">
     <UserControl.Resources><ResourceDictionary><ResourceDictionary.MergedDictionaries><ResourceDictionary Source="/UnifiedRgb.App;component/Themes/StudioTheme.xaml"/></ResourceDictionary.MergedDictionaries>
         <BooleanToVisibilityConverter x:Key="Visible" />
     </ResourceDictionary></UserControl.Resources>
@@ -91,6 +92,60 @@
                     </DataTemplate>
                 </ItemsControl.ItemTemplate>
             </ItemsControl>
+            </ScrollViewer>
+        </Expander>
+        <Expander DockPanel.Dock="Bottom" Header="逐灯校准 · 单颗 LED 标记与观察记录" Margin="0,0,0,6" DataContext="{Binding Calibration}">
+            <!-- Hardware is touched only by the highlight button: opening, selecting, recording and exporting are local. -->
+            <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" MaxHeight="420">
+                <StackPanel Margin="4">
+                    <TextBlock Text="{Binding Source={x:Static wb:PerKeyCalibrationViewModel.Intro}}" TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" />
+                    <WrapPanel Margin="0,6,0,0" IsEnabled="{Binding IsIdle}">
+                        <TextBlock Text="键盘" Width="40" VerticalAlignment="Center" />
+                        <ComboBox ItemsSource="{Binding Keyboards}" SelectedItem="{Binding SelectedKeyboard}" DisplayMemberPath="Name" MinWidth="260" />
+                        <TextBlock Text="传输" Margin="12,0,0,0" Width="40" VerticalAlignment="Center" />
+                        <ComboBox ItemsSource="{Binding Routes}" SelectedItem="{Binding SelectedRoute}" DisplayMemberPath="Label" Width="110"
+                                  ToolTip="必须与后台当前实际路由一致；点亮前会先读取 per-key-status 核对。" />
+                        <TextBlock Text="LED" Margin="12,0,0,0" Width="36" VerticalAlignment="Center" />
+                        <TextBox Text="{Binding LedId, UpdateSourceTrigger=PropertyChanged}" Width="50" ToolTip="原始 LED 编号 0–127" />
+                    </WrapPanel>
+                    <WrapPanel Margin="0,6,0,0" IsEnabled="{Binding IsIdle}">
+                        <TextBlock Text="灯位标签" Width="60" VerticalAlignment="Center" />
+                        <TextBox Text="{Binding KeyName, UpdateSourceTrigger=PropertyChanged}" Width="90" ToolTip="实际亮起的按键，例如 Esc" />
+                        <TextBlock Text="行" Margin="12,0,0,0" Width="20" VerticalAlignment="Center" />
+                        <TextBox Text="{Binding Row, UpdateSourceTrigger=PropertyChanged}" Width="50" />
+                        <TextBlock Text="列" Margin="12,0,0,0" Width="20" VerticalAlignment="Center" />
+                        <TextBox Text="{Binding Column, UpdateSourceTrigger=PropertyChanged}" Width="50" />
+                    </WrapPanel>
+                    <WrapPanel Margin="0,6,0,0">
+                        <Button Content="点亮所选 LED（红色约 2 秒）" Command="{Binding HighlightCommand}" Padding="12,2" />
+                        <Button Content="记录观察到的按键" Command="{Binding RecordCommand}" Padding="12,2" Margin="8,0,0,0"
+                                ToolTip="只记录刚才成功点亮的同一键盘、传输与 LED；记录即表示你确认看到了该按键亮起。" />
+                        <Button Content="生成导出片段" Command="{Binding ExportCommand}" Padding="12,2" Margin="8,0,0,0" ToolTip="只生成文本，不写入任何文件或设置。" />
+                    </WrapPanel>
+                    <TextBlock Text="{Binding Status}" TextWrapping="Wrap" Margin="0,6,0,0" />
+                    <TextBlock Text="已记录的观察按键（仅包含逐一确认的按键）" FontWeight="SemiBold" Margin="0,8,0,0" />
+                    <ItemsControl ItemsSource="{Binding Observed}" IsEnabled="{Binding IsIdle}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
+                                    <TextBlock Text="{Binding RouteLabel}" Width="80" VerticalAlignment="Center" />
+                                    <TextBlock Text="{Binding LedText}" Width="70" VerticalAlignment="Center" />
+                                    <TextBox Text="{Binding Key, UpdateSourceTrigger=PropertyChanged}" Width="90" />
+                                    <TextBlock Text="行" Margin="8,0,4,0" VerticalAlignment="Center" />
+                                    <TextBox Text="{Binding Row, UpdateSourceTrigger=PropertyChanged}" Width="44" />
+                                    <TextBlock Text="列" Margin="8,0,4,0" VerticalAlignment="Center" />
+                                    <TextBox Text="{Binding Column, UpdateSourceTrigger=PropertyChanged}" Width="44" />
+                                    <Button Content="删除" Command="{Binding DataContext.RemoveCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                            CommandParameter="{Binding}" Padding="10,0" Margin="8,0,0,0" />
+                                </StackPanel>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                    <TextBlock Text="{Binding ExportSummary}" TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" Margin="0,8,0,0" />
+                    <TextBox Text="{Binding ExportText, Mode=OneWay}" IsReadOnly="True" AcceptsReturn="True" TextWrapping="NoWrap" FontFamily="Consolas"
+                             VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" MinHeight="60" MaxHeight="220" Margin="0,4,0,0" />
+                    <TextBlock Text="{Binding Source={x:Static wb:PerKeyCalibrationViewModel.NextStep}}" TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" Margin="0,4,0,0" />
+                </StackPanel>
             </ScrollViewer>
         </Expander>
         <GroupBox DockPanel.Dock="Bottom" Header="逐键软件帧审查 · 非实机证明" Visibility="{Binding HasPerKeyReviews, Converter={StaticResource Visible}}">

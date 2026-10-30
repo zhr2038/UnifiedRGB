@@ -1,11 +1,13 @@
 namespace UnifiedRgb.Devices;
 
-/// <summary>One physically scanned key and its protocol LED record. Coordinates are local to the keyboard, not the case.</summary>
+/// <summary>One independently controlled light position and its protocol LED record. The label may name a key or one of its
+/// separate emitters; coordinates are local to the keyboard, not the case.</summary>
 public sealed record PerKeyCell(int LedId, string Key, int Row, int Column);
 
 /// <summary>
-/// A local, device-specific key map. <see cref="Verified"/> and <see cref="Complete"/> may be set only after a physical scan;
-/// <see cref="Evidence"/> identifies that scan. No map is supplied by the product.
+/// A local, device-specific light map. <see cref="Complete"/> describes the declared set of positions; <see cref="Verified"/>
+/// means their mapping was checked against local <see cref="Evidence"/> (for example device tables and physical samples,
+/// or a full physical scan). Evidence must distinguish its actual optical coverage. No map is supplied by the product.
 /// </summary>
 public sealed record PerKeyMap(
     string Model,
@@ -84,9 +86,9 @@ public static class PerKeyMaps
         if (Validate(map, maximumKeys) is { } invalid) return Capability(PerKeyState.InvalidMap, invalid);
         if (!string.Equals(map.Transport, supportedTransport, StringComparison.Ordinal))
             return Capability(PerKeyState.TransportMismatch, $"Map transport '{map.Transport}' does not match required '{supportedTransport}'.");
-        if (!map.Complete) return Capability(PerKeyState.Unverified, "The physical key scan is incomplete.");
+        if (!map.Complete) return Capability(PerKeyState.Unverified, "The declared light map is incomplete.");
         if (!map.Verified || string.IsNullOrWhiteSpace(map.Evidence))
-            return Capability(PerKeyState.Unverified, "The map lacks physical key-scan verification and provenance.");
+            return Capability(PerKeyState.Unverified, "The map lacks local mapping verification and provenance.");
         if (!controlVerified) return Capability(PerKeyState.ControlUnverified, "Keyboard lighting control has not been verified.");
         if (!keyOrderVerified) return Capability(PerKeyState.KeyOrderUnverified, "Physical key order has not been verified.");
         return Capability(PerKeyState.Ready, "Local map and output gates are ready; optical per-key playback is still not certified.");

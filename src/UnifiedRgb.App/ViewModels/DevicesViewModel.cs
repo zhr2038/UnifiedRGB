@@ -26,7 +26,7 @@ public sealed record ControllerItem(ControllerDto Dto)
 
     public string State => Dto.State;
 
-    /// <summary>True per-key readiness (never inferred from aggregate colour); Ready without verified restoration is not admitted.</summary>
+    /// <summary>True per-key readiness (never inferred from aggregate colour); a Ready map is available unless restoration actually failed.</summary>
     public string ChinesePerKey => PerKeyDisplay.Controller(Dto);
 
     public IReadOnlyList<PerKeyPixelDto> PerKeyPixels => Dto.PerKeyFrame?.Keys ?? [];
@@ -119,6 +119,7 @@ public sealed class DevicesViewModel : ObservableObject
         ResyncLianLiCommand = new AsyncCommand(ResyncLianLiAsync, onError);
         EnableTakeoverCommand = new AsyncCommand(p => SetTakeoverAsync(p as TakeoverItem, true), onError);
         DisableTakeoverCommand = new AsyncCommand(p => SetTakeoverAsync(p as TakeoverItem, false), onError);
+        Calibration = new PerKeyCalibrationViewModel(client, onError);
     }
 
     public const string SaveToFansQuestion =
@@ -129,6 +130,8 @@ public sealed class DevicesViewModel : ObservableObject
     /// <summary>Controllers whose adapter reported a software per-key frame (review data only).</summary>
     public IEnumerable<ControllerItem> PerKeyControllers => VisibleControllers.Where(c => c.PerKeyReview is not null);
     public bool HasPerKeyReviews => PerKeyControllers.Any();
+    /// <summary>Single-LED marker calibration and observed-subset export; touches hardware only on its explicit button.</summary>
+    public PerKeyCalibrationViewModel Calibration { get; }
     public AsyncCommand EnableTakeoverCommand { get; }
     public AsyncCommand DisableTakeoverCommand { get; }
 
@@ -195,6 +198,7 @@ public sealed class DevicesViewModel : ObservableObject
         OnPropertyChanged(nameof(VisibleControllers));
         OnPropertyChanged(nameof(PerKeyControllers));
         OnPropertyChanged(nameof(HasPerKeyReviews));
+        Calibration.SetControllers(controllers);
         Changed?.Invoke(this, EventArgs.Empty);
     });
 

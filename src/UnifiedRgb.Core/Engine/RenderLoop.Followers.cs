@@ -3,9 +3,10 @@ using UnifiedRgb.Devices;
 namespace UnifiedRgb.Core.Engine;
 
 /// <summary>
-/// Optional local fallback for one aggregate point. Copies one already rendered RGB value in the SAME tick; does not
-/// modify scene content, bindings, output stages, frame-set meaning or clocks. No chaining, uploads or interpolation.
-/// An explicit scene assignment to the target always wins. Empty by default.
+/// Optional local fallback for one aggregate point, or one zone whose own per-key capability is Ready for every LED. Copies
+/// one already rendered RGB value to every target LED in the SAME tick; does not modify scene content, bindings, output
+/// stages, frame-set meaning or clocks. No chaining, uploads, grouping or interpolation. An explicit scene assignment to the
+/// target always wins, and then each LED shows its own authored colour. Empty by default.
 /// </summary>
 public sealed record ZoneFollower(ZoneRef Source, int SourceLed, ZoneRef Target);
 
@@ -56,7 +57,7 @@ public sealed partial class RenderLoop
                 for (var z = 0; z < sourceZones.Count; z++) if (sourceZones[z].Id == f.Source.Zone) { sourceZone = z; break; }
                 var targetDescriptor = _controllers[target].Mailbox.Controller;
                 if (sourceZone < 0 || f.SourceLed >= sourceZones[sourceZone].LedCount) verdict = "SourcePixelUnavailable";
-                else if (targetDescriptor.Zones.Count != 1 || targetDescriptor.TotalLeds != 1 || targetDescriptor.Zones[0].Id != f.Target.Zone)
+                else if (targetDescriptor.Zones.Count != 1 || targetDescriptor.Zones[0].Id != f.Target.Zone || !WholeColourTarget(targetDescriptor.Zones[0]))
                     verdict = "TargetMustBeSingleAggregatePoint";
                 else if (_controllers[target].Stage.Gamma != 1f || _controllers[target].Stage.WhitePoint != Rgb.White)
                     verdict = "TargetRequiresIdentityColourStage";
@@ -79,9 +80,14 @@ public sealed partial class RenderLoop
             if (_bringup.Contains(source.Descriptor.Id) || _bringup.Contains(target.Descriptor.Id)) continue;
             // Staged source RGB is copied exactly; only identity-colour targets are eligible, so no target correction is
             // silently bypassed or double-applied. Both buffers belong to this renderer under _gate, not to writers.
-            target.Mailbox.Back.Zones[0][0] = source.Mailbox.Back.Zones[f.SourceZone][f.SourceLed];
+            target.Mailbox.Back.Zones[0].AsSpan().Fill(source.Mailbox.Back.Zones[f.SourceZone][f.SourceLed]);
         }
     }
+
+    // The aggregate point, or a zone whose own capability reports Ready per-key output for exactly its LEDs. Ordinary,
+    // unmapped or not-Ready multi-LED zones are not guessed at.
+    private static bool WholeColourTarget(ZoneDescriptor zone) =>
+        zone.LedCount == 1 || (zone.PerKey is { Ready: true } perKey && perKey.KeyCount == zone.LedCount);
 
     private bool FollowerSourceHeld(int controller)
     {

@@ -36,6 +36,9 @@ public sealed class KeyboardDisplayService : BackgroundService, IKeyboardDisplay
     private CancellationTokenSource? _sessionStop;
     private Task? _activeSession;
     private TaskCompletionSource<KeyboardResumeResult>? _resumeCompletion;
+    // Fresh-owner attempts after an RF keyboard was not ready at startup; reset by a successful startup or an explicit request.
+    private const int ColdStartRetries = 3;
+    private int _coldStartRetries;
     private KeyboardDisplayStatusDto _status;
     private byte[] _pixels = new byte[6656];
     private CaseStatusObservation? _lastObservation; // guarded by _artwork, with _artworkVersion
@@ -160,6 +163,7 @@ public sealed class KeyboardDisplayService : BackgroundService, IKeyboardDisplay
             if (enabled) RequirePins();
             Save(_settingsPath, new LocalSettings(1, enabled));
             _enabled = enabled;
+            Volatile.Write(ref _coldStartRetries, 0);
             var restartFaultedOwner = Volatile.Read(ref _status).State == "Error";
             // A declared native presentation re-selects its post-logo artwork in the same epoch: the page preference is not a
             // native entry, so it never restarts that owner (no DISARM/re-ARM, no fresh logo, the lever stays live).
@@ -242,10 +246,21 @@ public sealed class KeyboardDisplayService : BackgroundService, IKeyboardDisplay
                     faulted = true;
                     Publish("Error", "键盘响应超时；检查连接后关闭再开启，未自动重发画面", error: ex.GetType().Name + ": " + ex.Message);
                 }
+                catch (RogKeyboardNotReadyException) when (Volatile.Read(ref _coldStartRetries) < ColdStartRetries)
+                {
+                    // Raised only before any write. That owner is already disposed; the next turn acquires a fresh one through the
+                    // same factory and pairing query. A pending Resume stays pending until a startup succeeds or attempts run out.
+                    var attempt = Interlocked.Increment(ref _coldStartRetries);
+                    Publish("Connecting", $"2.4G 接收器已应答但键盘尚未就绪；未写入任何设置，正在重新连接（{attempt}/{ColdStartRetries}）");
+                    try { await Task.Delay(500, sessionStop.Token).ConfigureAwait(false); }
+                    catch (OperationCanceledException) when (sessionStop.IsCancellationRequested) { }
+                }
                 catch (Exception ex) when (ex is not OutOfMemoryException)
                 {
                     CompleteResume(new KeyboardResumeResult(true, ex));
-                    faulted = true; Publish("Error", ex is RecoveryScopeException scope ? scope.UserDetail : "键盘状态屏接入失败；检查连接后关闭再开启", error: ex.GetType().Name + ": " + ex.Message);
+                    faulted = true; Publish("Error", ex is RecoveryScopeException scope ? scope.UserDetail
+                        : ex is RogKeyboardNotReadyException ? "2.4G 键盘多次未就绪；未写入任何设置，唤醒键盘后关闭再开启"
+                        : "键盘状态屏接入失败；检查连接后关闭再开启", error: ex.GetType().Name + ": " + ex.Message);
                 }
                 finally
                 {
@@ -347,6 +362,7 @@ public sealed class KeyboardDisplayService : BackgroundService, IKeyboardDisplay
             var fresh = new TaskCompletionSource<KeyboardResumeResult>(TaskCreationOptions.RunContinuationsAsynchronously);
             _resumeCompletion = fresh;
             completion = fresh.Task;
+            Volatile.Write(ref _coldStartRetries, 0);
             Publish(_enabled ? "Connecting" : "Stopping", "正在重新读取键盘当前显示与灯光设置");
             _sessionStop?.Cancel();
         }
@@ -449,6 +465,7 @@ public sealed class KeyboardDisplayService : BackgroundService, IKeyboardDisplay
                 if (session.CurrentNativeBrightness != goal) await session.RestoreAsync(goal, ct).ConfigureAwait(false);
                 Publish("Stopped", InactiveDisplayDetail);
             }
+            Volatile.Write(ref _coldStartRetries, 0);
             CompleteResume(new KeyboardResumeResult(true, null));
             if (ownsLighting) lighting = _lighting.Attach();
             monitor = MonitorAsync();

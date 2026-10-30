@@ -15,9 +15,10 @@ namespace UnifiedRgb.Host.Tests;
 #pragma warning disable VSTHRD003 // A latch holds the restore's controller read so it can be cancelled mid-request.
 
 /// <summary>
-/// Fake-only per-key admission: output is admitted only for a Ready capability with Verified original-lighting restoration and the
-/// complete perkey-restoration-v1 capability (<see cref="Complete"/>), and it is checked before any request. Nothing here sends
-/// to a device or proves optical output or a physical restore.
+/// Fake-only per-key admission: a Ready capability (a local route map that passed the backend's map gates) is admitted whatever
+/// the restoration diagnostics say; only an actual Failed report or a capability that is not Ready blocks, and that is checked
+/// before any request. Aggregate whole-keyboard colour is never per-key. Nothing here sends to a device or proves optical output
+/// or a physical restore.
 /// </summary>
 public sealed partial class PerKeyAdmissionTests : IDisposable
 {
@@ -27,6 +28,9 @@ public sealed partial class PerKeyAdmissionTests : IDisposable
     private const string SetCall = nameof(IRgbService.SetSceneAsync);
     private const string SaveCall = nameof(IRgbService.SaveProfileAsync);
     private const string LoadCall = nameof(IRgbService.LoadProfileAsync);
+    private const string ReadyLabel = "逐灯可用 · 2 灯位";
+    private const string FailedLabel = "逐键不可用 · 原始灯光恢复失败，不发送逐键输出";
+    private const string HeldLabel = "逐键未启用 · 当前分区仍为整键盘单色";
     private static readonly JsonSerializerOptions Options = ContractsJson.Configure(new JsonSerializerOptions());
     private static readonly ZoneRefDto Keys = new(KeyboardId, 0);
     private static readonly ZoneRefDto Case = new("case:one", 0);
@@ -35,11 +39,13 @@ public sealed partial class PerKeyAdmissionTests : IDisposable
     private static readonly EffectDto Static = new("StaticColor", "Static", 1, 1, false, false, false, ["#FFFFFF"]);
     private static readonly PerKeyCapability ReadyMap = new(PerKeyState.Ready, "Local map gates passed; optical playback is not certified.", "rog-rf64-c081-v1", 2, 128);
     private static readonly PerKeyCapability NoMap = new(PerKeyState.MissingMap, "no local map", null, 0, 128);
+    // A Ready map whose backend reports an actual restore failure: the one remaining refusal of a Ready per-key zone.
+    private static readonly ZoneDto FailedZone = Restoration(PerKeyZone(ReadyMap), PerKeyRestorationStates.Failed, "snapshot read failed");
     private static readonly ControllerDto CaseController = new(Case.ControllerId, "test", "case", "Virtual", "Linear", "",
         [new(0, "zone", "Linear", 4, 0, 0)], 60, ControllerStates.Active, null, true);
     private static readonly ControllerDto WholeKeyboard = new(Whole.ControllerId, "Test", "Keyboard", "AsusRog", "Keyboard", "",
         [AggregateZoneDto(NoMap)], 30, ControllerStates.Active, null, true);
-    // The proposed backend shape while restoration is unproven: the map is Ready but the zone stays the aggregate Point.
+    // A Ready map on the aggregate shape: the zone stays the whole-keyboard Point, so its output stays one colour.
     private static readonly ControllerDto HeldKeyboard = WholeKeyboard with { Id = Held.ControllerId, Zones = [AggregateZoneDto(ReadyMap)] };
 
     // Every frozen PerKeyState has its own truthful label; a new state must not silently fall through to the default.
@@ -47,38 +53,39 @@ public sealed partial class PerKeyAdmissionTests : IDisposable
     {
         [PerKeyState.Unsupported] = "不支持逐键",
         [PerKeyState.Disabled] = "整键盘单色是独立能力",
-        [PerKeyState.MissingMap] = "缺少本机物理映射",
-        [PerKeyState.InvalidMap] = "映射无效",
-        [PerKeyState.TransportMismatch] = "映射与传输不匹配",
-        [PerKeyState.Unverified] = "待物理逐键扫描",
-        [PerKeyState.ControlUnverified] = "灯光控制待校验",
-        [PerKeyState.KeyOrderUnverified] = "键位顺序待校验",
-        [PerKeyState.Ready] = "原始灯光完整恢复未证实",
+        [PerKeyState.MissingMap] = "逐键需校准 · 缺少本机物理映射",
+        [PerKeyState.InvalidMap] = "逐键需校准 · 映射无效",
+        [PerKeyState.TransportMismatch] = "逐键需校准 · 当前路由没有对应映射",
+        [PerKeyState.Unverified] = "逐键需校准 · 待物理逐键扫描",
+        [PerKeyState.ControlUnverified] = "逐键需校准 · 灯光控制待校验",
+        [PerKeyState.KeyOrderUnverified] = "逐键需校准 · 键位顺序待校验",
+        [PerKeyState.Ready] = ReadyLabel,
     };
 
     private readonly List<IDisposable> _owned = [];
 
     [Fact]
-    public void Host_maps_every_capability_state_with_restoration_unproven_and_admits_no_per_key_output()
+    public void Host_maps_every_capability_state_with_restoration_unproven_and_admits_exactly_the_ready_map()
     {
+        DtoMapper.RestorationNotReported.Should().NotContainAny("forbidden", "not admitted", "no per-key output");
         Labels.Keys.Should().BeEquivalentTo(Enum.GetValues<PerKeyState>());
         foreach (var state in Enum.GetValues<PerKeyState>())
         {
             var capability = new PerKeyCapability(state, $"reason {state}", "rog-rf64-c081-v1", 2, 128);
             var zone = PerKeyZone(capability);
             zone.PerKey!.State.Should().Be(state.ToString());
-            zone.PerKey.Restoration.Should().Be(PerKeyRestorationStates.Unproven, "no backend reports restoration ({0})", state);
+            zone.PerKey.Restoration.Should().Be(PerKeyRestorationStates.Unproven, "no backend reports restoration, and it is never invented ({0})", state);
             zone.PerKey.RestorationReason.Should().Be(DtoMapper.RestorationNotReported);
             var result = PerKeyAdmission.Evaluate(zone);
-            result.AllowsOutput.Should().BeFalse("{0} without verified restoration is not admitted", state);
-            result.Verdict.Should().Be(state == PerKeyState.Ready ? PerKeyAdmissionVerdict.RestorationUnproven : PerKeyAdmissionVerdict.CapabilityBlocked);
+            result.AllowsOutput.Should().Be(state == PerKeyState.Ready, "unproven restoration is diagnostic; only Ready is admitted ({0})", state);
+            result.Verdict.Should().Be(state == PerKeyState.Ready ? PerKeyAdmissionVerdict.Admitted : PerKeyAdmissionVerdict.CapabilityBlocked);
             PerKeyDisplay.Zone(zone).Should().Contain(Labels[state]).And.NotContain("已准许");
 
             // The same status on the aggregate whole-keyboard zone is not a per-key target: it outputs one replicated colour.
             var aggregate = AggregateZoneDto(capability);
             PerKeyAdmission.IsAggregate(aggregate).Should().BeTrue();
             PerKeyAdmission.Evaluate(aggregate).Verdict.Should().Be(PerKeyAdmissionVerdict.NotPerKey);
-            PerKeyDisplay.Zone(aggregate).Should().Contain(Labels[state]).And.NotContain("已准许");
+            PerKeyDisplay.Zone(aggregate).Should().Be(state == PerKeyState.Ready ? HeldLabel : PerKeyDisplay.Zone(zone));
         }
     }
 
@@ -92,9 +99,9 @@ public sealed partial class PerKeyAdmissionTests : IDisposable
         dto.PerKeyFrame!.Index.Should().Be(7);
         dto.PerKeyFrame.Keys.Select(k => k.LedId).Should().Equal((byte)200, (byte)3);
         dto.PerKeyFrame.Keys.Select(k => k.Color).Should().Equal("#010203", "#040506");
-        PerKeyAdmission.Evaluate(dto.Zones.Single()).AllowsOutput.Should().BeFalse("a software frame is not restoration evidence");
+        PerKeyAdmission.Evaluate(dto.Zones.Single()).Verdict.Should().Be(PerKeyAdmissionVerdict.Admitted, "the Ready map admits; the frame is review data only");
         var item = new ControllerItem(dto);
-        item.ChinesePerKey.Should().Contain("逐键未准许").And.Contain("原始灯光完整恢复未证实");
+        item.ChinesePerKey.Should().Be(ReadyLabel);
         item.PerKeyFrameSummary.Should().Contain("非实机证明");
         item.PerKeyPixels.Select(k => k.Key).Should().Equal("SyntheticA", "SyntheticB");
         var json = JsonSerializer.Serialize(dto, Options);
@@ -107,7 +114,7 @@ public sealed partial class PerKeyAdmissionTests : IDisposable
     }
 
     [Fact]
-    public void Older_host_json_without_restoration_reads_unproven_and_legacy_zones_keep_their_shape()
+    public void Older_host_json_without_restoration_reads_unproven_is_admitted_when_ready_and_legacy_zones_keep_their_shape()
     {
         var node = JsonNode.Parse(JsonSerializer.Serialize(Keyboard(Restoration(PerKeyZone(ReadyMap), PerKeyRestorationStates.Verified, "fake")), Options))!;
         var status = node["zones"]![0]!["perKey"]!.AsObject();
@@ -116,7 +123,8 @@ public sealed partial class PerKeyAdmissionTests : IDisposable
         var older = JsonSerializer.Deserialize<ControllerDto>(node.ToJsonString(), Options)!.Zones.Single();
         older.PerKey!.Restoration.Should().Be(PerKeyRestorationStates.Unproven);
         older.PerKey.RestorationReason.Should().BeNull();
-        PerKeyAdmission.Evaluate(older).Should().Be(new PerKeyAdmissionResult(PerKeyAdmissionVerdict.RestorationUnproven, "Complete original-lighting restoration is not proven."));
+        PerKeyAdmission.Evaluate(older).Should().Be(new PerKeyAdmissionResult(PerKeyAdmissionVerdict.Admitted,
+            "Per-key map is Ready for rog-rf64-c081-v1 (2 keys); restoration diagnostics report Unproven (informational only); optical output is not certified."));
 
         var legacy = JsonSerializer.Serialize(CaseController, Options);
         legacy.Should().NotContain("perKey", "neither perKey nor perKeyFrame is written for a device without per-key status");
@@ -124,31 +132,32 @@ public sealed partial class PerKeyAdmissionTests : IDisposable
     }
 
     [Fact]
-    public void Admission_requires_a_ready_map_and_verified_restoration_and_restoration_cannot_lift_a_blocked_capability()
+    public void Admission_needs_only_a_ready_map_an_actual_restore_failure_blocks_and_restoration_cannot_lift_a_blocked_capability()
     {
         var ready = PerKeyZone(ReadyMap);
-        var verified = Complete(ready);
-        PerKeyAdmission.Evaluate(verified).Verdict.Should().Be(PerKeyAdmissionVerdict.Admitted);
-        PerKeyDisplay.Zone(verified).Should().Be("逐键已准许 · 2 键（实机效果未验收）");
-        // The Verified word alone is no longer enough: without the itemised capability it is incomplete (revision 3).
-        var bare = Restoration(ready, PerKeyRestorationStates.Verified);
-        PerKeyAdmission.Evaluate(bare).Verdict.Should().Be(PerKeyAdmissionVerdict.RestorationIncomplete);
-        PerKeyDisplay.Zone(bare).Should().Contain("原始灯光完整恢复未证实").And.NotContain("已准许");
+        foreach (var word in new[] { PerKeyRestorationStates.Unproven, PerKeyRestorationStates.Verified, "Pending", "verified", "" })
+        {
+            var zone = Restoration(ready, word, "diagnostic text");
+            PerKeyAdmission.Evaluate(zone).Verdict.Should().Be(PerKeyAdmissionVerdict.Admitted, "restoration word '{0}' is informational", word);
+            PerKeyDisplay.Zone(zone).Should().Be(ReadyLabel);
+        }
+        PerKeyAdmission.Evaluate(Complete(ready)).Verdict.Should().Be(PerKeyAdmissionVerdict.Admitted);
+        PerKeyDisplay.Zone(Complete(ready)).Should().Be(ReadyLabel);
 
-        var failed = Restoration(ready, PerKeyRestorationStates.Failed, "snapshot read failed");
-        PerKeyAdmission.Evaluate(failed).Should().Be(new PerKeyAdmissionResult(PerKeyAdmissionVerdict.RestorationFailed, "snapshot read failed"));
-        PerKeyDisplay.Zone(failed).Should().Contain("恢复预检失败");
+        PerKeyAdmission.Evaluate(FailedZone).Should().Be(new PerKeyAdmissionResult(PerKeyAdmissionVerdict.RestorationFailed, "snapshot read failed"));
+        PerKeyDisplay.Zone(FailedZone).Should().Be(FailedLabel);
         PerKeyAdmission.Evaluate(Restoration(ready, PerKeyRestorationStates.Failed)).Reason.Should().Contain("preflight failed");
-        PerKeyAdmission.Evaluate(Restoration(ready, "Pending")).Verdict.Should().Be(PerKeyAdmissionVerdict.RestorationUnproven, "an unknown word is not Verified");
-        PerKeyAdmission.Evaluate(Restoration(ready, "verified")).Verdict.Should().Be(PerKeyAdmissionVerdict.RestorationUnproven, "the match is exact");
 
         var missing = PerKeyAdmission.Evaluate(Restoration(PerKeyZone(NoMap), PerKeyRestorationStates.Verified));
         missing.Should().Be(new PerKeyAdmissionResult(PerKeyAdmissionVerdict.CapabilityBlocked, "Per-key capability is MissingMap: no local map"));
+        PerKeyAdmission.Evaluate(Complete(PerKeyZone(new PerKeyCapability(PerKeyState.KeyOrderUnverified, "order", "rog-rf64-c081-v1", 2, 128))))
+            .Verdict.Should().Be(PerKeyAdmissionVerdict.CapabilityBlocked, "a complete restoration report does not make a map Ready");
 
         PerKeyAdmission.Evaluate(WholeKeyboard.Zones.Single()).AllowsOutput.Should().BeTrue("whole-keyboard colour is not per-key output");
         PerKeyAdmission.Evaluate(HeldKeyboard.Zones.Single()).AllowsOutput.Should().BeTrue("a Ready map on the aggregate shape still outputs one colour");
-        PerKeyDisplay.Zone(Complete(HeldKeyboard.Zones.Single())).Should().Be("逐键未启用 · 当前分区仍为整键盘单色");
-        PerKeyAdmission.Evaluate(ready with { Mapped = false }).Verdict.Should().Be(PerKeyAdmissionVerdict.RestorationUnproven, "only the unmapped Point shape is aggregate");
+        PerKeyAdmission.Evaluate(Restoration(HeldKeyboard.Zones.Single(), PerKeyRestorationStates.Failed)).AllowsOutput.Should().BeTrue("aggregate colour is independent");
+        PerKeyDisplay.Zone(HeldKeyboard.Zones.Single()).Should().Be(HeldLabel);
+        PerKeyAdmission.Evaluate(ready with { Mapped = false }).Verdict.Should().Be(PerKeyAdmissionVerdict.Admitted, "only the unmapped Point shape is aggregate");
         PerKeyAdmission.Evaluate(Restoration(PerKeyZone(NoMap), PerKeyRestorationStates.Verified) with { Mapped = false, Layout = "Point" })
             .Verdict.Should().Be(PerKeyAdmissionVerdict.NotPerKey);
         PerKeyAdmission.Evaluate(CaseController.Zones.Single()).Verdict.Should().Be(PerKeyAdmissionVerdict.NotPerKey);
@@ -156,31 +165,32 @@ public sealed partial class PerKeyAdmissionTests : IDisposable
     }
 
     [Fact]
-    public void Blocked_lists_each_unadmitted_per_key_target_once_and_leaves_unknown_targets_to_the_host()
+    public void Blocked_lists_each_refused_per_key_target_once_and_leaves_unknown_targets_to_the_host()
     {
-        var keyboard = Keyboard(PerKeyZone(ReadyMap));
+        var keyboard = Keyboard(FailedZone);
         var blocked = PerKeyAdmission.Blocked([Keys, Keys, Case, Whole, Held, new(KeyboardId, 9), new("absent:one", 0)], [keyboard, CaseController, WholeKeyboard, HeldKeyboard]);
         var only = blocked.Should().ContainSingle().Subject;
         only.Target.Should().Be(Keys);
         only.Controller.Should().BeSameAs(keyboard);
-        only.Result.Verdict.Should().Be(PerKeyAdmissionVerdict.RestorationUnproven);
-        PerKeyAdmission.Blocked([Keys], [Keyboard(Complete(keyboard.Zones[0]))]).Should().BeEmpty();
-        PerKeyAdmission.Blocked([Keys], [Keyboard(Restoration(keyboard.Zones[0], PerKeyRestorationStates.Verified))])
-            .Should().ContainSingle().Which.Result.Verdict.Should().Be(PerKeyAdmissionVerdict.RestorationIncomplete);
+        only.Result.Verdict.Should().Be(PerKeyAdmissionVerdict.RestorationFailed);
+        PerKeyAdmission.Blocked([Keys, Case, Whole, Held], [Keyboard(PerKeyZone(ReadyMap)), CaseController, WholeKeyboard, HeldKeyboard]).Should().BeEmpty();
+        PerKeyAdmission.Blocked([Keys], [Keyboard(PerKeyZone(NoMap))])
+            .Should().ContainSingle().Which.Result.Verdict.Should().Be(PerKeyAdmissionVerdict.CapabilityBlocked);
 
         var refusal = FluentActions.Invoking(() => PerKeyDisplay.RequireAdmitted([Keys, Case, Whole], [keyboard, CaseController, WholeKeyboard]))
             .Should().Throw<InvalidOperationException>().Which.Message;
-        refusal.Should().StartWith("逐键输出未准许，未发送任何请求；草稿、当前场景与亮度保持不变。").And.Contain("原始灯光完整恢复未证实");
+        refusal.Should().StartWith("逐键输出未准许，未发送任何请求；草稿、当前场景与亮度保持不变。").And.Contain("原始灯光恢复失败");
         refusal.Split('\n').Should().HaveCount(2, "only the per-key zone is listed");
-        FluentActions.Invoking(() => PerKeyDisplay.RequireAdmitted([Case, Whole, Held], [keyboard, CaseController, WholeKeyboard, HeldKeyboard])).Should().NotThrow();
+        FluentActions.Invoking(() => PerKeyDisplay.RequireAdmitted([Keys, Case, Whole, Held], [Keyboard(PerKeyZone(ReadyMap)), CaseController, WholeKeyboard, HeldKeyboard]))
+            .Should().NotThrow();
     }
 
     [Fact]
-    public async Task Studio_refuses_an_unadmitted_per_key_zone_before_reading_the_scene_and_keeps_the_draft()
+    public async Task Studio_refuses_a_failed_per_key_zone_before_reading_the_scene_keeps_the_draft_and_sends_a_ready_map_once()
     {
-        var (vm, rpc, errors) = Studio(Keyboard(PerKeyZone(ReadyMap)));
+        var (vm, rpc, errors) = Studio(Keyboard(FailedZone));
         await vm.RefreshAsync();
-        vm.Zones.Single(z => z.Ref == Keys).Detail.Should().Contain("原始灯光完整恢复未证实");
+        vm.Zones.Single(z => z.Ref == Keys).Detail.Should().Contain("原始灯光恢复失败");
         vm.Draft.Brightness = 70;
         vm.Draft.Dirty.Should().BeTrue();
         var running = rpc.Scene;
@@ -189,15 +199,15 @@ public sealed partial class PerKeyAdmissionTests : IDisposable
         await vm.ApplyCommand.ExecuteAsync();
 
         errors.Should().ContainSingle().Which.Should().BeOfType<InvalidOperationException>()
-            .Which.Message.Should().Contain("逐键输出未准许").And.Contain("原始灯光完整恢复未证实");
+            .Which.Message.Should().Contain("逐键输出未准许").And.Contain("原始灯光恢复失败");
         rpc.Calls.Should().Equal(ListCall);
         rpc.Scene.Should().BeSameAs(running);
         vm.Draft.Dirty.Should().BeTrue();
         vm.Draft.Brightness.Should().Be(70);
         vm.ApplyCommand.CanExecute(null).Should().BeTrue("the command re-enables after a refusal");
 
-        // A fake Host that reports the complete verified restoration capability admits the same draft, which is then sent once.
-        rpc.Controllers = [CaseController, Keyboard(Complete(PerKeyZone(ReadyMap)))];
+        // The Host's fresh report is a Ready map with restoration only Unproven (what it really maps): the draft is sent once.
+        rpc.Controllers = [CaseController, Keyboard(PerKeyZone(ReadyMap))];
         rpc.Calls.Clear();
         await vm.ApplyCommand.ExecuteAsync();
         errors.Should().ContainSingle();
@@ -207,7 +217,7 @@ public sealed partial class PerKeyAdmissionTests : IDisposable
 
     [Theory]
     [InlineData(false, "缺少本机物理映射")]
-    [InlineData(true, "原始灯光完整恢复未证实")]
+    [InlineData(true, HeldLabel)]
     public async Task Studio_sends_whole_keyboard_colour_on_the_aggregate_zone_unchanged(bool readyMap, string label)
     {
         var aggregate = (readyMap ? HeldKeyboard : WholeKeyboard) with { Id = KeyboardId };
@@ -227,14 +237,14 @@ public sealed partial class PerKeyAdmissionTests : IDisposable
     }
 
     [Fact]
-    public async Task Legacy_effect_and_group_pages_refuse_before_requiring_the_host_and_keep_their_selection()
+    public async Task Legacy_effect_and_group_pages_refuse_a_failed_zone_before_requiring_the_host_and_pass_a_ready_map_on()
     {
         await using var client = new PipeClient("UnifiedRgb-unused-" + Guid.NewGuid().ToString("N"));
         var errors = new List<Exception>();
         using var fx = new EffectsViewModel(client, InlineDispatcher.Instance, errors.Add) { LiveApply = false };
         fx.Effects.Add(Static);
         fx.SelectedEffect = Static;
-        fx.SetControllers([CaseController, Keyboard(PerKeyZone(ReadyMap))]);
+        fx.SetControllers([CaseController, Keyboard(FailedZone)]);
         foreach (var z in fx.Zones) z.IsSelected = true;
 
         await fx.ApplyCommand.ExecuteAsync();
@@ -243,19 +253,24 @@ public sealed partial class PerKeyAdmissionTests : IDisposable
         fx.Zones.Should().HaveCount(2).And.OnlyContain(z => z.IsSelected);
         fx.ApplyCommand.CanExecute(null).Should().BeTrue();
 
-        // The aggregate whole-keyboard zone is not refused: the request goes on to the (absent) Host connection.
-        fx.SetControllers([CaseController, WholeKeyboard with { Id = KeyboardId }]);
-        await fx.ApplyCommand.ExecuteAsync();
-        errors.Should().HaveCount(2);
-        errors[1].Should().BeOfType<HostNotConnectedException>();
+        // A Ready map (restoration Unproven) and the aggregate whole-keyboard zone are not refused: the request goes on to the
+        // (absent) Host connection.
+        foreach (var keyboard in new[] { Keyboard(PerKeyZone(ReadyMap)), WholeKeyboard with { Id = KeyboardId } })
+        {
+            fx.SetControllers([CaseController, keyboard]);
+            foreach (var z in fx.Zones) z.IsSelected = true;
+            await fx.ApplyCommand.ExecuteAsync();
+            errors[^1].Should().BeOfType<HostNotConnectedException>();
+        }
+        errors.Should().HaveCount(3);
 
         var scene = new SceneViewModel(client, InlineDispatcher.Instance, errors.Add);
-        scene.Show([Keyboard(PerKeyZone(ReadyMap))], new([]));
+        scene.Show([Keyboard(FailedZone)], new([]));
         scene.Candidate = scene.AvailableZones.Single();
         scene.AddToGroupCommand.Execute(null);
         await scene.ApplyGroupCommand.ExecuteAsync();
-        errors.Should().HaveCount(3);
-        errors[2].Should().BeOfType<InvalidOperationException>().Which.Message.Should().Contain("逐键输出未准许");
+        errors.Should().HaveCount(4);
+        errors[3].Should().BeOfType<InvalidOperationException>().Which.Message.Should().Contain("逐键输出未准许");
         scene.GroupZones.Should().ContainSingle();
         scene.ApplyGroupCommand.CanExecute(null).Should().BeTrue();
     }
@@ -265,7 +280,7 @@ public sealed partial class PerKeyAdmissionTests : IDisposable
     {
         var service = DispatchProxy.Create<IRgbService, PerKeyRpc>();
         var rpc = (PerKeyRpc)(object)service;
-        rpc.Controllers = [CaseController, Keyboard(PerKeyZone(ReadyMap)), HeldKeyboard];
+        rpc.Controllers = [CaseController, Keyboard(FailedZone), HeldKeyboard];
         rpc.Backup = new("Evening", new([new([Case, Keys], "Breathing", ["#FFCC00"])]));
 
         await FluentActions.Awaiting(() => PerKeyDisplay.RequireProfileAdmittedAsync(service, "Evening"))
@@ -274,14 +289,17 @@ public sealed partial class PerKeyAdmissionTests : IDisposable
 
         rpc.Backup = new("Evening", new([new([Case, Held], "Breathing", ["#FFCC00"])]));
         await PerKeyDisplay.RequireProfileAdmittedAsync(service, "Evening");
-        rpc.Calls.Should().Equal(LoadCall, ListCall, LoadCall, ListCall);
+        rpc.Controllers = [CaseController, Keyboard(PerKeyZone(ReadyMap)), HeldKeyboard];
+        rpc.Backup = new("Evening", new([new([Case, Keys], "Breathing", ["#FFCC00"])]));
+        await PerKeyDisplay.RequireProfileAdmittedAsync(service, "Evening");
+        rpc.Calls.Should().Equal(LoadCall, ListCall, LoadCall, ListCall, LoadCall, ListCall);
         rpc.Submitted.Should().BeEmpty();
     }
 
     [Fact]
-    public async Task Lights_off_leaves_an_unadmitted_per_key_zone_out_and_says_so()
+    public async Task Lights_off_leaves_a_failed_per_key_zone_out_and_says_so_and_includes_a_ready_map()
     {
-        var (actions, rpc) = CasePower();
+        var (actions, rpc) = CasePower(FailedZone);
         var running = rpc.Scene;
 
         var result = await actions.OffAsync();
@@ -293,18 +311,23 @@ public sealed partial class PerKeyAdmissionTests : IDisposable
         rpc.Backup!.Scene.Assignments.Should().BeSameAs(running.Assignments);
         actions.Status.State.Should().Be(CasePowerRequestState.OffRequested);
 
-        // Only per-key zones active: nothing can be turned off, nothing is saved or sent.
-        var (alone, only) = CasePower();
-        only.Controllers = [Keyboard(PerKeyZone(ReadyMap))];
+        // A Ready map with restoration only Unproven is ordinary output: black reaches it with every other zone.
+        var (ready, readyRpc) = CasePower(PerKeyZone(ReadyMap));
+        (await ready.OffAsync()).Message.Should().NotContain("未准许");
+        readyRpc.Submitted.Should().ContainSingle().Which.Assignments.Should().ContainSingle().Which.Targets.Should().Equal(Case, Keys, Whole, Held);
+
+        // Only a refused per-key zone active: nothing can be turned off, nothing is saved or sent.
+        var (alone, only) = CasePower(FailedZone);
+        only.Controllers = [Keyboard(FailedZone)];
         await alone.Awaiting(a => a.OffAsync()).Should().ThrowAsync<InvalidOperationException>().WithMessage("没有可以熄灭的灯光分区。");
         only.Calls.Should().Equal(GetCall, ListCall);
         alone.Status.State.Should().Be(CasePowerRequestState.Failed);
     }
 
     [Fact]
-    public async Task Restore_refuses_a_recovery_point_with_an_unadmitted_per_key_zone_before_any_write_and_keeps_it()
+    public async Task Restore_refuses_a_recovery_point_with_a_failed_per_key_zone_before_any_write_and_keeps_it()
     {
-        var (actions, rpc) = CasePower();
+        var (actions, rpc) = CasePower(FailedZone);
         var backup = new ProfileDto(CasePowerActions.BackupProfileName, new([new([Case, Keys], "Breathing", ["#FFCC00"])]));
         rpc.Backup = backup;
 
@@ -316,8 +339,8 @@ public sealed partial class PerKeyAdmissionTests : IDisposable
         rpc.Backup.Should().BeSameAs(backup);
         actions.Status.State.Should().Be(CasePowerRequestState.Failed);
 
-        // Once a fake Host reports the complete verified restoration capability, the kept recovery point restores as a whole.
-        rpc.Controllers = [CaseController, Keyboard(Complete(PerKeyZone(ReadyMap)))];
+        // Once the fake Host no longer reports the failure (a Ready map, restoration Unproven), the kept point restores as a whole.
+        rpc.Controllers = [CaseController, Keyboard(PerKeyZone(ReadyMap))];
         (await actions.RestoreBackupAsync()).Changed.Should().BeTrue();
         rpc.Submitted.Should().ContainSingle().Which.Assignments.Should().Equal(backup.Scene.Assignments);
         actions.Status.State.Should().Be(CasePowerRequestState.RestoreRequested);
@@ -326,7 +349,7 @@ public sealed partial class PerKeyAdmissionTests : IDisposable
     [Fact]
     public async Task Cancelling_restore_during_the_admission_read_sends_nothing_and_reports_failed_not_unconfirmed()
     {
-        var (actions, rpc) = CasePower();
+        var (actions, rpc) = CasePower(PerKeyZone(ReadyMap));
         rpc.Backup = new(CasePowerActions.BackupProfileName, new([new([Case], "Breathing", ["#FFCC00"])]));
         var reading = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         rpc.ListOverride = async ct =>
@@ -361,7 +384,7 @@ public sealed partial class PerKeyAdmissionTests : IDisposable
     private static ZoneDto Restoration(ZoneDto zone, string restoration, string? reason = null) =>
         zone with { PerKey = zone.PerKey! with { Restoration = restoration, RestorationReason = reason } };
 
-    /// <summary>Restoration Verified with every perkey-restoration-v1 component Verified for the zone's own transport (fake only).</summary>
+    /// <summary>Restoration diagnostics Verified with every perkey-restoration-v1 component for the zone's own transport (fake only; never required).</summary>
     private static ZoneDto Complete(ZoneDto zone) =>
         zone with
         {
@@ -391,12 +414,12 @@ public sealed partial class PerKeyAdmissionTests : IDisposable
         return (vm, rpc, errors);
     }
 
-    private (CasePowerActions Actions, PerKeyRpc Rpc) CasePower()
+    private (CasePowerActions Actions, PerKeyRpc Rpc) CasePower(ZoneDto keys)
     {
         var service = DispatchProxy.Create<IRgbService, PerKeyRpc>();
         var rpc = (PerKeyRpc)(object)service;
         rpc.Scene = new([new([Case, Keys, Whole, Held], "Breathing", ["#FFCC00"])]);
-        rpc.Controllers = [CaseController, Keyboard(PerKeyZone(ReadyMap)), WholeKeyboard, HeldKeyboard];
+        rpc.Controllers = [CaseController, Keyboard(keys), WholeKeyboard, HeldKeyboard];
         var actions = new CasePowerActions(() => service);
         _owned.Add(actions);
         return (actions, rpc);

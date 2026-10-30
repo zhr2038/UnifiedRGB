@@ -15,7 +15,7 @@ namespace UnifiedRgb.App.Workbench;
 /// </summary>
 public sealed class NativeMenuViewModel : ObservableObject
 {
-    public const string Guide = "开启只是本机请求（默认关闭），开启本身不执行任何动作；经验证后按下切换开/关，上下拨暂不控制机箱。每次按下按后台当前场景决定；未接入来源时显示不可用。";
+    public const string Guide = "开启只保存本机请求（默认关闭）。生效后在实体键盘上切换到“光域”：短按拨杆切换灯光开/关，上下拨选择场景。是否生效以后台回读的“实际”为准；不可用时显示后台给出的原因。";
     public const string UnsupportedMessage = "当前后台版本不支持原生菜单联动（只读提示）：未发送任何指令。";
     private const string ExpiredMessage = "原生菜单联动状态已过期，等待新的后台回读。";
     private static readonly TimeSpan Freshness = TimeSpan.FromSeconds(10);

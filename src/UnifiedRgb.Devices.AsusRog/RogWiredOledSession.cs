@@ -16,12 +16,23 @@ public sealed class RogWiredOledSession(IRogOledConnection connection)
     private byte? _softwareControl;
     private bool _keyOutputActive;
 
+    // Retain the actor's fake-only delay seam; spacing belongs to the real RF connection, wired remains strict/unpaced.
+    internal Func<TimeSpan, CancellationToken, Task> KeyReportDelay
+    {
+        init { if (connection is RogWirelessOledConnection wireless) wireless.KeyReportDelay = value; }
+    }
+
     public Task<byte[]> ExchangeAsync(byte[] request, bool zeroAck, CancellationToken ct) =>
         connection.ExchangeAsync(request, zeroAck, ct);
 
     public async Task<byte> SnapshotAsync(string firmwareHeader, CancellationToken ct)
     {
         var identity = await ExchangeAsync(RogWiredOledProtocol.Query(0x12, 0), false, ct).ConfigureAwait(false);
+        // A new RF owner's first identity can precede its keyboard link: receiver envelope, empty keyboard bytes. Nothing was
+        // written and the reply is not accepted; this owner closes and a caller may acquire a fresh one.
+        if (!_identityAccepted && connection.ConnectionKind == "wireless" && RogRuntimeCompatibility.HasWirelessIdentityEnvelope(identity)
+            && !RogRuntimeCompatibility.WirelessKeyboardIdentityAvailable(identity))
+            throw new RogKeyboardNotReadyException("Wireless keyboard identity is unavailable (possibly asleep, switching or disconnected): receiver replied without keyboard firmware before any write; this owner is closed.");
         connection.RequireFirmwareIdentity(identity, firmwareHeader);
         if (identity[9] is < 1 or > 6 || identity[11] < 1 || identity[11] > identity[9])
             throw new InvalidDataException("Keyboard active profile unavailable; no output.");
@@ -240,7 +251,7 @@ public sealed class RogWiredOledSession(IRogOledConnection connection)
                         _keyOutputActive = true;
                         await SetSoftwareControlAsync(1, ct).ConfigureAwait(false);
                         LightingTouched = true; // An unknown reply must still trigger the original-lighting restore.
-                        await RogPerKeyLighting.WriteAsync(ExchangeAsync, keys.Keys, ct).ConfigureAwait(false);
+                        await connection.WriteLightingFrameAsync(keys.Keys, ct).ConfigureAwait(false);
                         keys.Completion.TrySetResult();
                     }
                     catch (Exception ex) { keys.Completion.TrySetException(ex); throw; }

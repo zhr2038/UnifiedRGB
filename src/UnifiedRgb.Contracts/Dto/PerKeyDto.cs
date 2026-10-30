@@ -2,10 +2,10 @@ namespace UnifiedRgb.Contracts.Dto;
 
 /// <summary>
 /// True per-key readiness and the reason it is unavailable; aggregate colour support is reported separately. State is the
-/// backend's PerKeyState name. Restoration (see <see cref="PerKeyRestorationStates"/>) says whether a complete original-lighting
-/// snapshot and a positively verified restore path exist; an older Host that omits it reads as Unproven. RestorationCapability
-/// (optional, omitted from JSON when null) itemises that claim under <see cref="PerKeyRestorationContract"/>; a Verified word
-/// without it is incomplete. A Ready State alone never admits output: see <see cref="UnifiedRgb.Contracts.PerKeyAdmission"/>.
+/// backend's PerKeyState name; a Ready State admits per-key output (see <see cref="UnifiedRgb.Contracts.PerKeyAdmission"/>).
+/// Restoration (see <see cref="PerKeyRestorationStates"/>) and RestorationCapability (optional, omitted from JSON when null) are
+/// diagnostics of the original-lighting snapshot/restore; an older Host that omits them reads as Unproven. Only an actual
+/// Failed report blocks output; Unproven or missing never does and is never read as Verified.
 /// </summary>
 public sealed record PerKeyStatusDto(string State, string Reason, string? Transport, int KeyCount, int MaximumKeys,
     string Restoration = PerKeyRestorationStates.Unproven, string? RestorationReason = null,
@@ -13,11 +13,10 @@ public sealed record PerKeyStatusDto(string State, string Reason, string? Transp
     PerKeyRestorationCapabilityDto? RestorationCapability = null);
 
 /// <summary>
-/// The backend's itemised original-lighting restoration capability for one per-key zone, established before any per-key output.
-/// Contract names the vocabulary (<see cref="PerKeyRestorationContract.Version"/>). Transport must equal the per-key status
-/// Transport. Scope is the exact device identity, firmware, profile and RF scope the snapshot was taken and verified for, as the
-/// backend states it; the App shows it and never interprets it. State and each component State use
-/// <see cref="PerKeyRestorationStates"/> words. Nothing here is a command, key or LED identifier.
+/// Optional backend diagnostics itemising the original-lighting restoration of one per-key zone. Contract names the vocabulary
+/// (<see cref="PerKeyRestorationContract.Version"/>); Transport and Scope are shown as the backend states them and never
+/// interpreted. State and each component State use <see cref="PerKeyRestorationStates"/> words; only a Failed word affects
+/// admission. Nothing here is a command, key or LED identifier.
 /// </summary>
 public sealed record PerKeyRestorationCapabilityDto(string Contract, string State, string Reason, string? Transport, string? Scope,
     IReadOnlyList<PerKeyRestorationComponentDto> Components);
@@ -35,15 +34,15 @@ public static class PerKeyRestorationStates
 {
     /// <summary>No complete original-lighting snapshot with a positively verified restore path is reported. The default.</summary>
     public const string Unproven = "Unproven";
-    /// <summary>The snapshot or restore preflight failed; output stays blocked until a fresh preflight succeeds.</summary>
+    /// <summary>The snapshot or restore preflight actually failed; per-key output stays blocked until a fresh report clears it.</summary>
     public const string Failed = "Failed";
     /// <summary>The backend reported a complete original-lighting snapshot and a positively verified restore path.</summary>
     public const string Verified = "Verified";
 }
 
 /// <summary>
-/// Version 1 of the restoration capability: every one of <see cref="Required"/> must be reported exactly once and Verified
-/// before per-key output is admitted. Words are exact (ordinal); a different Contract string is a different, unknown contract.
+/// Version 1 vocabulary of the restoration diagnostics. <see cref="Required"/> lists the components a complete report itemises;
+/// the App shows which are unproven but never requires them for output. Words are exact (ordinal).
 /// </summary>
 public static class PerKeyRestorationContract
 {
