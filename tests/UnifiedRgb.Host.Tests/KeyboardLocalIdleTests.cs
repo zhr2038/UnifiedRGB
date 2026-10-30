@@ -1,5 +1,4 @@
 using System.Reflection;
-using System.Runtime.CompilerServices;
 using UnifiedRgb.App.Mvvm;
 using UnifiedRgb.App.Workbench;
 using UnifiedRgb.Contracts;
@@ -140,9 +139,12 @@ public sealed class KeyboardLocalIdleTests : IDisposable
     }
 
     [Fact]
-    public void LocalIdle_supplied_packed_art_keeps_all_16_frames_and_black_caption_rows_with_even_pixel_low_nibble()
+    public void LocalIdle_packed_gray4_fixture_keeps_all_16_frames_and_black_caption_rows_with_even_pixel_low_nibble()
     {
-        var packed = File.ReadAllBytes(ArtworkPath());
+        var packed = new byte[16 * 6656];
+        for (var frame = 0; frame < 16; frame++)
+            for (var pixel = 0; pixel < 208 * 47; pixel += 2)
+                packed[frame * 6656 + pixel / 2] = (byte)(((pixel + 1 + frame) % 16 << 4) | ((pixel + frame) % 16));
         packed.Should().HaveCount(16 * 6656);
         for (var i = 0; i < 16; i++)
         {
@@ -151,11 +153,11 @@ public sealed class KeyboardLocalIdleTests : IDisposable
             var decoded = KeyboardAnimationViewModel.Decode(new(i * 1000, Convert.ToBase64String(frame)));
             decoded.Levels[0].Should().Be((byte)(frame[0] & 15));
             decoded.Levels[1].Should().Be((byte)(frame[0] >> 4));
+            decoded.Levels.Should().Equal(Enumerable.Range(0, 208 * 64).Select(pixel =>
+                pixel < 208 * 47 ? (byte)((pixel + i) % 16) : (byte)0));
         }
     }
 
-    private static string ArtworkPath([CallerFilePath] string source = "") => Path.GetFullPath(Path.Combine(Path.GetDirectoryName(source)!,
-        "../../assets/scenes/pikachu/peripheral-design-20261030/oled/gray4-frames.bin"));
     private static KeyboardDisplayAnimationSettingsDto Settings(string id) => new(true, Asset, id, "contain", KeyboardDisplayAnimationEncodings.LumaRound, 2000);
     private static async Task Ready(KeyboardDisplayAnimation animation)
     {

@@ -31,6 +31,7 @@ public sealed class KeyboardDisplayService : BackgroundService, IKeyboardDisplay
     private byte[]? _entryLogo;
     private KeyboardNativePresentation? _presentation; // the running owner session's declared native presentation (volatile)
     private readonly object _gate = new();
+    private readonly object _nativePreferenceGate = new();
     private readonly string _settingsPath, _journalPath, _nativePreferencePath;
     private string _lastRestoreOrigin = "recorded-native";
     private volatile bool _enabled;
@@ -680,13 +681,16 @@ public sealed class KeyboardDisplayService : BackgroundService, IKeyboardDisplay
 
     private NativeDisplayPreference? ReadNativePreference(NativeScope scope)
     {
-        if (!File.Exists(_nativePreferencePath)) return null;
-        var preference = Read<NativeDisplayPreference>(_nativePreferencePath);
-        if (preference.Schema != 1 || preference.Brightness is 0 or > 100
-            || preference.Origin is not ("fresh-native-while-disabled" or "pre-takeover-native" or "explicit-fallback-100"))
-            throw new InvalidDataException("Native display preference is invalid; restoration is refused.");
-        return preference.DeviceKey == scope.DeviceKey && SameProtocol(preference.FirmwareHeader, scope.FirmwareHeader)
-            && preference.ProfileToken == scope.ProfileToken ? preference : null;
+        lock (_nativePreferenceGate)
+        {
+            if (!File.Exists(_nativePreferencePath)) return null;
+            var preference = Read<NativeDisplayPreference>(_nativePreferencePath);
+            if (preference.Schema != 1 || preference.Brightness is 0 or > 100
+                || preference.Origin is not ("fresh-native-while-disabled" or "pre-takeover-native" or "explicit-fallback-100"))
+                throw new InvalidDataException("Native display preference is invalid; restoration is refused.");
+            return preference.DeviceKey == scope.DeviceKey && SameProtocol(preference.FirmwareHeader, scope.FirmwareHeader)
+                && preference.ProfileToken == scope.ProfileToken ? preference : null;
+        }
     }
 
     // Recorded scope binds the same device key and profile (checked by callers) plus the same transport label; OEM bytes in
@@ -703,15 +707,20 @@ public sealed class KeyboardDisplayService : BackgroundService, IKeyboardDisplay
 
     private void SaveNativePreference(NativeDisplayPreference preference)
     {
-        Directory.CreateDirectory(Path.GetDirectoryName(_nativePreferencePath)!);
-        var temporary = _nativePreferencePath + ".tmp";
-        var bytes = JsonSerializer.SerializeToUtf8Bytes(preference);
-        using (var stream = new FileStream(temporary, FileMode.Create, FileAccess.Write, FileShare.None))
+        // Owner observations and explicit lifecycle recovery can publish concurrently. Serialize the complete write/replace
+        // transaction (and readers above), so neither caller truncates the other's temporary file or replaces an open reader.
+        lock (_nativePreferenceGate)
         {
-            stream.Write(bytes);
-            stream.Flush(true);
+            Directory.CreateDirectory(Path.GetDirectoryName(_nativePreferencePath)!);
+            var temporary = _nativePreferencePath + ".tmp";
+            var bytes = JsonSerializer.SerializeToUtf8Bytes(preference);
+            using (var stream = new FileStream(temporary, FileMode.Create, FileAccess.Write, FileShare.None))
+            {
+                stream.Write(bytes);
+                stream.Flush(true);
+            }
+            File.Move(temporary, _nativePreferencePath, true);
         }
-        File.Move(temporary, _nativePreferencePath, true);
     }
 
     /// <summary>

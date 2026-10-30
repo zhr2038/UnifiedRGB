@@ -29,7 +29,9 @@
    <StackPanel DataContext="{Binding KeyboardAnimation}">
     <TextBlock Text="键盘屏幕动画" FontWeight="SemiBold"/>
     <TextBlock Text="{x:Static w:KeyboardAnimationViewModel.Scope}" Style="{StaticResource Caption}" TextWrapping="Wrap"/>
-    <TextBlock Text="{x:Static w:KeyboardAnimationViewModel.SourceGuide}" Style="{StaticResource Caption}" TextWrapping="Wrap"/>
+    <Expander Header="来源与时钟说明" Margin="0,4,0,8">
+     <TextBlock Text="{x:Static w:KeyboardAnimationViewModel.SourceGuide}" Style="{StaticResource Caption}" TextWrapping="Wrap" Margin="0,6,0,0"/>
+    </Expander>
     <TextBlock Text="{Binding StateTitle}" Margin="0,6,0,0" TextWrapping="Wrap"/>
     <TextBlock Text="{Binding StatusLine}" Style="{StaticResource Caption}" TextWrapping="Wrap"/>
     <TextBlock Text="{Binding Detail}" Style="{StaticResource Caption}" TextWrapping="Wrap"/>
@@ -57,15 +59,16 @@
     </ComboBox>
     <Button Content="导入文件到本机素材库" Command="{Binding ImportCommand}" Visibility="{Binding CanOfferImport, Converter={StaticResource Visible}, FallbackValue=Collapsed}" Margin="0,6,0,0" Style="{StaticResource QuietButton}" ToolTip="选择图片、GIF 或 MP4，经现有素材上传加入本机素材库并在草稿中选中；不应用到机箱屏幕、场景或灯光，不自动保存键盘设置。"/>
     <TextBlock Text="{x:Static w:KeyboardAnimationViewModel.ImportNote}" Visibility="{Binding CanOfferImport, Converter={StaticResource Visible}, FallbackValue=Collapsed}" Style="{StaticResource Caption}" TextWrapping="Wrap"/>
-    <UniformGrid Columns="3" Margin="0,6,0,0">
-     <ComboBox ItemsSource="{Binding Fits}" SelectedItem="{Binding SelectedFit}" DisplayMemberPath="Label" IsEnabled="{Binding CanEdit}" Margin="0,0,4,0" AutomationProperties.Name="适配方式"/>
-     <ComboBox ItemsSource="{Binding Encodings}" SelectedItem="{Binding SelectedEncoding}" DisplayMemberPath="Label" IsEnabled="{Binding CanEdit}" Margin="4,0" AutomationProperties.Name="灰度编码"/>
-     <ComboBox ItemsSource="{Binding Intervals}" SelectedItem="{Binding SelectedInterval}" DisplayMemberPath="Label" IsEnabled="{Binding CanEdit}" Margin="4,0,0,0" AutomationProperties.Name="最短更新间隔"/>
-    </UniformGrid>
+    <TextBlock Text="适配方式" Style="{StaticResource FieldLabel}"/>
+    <ComboBox ItemsSource="{Binding Fits}" SelectedItem="{Binding SelectedFit}" DisplayMemberPath="Label" IsEnabled="{Binding CanEdit}" AutomationProperties.Name="适配方式"/>
+    <TextBlock Text="灰度编码" Style="{StaticResource FieldLabel}"/>
+    <ComboBox ItemsSource="{Binding Encodings}" SelectedItem="{Binding SelectedEncoding}" DisplayMemberPath="Label" IsEnabled="{Binding CanEdit}" AutomationProperties.Name="灰度编码"/>
+    <TextBlock Text="最短更新间隔" Style="{StaticResource FieldLabel}"/>
+    <ComboBox ItemsSource="{Binding Intervals}" SelectedItem="{Binding SelectedInterval}" DisplayMemberPath="Label" IsEnabled="{Binding CanEdit}" AutomationProperties.Name="最短更新间隔"/>
     <TextBlock Text="{Binding IntervalNote}" Style="{StaticResource Caption}" TextWrapping="Wrap"/>
-    <UniformGrid Columns="3" Margin="0,8,0,4">
-     <Button Content="{Binding EnableLabel}" Command="{Binding EnableCommand}" Margin="0,0,4,0" ToolTip="只保存本机偏好；后台准许且键盘状态屏运行时才会按共享时间轴发送画面。"/>
-     <Button Content="停用键盘动画" Command="{Binding DisableCommand}" Style="{StaticResource QuietButton}" Margin="4,0" ToolTip="回到键盘状态屏；保留所选素材与选项。"/>
+    <Button Content="{Binding EnableLabel}" Command="{Binding EnableCommand}" Margin="0,8,0,4" ToolTip="只保存本机偏好；后台准许且键盘状态屏运行时才会按共享时间轴发送画面。"/>
+    <UniformGrid Columns="2" Margin="0,0,0,4">
+     <Button Content="停用键盘动画" Command="{Binding DisableCommand}" Style="{StaticResource QuietButton}" Margin="0,0,4,0" ToolTip="回到键盘状态屏；保留所选素材与选项。"/>
      <Button Content="生成预览" Command="{Binding PreviewCommand}" Style="{StaticResource QuietButton}" Margin="4,0,0,0" ToolTip="由后台按所选选项实际编码几帧并解码显示；不发送到键盘。"/>
     </UniformGrid>
     <TextBlock Text="{Binding PreviewMessage}" Style="{StaticResource Caption}" TextWrapping="Wrap"/>

@@ -68,7 +68,7 @@ public sealed partial class KeyboardRuntimeCompatibilityTests : IDisposable
             case "device": key = new string('B', 64); break;
             case "kind": kind = "bluetooth"; break;
             case "cross-kind": kind = "wireless"; break;
-            case "scope-family": header = "001200000024000200"; break;
+            case "scope-family": header = "001300000024000200"; break;
             default: header = Wireless24; break;
         }
         policy.MatchesScope(key, header, kind).Should().BeFalse();
@@ -156,7 +156,7 @@ public sealed partial class KeyboardRuntimeCompatibilityTests : IDisposable
     }
 
     [Theory]
-    [InlineData("device")] [InlineData("transport")] [InlineData("profile")] [InlineData("family")] [InlineData("malformed")]
+    [InlineData("device")] [InlineData("transport")] [InlineData("profile")] [InlineData("malformed-label")] [InlineData("malformed")]
     [InlineData("missing")] [InlineData("schema1-mismatch")]
     public async Task Journal_for_another_device_transport_profile_or_family_is_retained_without_any_write(string fault)
     {
@@ -165,7 +165,7 @@ public sealed partial class KeyboardRuntimeCompatibilityTests : IDisposable
             "device" => new { Schema = 2, DeviceKey = new string('B', 64), FirmwareHeader = Wired24, Brightness = (byte)25, ProfileToken = (byte)6 },
             "transport" => new { Schema = 2, DeviceKey = Key, FirmwareHeader = Wireless24, Brightness = (byte)25, ProfileToken = (byte)6 },
             "profile" => new { Schema = 2, DeviceKey = Key, FirmwareHeader = Wired24, Brightness = (byte)25, ProfileToken = (byte)5 },
-            "family" => new { Schema = 2, DeviceKey = Key, FirmwareHeader = "001200000024000200", Brightness = (byte)25, ProfileToken = (byte)6 },
+            "malformed-label" => new { Schema = 2, DeviceKey = Key, FirmwareHeader = "001300000024000200", Brightness = (byte)25, ProfileToken = (byte)6 },
             "malformed" => new { Schema = 2, DeviceKey = Key, FirmwareHeader = "00120000002G000100", Brightness = (byte)25, ProfileToken = (byte)6 },
             "missing" => new { Schema = 2, DeviceKey = Key, Brightness = (byte)25, ProfileToken = (byte)6 },
             _ => new { Schema = 1, DeviceKey = Key, FirmwareHeader = Wired25, Brightness = (byte)40 },
@@ -205,13 +205,13 @@ public sealed partial class KeyboardRuntimeCompatibilityTests : IDisposable
     }
 
     [Theory]
-    [InlineData("cross-transport")] [InlineData("family")] [InlineData("device")]
+    [InlineData("cross-transport")] [InlineData("malformed-label")] [InlineData("device")]
     public async Task Peripheral_release_never_replays_a_journal_across_transport_family_or_device(string fault)
     {
         var bytes = WriteJournal(new
         {
             Schema = 2, DeviceKey = fault == "device" ? new string('B', 64) : Key,
-            FirmwareHeader = fault switch { "cross-transport" => Wireless24, "family" => "001200000024000200", _ => Wired24 },
+            FirmwareHeader = fault switch { "cross-transport" => Wireless24, "malformed-label" => "001300000024000200", _ => Wired24 },
             Brightness = (byte)25, ProfileToken = (byte)6,
         });
         var wired = new WiredFactory(_ => new Io { Patch = 0x24 });
@@ -221,16 +221,16 @@ public sealed partial class KeyboardRuntimeCompatibilityTests : IDisposable
     }
 
     [Fact]
-    public async Task Genuinely_incompatible_firmware_family_is_a_sticky_error_without_mutation_or_reopen()
+    public async Task Malformed_live_identity_is_a_sticky_error_without_mutation_or_reopen()
     {
-        var factory = new WiredFactory(_ => new Io { Patch = 0x25, Major = 2 });
+        var factory = new WiredFactory(_ => new Io { Patch = 0x25, MalformedIdentity = true });
         using var service = Make(Pinned(Wired24), factory);
         await service.StartAsync(default);
         try
         {
             await WaitAsync(service, "Error"); await Task.Delay(700);
             factory.Devices.Should().ContainSingle(); factory.Devices[0].Mutations.Should().Be(0);
-            (await service.GetKeyboardDisplayStatusAsync()).LastError.Should().Contain("firmware differs");
+            (await service.GetKeyboardDisplayStatusAsync()).LastError.Should().Contain("protocol response invalid");
         }
         finally { await service.StopAsync(default); }
         File.Exists(JournalPath).Should().BeFalse();
@@ -384,6 +384,7 @@ public sealed partial class KeyboardRuntimeCompatibilityTests : IDisposable
         private readonly Channel<byte[]> _queue = Channel.CreateBounded<byte[]>(8);
         public byte Patch { get; set; } = 0x24;
         public byte Major { get; init; } = 1;
+        public bool MalformedIdentity { get; set; }
         public byte Brightness { get; set; } = 25;
         public int Mutations { get; private set; }
         public int NativeQueries { get; private set; }
@@ -396,7 +397,7 @@ public sealed partial class KeyboardRuntimeCompatibilityTests : IDisposable
             ct.ThrowIfCancellationRequested(); var p = request.ToArray(); var b = new byte[65]; p.AsSpan(0, 5).CopyTo(b);
             switch (p[1], p[2])
             {
-                case (0x12, 0): b[5] = Patch; b[7] = Major; b[9] = 6; b[11] = 6; break;
+                case (0x12, 0): b[2] = MalformedIdentity ? (byte)1 : (byte)0; b[5] = Patch; b[7] = Major; b[9] = 6; b[11] = 6; break;
                 case (0x21, 0): b[5] = 3; break;
                 case (0x23, 2): b[5] = 1; break;
                 case (0x23, 3): b[5] = Brightness; break;

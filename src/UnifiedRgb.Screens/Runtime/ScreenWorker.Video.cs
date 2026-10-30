@@ -48,7 +48,7 @@ internal sealed partial class ScreenWorker
             _videoEncoderVariant = variant;
         }
         _videoEncoder ??= new MfH264IntraEncoder(native.Width, native.Height, fullRange: turzx,
-            singleSlice: variant.SingleSlice, quality: variant.Quality);
+            singleSlice: variant.SingleSlice, quality: variant.Quality, workerThreads: _ctx.NativeVideoWorkerThreadsForTest);
         var bytes = _videoEncoder.Encode(native);
         return new(Protocol.TurzxVideoProtocol.DataCommand, bytes, turzx
             ? $"H.264 all-IDR Baseline Q{variant.Quality}, {_videoEncoder.LastSliceCount} slices; host/shared-clock-selected picture; "

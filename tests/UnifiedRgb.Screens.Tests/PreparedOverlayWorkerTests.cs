@@ -20,6 +20,44 @@ public sealed class PreparedOverlayWorkerTests(ITestOutputHelper output)
     private const int LayerBytes = 1920 * 480 * 4;
 
     [MediaFoundationFact]
+    public async Task Picture_barrier_does_not_advance_the_frozen_clock_while_the_previous_overlay_is_still_composing()
+    {
+        using var release = new ManualResetEventSlim();
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        NativeWorkerHarness? worker = null;
+        var block = false; var held = 0;
+        using var h = await NativeWorkerHarness.StartAsync(NativeWorkerHarness.NewTrial("picture-barrier"), overlay: "none",
+            customize: c => c with { Telemetry = () =>
+            {
+                if (Volatile.Read(ref block) && worker!.DataWrites >= 2 && Interlocked.Exchange(ref held, 1) == 0)
+                {
+                    entered.TrySetResult();
+                    if (!release.Wait(TimeSpan.FromSeconds(5))) throw new TimeoutException("Overlay barrier fixture was not released.");
+                }
+                return HeadlessProbe.Telemetry;
+            } });
+        worker = h;
+        await NativeWorkerHarness.SettleAsync(() => h.Worker.Performance.NativeVideo?.AccessUnits == 1, "first completed picture");
+        Volatile.Write(ref block, true);
+        var post = h.PostAsync(h.Assignment with { Overlay = "dashboard" });
+        Task? next = null;
+        bool stayedFrozen;
+        try
+        {
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await post; // its data write is settled, while the deliberately blocked overlay has not completed
+            h.DataWrites.Should().Be(2); Facts(h).AccessUnits.Should().Be(1);
+            var timestamp = h.Time.GetTimestamp();
+            next = PictureAsync(h);
+            stayedFrozen = h.Time.GetTimestamp() == timestamp;
+        }
+        finally { release.Set(); }
+        await next!;
+        stayedFrozen.Should().BeTrue("the previous data packet precedes its overlay; a telemetry state cannot be changed until that picture completes");
+        Facts(h).AccessUnits.Should().Be(3); h.DataWrites.Should().Be(3);
+    }
+
+    [MediaFoundationFact]
     public async Task Default_trials_create_no_preparer_send_no_query_and_report_no_lab_facts()
     {
         using var h = await NativeWorkerHarness.StartAsync(NativeWorkerHarness.NewTrial("default"));

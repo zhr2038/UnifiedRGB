@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "name": "Before Lights Off",
+  "scene": {
+    "assignments": [
+      { "targets": [{ "controllerId": "fake:case", "zoneId": 0 }], "effectId": "Rainbow", "colors": ["#FF0000", "#00FF00"], "brightness": 0.8, "speed": 0.75, "reverse": true },
+      { "targets": [{ "controllerId": "fake:keyboard", "zoneId": 0 }], "effectId": "StaticColor", "colors": ["#123456"], "brightness": 1 }
+    ],
+    "package": { "contentId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "bindingId": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "playbackContract": "scene-package-playback-v1" }
+  }
+}

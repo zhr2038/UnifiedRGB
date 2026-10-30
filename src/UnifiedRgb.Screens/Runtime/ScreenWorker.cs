@@ -60,6 +60,8 @@ internal sealed record ScreenWorkerContext(
     /// inline overlay operations, <see cref="ScreenWorker.PrepareOverlayPng"/>.
     /// </summary>
     public Func<OverlayPreparationRequest, (byte[] Bytes, string Note)>? PrepareOverlayForTest { get; init; }
+    /// <summary>Golden-wire test seam only. Null leaves Media Foundation's production automatic thread/slice choice unchanged.</summary>
+    public int? NativeVideoWorkerThreadsForTest { get; init; }
 }
 
 internal sealed record WorkerCommand(ScreenAssignmentDto? Assignment, bool Paused, bool Stop = false);

@@ -89,7 +89,7 @@ public sealed partial class RogNativeMenuSourceTests
         await rig.Prepared();
         await rig.Declared();
         capability.Scopes.Should().ContainSingle().Which.Should().Be(
-            new KeyboardNativePresentationScope(rig.Control.DeviceKey, rig.Control.FirmwareHeader, "wired"));
+            new KeyboardNativePresentationScope(rig.Control.DeviceKey, RogRuntimeCompatibility.NativeFamilyAnchor("wired")!, "wired"));
 
         // Ordinary mode 7 under installed ownership: unchanged (no image, no frame selection).
         var ordinary = await rig.Owner.GetKeyboardDisplayAnimationAsync();
@@ -316,6 +316,9 @@ public sealed partial class RogNativeMenuSourceTests
         await rig.Owner.StartAsync(default);
         await Until(() => rig.Control.ImageBegins >= 1);
         await rig.Prepared();
+        await Until(() => rig.Shows(rig.Logo));
+        await Until(() => rig.Owner.GetKeyboardDisplayStatusAsync().GetAwaiter().GetResult().FramesAcknowledged >= 1);
+        rig.Clock.Advance(TimeSpan.FromMilliseconds(KeyboardNativePresentation.EntryLogoMs));
         await Until(() => rig.Shows(KeyboardDisplayServiceTests.Fill(0x22)));
         var status = await rig.Owner.GetKeyboardDisplayAnimationAsync();
         status.State.Should().Be(KeyboardDisplayAnimationStates.Playing);

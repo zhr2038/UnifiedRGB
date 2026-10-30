@@ -13,7 +13,7 @@ public sealed partial class RogNativeMenuSourceTests
     [Theory]
     [InlineData("arm-cookie")]
     [InlineData("arm-epoch")]
-    [InlineData("arm-build")]
+    [InlineData("arm-grammar")]
     public async Task Semantic_ARM_failure_reaches_actual_owner_as_unknown_and_retains_journal_without_cleanup(string fault)
     {
         var data = Path.Combine(Path.GetTempPath(), "SolNativeMutation-" + Guid.NewGuid().ToString("N"));
@@ -56,7 +56,7 @@ public sealed partial class RogNativeMenuSourceTests
     [Theory]
     [InlineData("disarm-epoch")]
     [InlineData("disarm-status")]
-    [InlineData("disarm-build")]
+    [InlineData("disarm-grammar")]
     public async Task Semantic_DISARM_failure_latches_unknown_before_Stop_or_Dispose_can_do_further_control_IO(string fault)
     {
         await using var rig = new Rig(1); rig.Source.RequestEnabled(true);
@@ -73,7 +73,7 @@ public sealed partial class RogNativeMenuSourceTests
     [Fact]
     public async Task Unsupported_read_only_CAP_remains_unavailable_without_poisoning_native_recovery()
     {
-        await using var rig = new Rig(1); rig.Source.RequestEnabled(true); rig.Io.BadBuild = true;
+        await using var rig = new Rig(1); rig.Source.RequestEnabled(true); rig.Io.BadCapabilityGrammar = true;
         (await rig.Actor.StepAsync(Pixels, default)).Should().BeFalse();
         rig.Actor.RecoveryBlocked.Should().BeFalse(); rig.Source.IsPresent.Should().BeFalse();
         rig.Io.Writes.Should().Equal("12/7D"); rig.Input.Opens.Should().Be(0);
@@ -87,7 +87,7 @@ public sealed partial class RogNativeMenuSourceTests
         public RogWiredOledConnection? TryOpen(string deviceKey) => throw new InvalidOperationException("Exact firmware overload required.");
         public RogWiredOledConnection? TryOpen(string deviceKey, string firmwareHeader)
         {
-            deviceKey.Should().Be(control.DeviceKey); firmwareHeader.Should().Be(control.FirmwareHeader); Opens++;
+            deviceKey.Should().Be(control.DeviceKey); firmwareHeader.Should().Be(RogRuntimeCompatibility.NativeFamilyAnchor(control.ConnectionKind)); Opens++;
             Channel = new(control, () => { beforeArm(); MutationWritten.TrySetResult(); });
             return new(Channel, () => true, () => deviceKey, () => firmwareHeader) { NativeControlBinding = control.NativeControlBinding };
         }

@@ -55,7 +55,7 @@ public sealed partial class KeyboardDisplayServiceTests
         await service.StartAsync(default);
         try
         {
-            await WaitAsync(service, "Running");
+            await rig.ReadyAsync(service);
             var status = rig.Factory.Image(0);
             status.Should().Equal(service.ArtworkPixels.ToArray());
             rig.Timeline.At(1500);
@@ -87,7 +87,7 @@ public sealed partial class KeyboardDisplayServiceTests
             rig.Time.Advance(TimeSpan.FromMilliseconds(1));
             await rig.ImagesAsync(4);
             rig.Factory.Image(3).Should().Equal(Fill(0x33));
-            await UntilAsync(() => service.GetKeyboardDisplayStatusAsync().GetAwaiter().GetResult().FramesAcknowledged == 4, "fourth ACK");
+            await UntilAsync(() => service.GetKeyboardDisplayStatusAsync().GetAwaiter().GetResult().FramesAcknowledged == 4 + rig.Factory.EntryLogos, "fourth content ACK plus entry Logo");
             (Animation(service).Selected, Animation(service).Acknowledged).Should().Be((3L, 3L));
             rig.Factory.Opens.Should().Be(1);
             rig.Media.Prepares.Should().Be(1);
@@ -105,7 +105,7 @@ public sealed partial class KeyboardDisplayServiceTests
         await service.StartAsync(default);
         try
         {
-            await WaitAsync(service, "Running");
+            await rig.ReadyAsync(service);
             await service.SetKeyboardDisplayAnimationAsync(Enable(AssetA) with { IntervalMs = 5000 });
             await rig.ImagesAsync(2);
             rig.Timeline.At(1000);
@@ -127,7 +127,7 @@ public sealed partial class KeyboardDisplayServiceTests
         await service.StartAsync(default);
         try
         {
-            await WaitAsync(service, "Running");
+            await rig.ReadyAsync(service);
             await service.SetKeyboardDisplayAnimationAsync(Enable(AssetA));
             await rig.ImagesAsync(2);
             rig.Factory.Image(1).Should().Equal(Fill(0x11));
@@ -160,7 +160,7 @@ public sealed partial class KeyboardDisplayServiceTests
         await service.StartAsync(default);
         try
         {
-            await WaitAsync(service, "Running");
+            await rig.ReadyAsync(service);
             var slow = 1;
             rig.Factory.FirstChunk = () => { if (Interlocked.Exchange(ref slow, 0) == 1) rig.Time.Advance(TimeSpan.FromMilliseconds(1500)); };
             await service.SetKeyboardDisplayAnimationAsync(Enable(AssetA));
@@ -193,7 +193,7 @@ public sealed partial class KeyboardDisplayServiceTests
         await service.StartAsync(default);
         try
         {
-            await WaitAsync(service, "Running");
+            await rig.ReadyAsync(service);
             var on = Enable(AssetA);
             rig.Timeline.At(1200);
             await service.SetKeyboardDisplayAnimationAsync(on);
@@ -226,7 +226,7 @@ public sealed partial class KeyboardDisplayServiceTests
             rig.Factory.Count.Should().Be(count, "nothing is uploaded while the page is off");
 
             await service.SetKeyboardDisplayEnabledAsync(true);
-            await WaitAsync(service, "Running");
+            await rig.ReadyAsync(service);
             await rig.ImagesAsync(count + 1);
             rig.Factory.Image(count).Should().Equal(Fill(0x33), "the new session shows the current shared position, never the frame held before");
             rig.Factory.Opens.Should().Be(2);
@@ -244,7 +244,7 @@ public sealed partial class KeyboardDisplayServiceTests
         await service.StartAsync(default);
         try
         {
-            await WaitAsync(service, "Running");
+            await rig.ReadyAsync(service);
             rig.Timeline.At(1500);
             (await service.SetKeyboardDisplayAnimationAsync(Enable(AssetA))).State.Should().Be(KeyboardDisplayAnimationStates.Preparing);
             await UntilAsync(() => rig.Media.Tokens.Count == 1, "preparation A");
@@ -412,7 +412,7 @@ public sealed partial class KeyboardDisplayServiceTests
         await service.StartAsync(default);
         try
         {
-            await WaitAsync(service, "Running");
+            await rig.ReadyAsync(service);
             await service.SetKeyboardDisplayAnimationAsync(Enable(AssetA));
             await rig.ImagesAsync(2);
             var writes = rig.Factory.Io.NativeWrites;
@@ -466,17 +466,20 @@ public sealed partial class KeyboardDisplayServiceTests
         var source = media ?? new FakeKeyboardOledMedia();
         source.Scene = new([new("screen:h2:test", AssetA, TimelineId: SharedTimelineId)]); // the same status artwork in every run
         var screens = KeyboardAnimationScreens.Create(source);
-        var factory = new TapFactory();
+        var entryTime = new ManualTimeProvider();
+        var factory = new TapFactory { EntryAcknowledged = () => entryTime.Advance(TimeSpan.FromMilliseconds(KeyboardNativePresentation.EntryLogoMs)) };
         var options = new UnifiedRgbOptions { DataDirectory = _directory, KeyboardDisplay = Pinned() with { AnimationAdmitted = admitted } };
         var rgb = DispatchProxy.Create<IRgbService, ReadProxy>();
         using var service = media is null
-            ? new KeyboardDisplayService(options, rgb, screens, factory, new ClearGuard())
-            : new KeyboardDisplayService(options, rgb, screens, factory, new ClearGuard(), keyboardMedia: media, sharedTimeline: timeline, time: new ManualTimeProvider());
+            ? new KeyboardDisplayService(options, rgb, screens, factory, new ClearGuard(), time: entryTime)
+            : new KeyboardDisplayService(options, rgb, screens, factory, new ClearGuard(), keyboardMedia: media, sharedTimeline: timeline, time: entryTime);
         await service.StartAsync(default);
         string detail;
         try
         {
             await WaitAsync(service, "Running");
+            await UntilAsync(() => factory.Count >= 1, "post-logo status content");
+            factory.EntryLogos.Should().Be(1);
             await Task.Delay(400);
             detail = (await service.GetKeyboardDisplayStatusAsync()).Detail;
         }
@@ -504,8 +507,16 @@ public sealed partial class KeyboardDisplayServiceTests
             owner._rgbProxy = (ReadProxy)rgb;
             var screens = KeyboardAnimationScreens.Create(Media);
             Screens = (KeyboardAnimationScreens)(object)screens;
+            Factory.EntryAcknowledged = () => Time.Advance(TimeSpan.FromMilliseconds(KeyboardNativePresentation.EntryLogoMs));
             return new(new UnifiedRgbOptions { DataDirectory = owner._directory, KeyboardDisplay = options }, rgb, screens, Factory, new ClearGuard(), bridge,
                 keyboardMedia: Media, sharedTimeline: Timeline, time: Time);
+        }
+
+        public async Task ReadyAsync(KeyboardDisplayService service)
+        {
+            await WaitAsync(service, "Running");
+            await ImagesAsync(1);
+            Factory.EntryLogos.Should().Be(Factory.Opens, "each new owner ACKed its one entry Logo before content");
         }
 
         public Task ImagesAsync(int count) => UntilAsync(() => Factory.Count >= count, count + " uploaded images");
@@ -519,6 +530,9 @@ public sealed partial class KeyboardDisplayServiceTests
         public int Opens { get; private set; }
         public List<string> Writes { get; } = [];
         public Action? FirstChunk { get; set; }
+        public Action? EntryAcknowledged { get; set; }
+        public int EntryLogos { get; private set; }
+        private static readonly byte[] EntryLogo = KeyboardStatusArtwork.RenderLogo();
         public int Count { get { lock (_images) return _images.Count; } }
         public byte[] Image(int index) { lock (_images) return _images[index]; }
         public RogWiredOledConnection? TryOpen(string key)
@@ -530,15 +544,30 @@ public sealed partial class KeyboardDisplayServiceTests
         private sealed class Tap(Io io, TapFactory owner) : IHidReportChannel
         {
             private readonly List<byte> _image = [];
+            private bool _entryRenewal;
             public async ValueTask WriteAsync(ReadOnlyMemory<byte> request, CancellationToken ct)
             {
                 var p = request.ToArray();
+                if (p[1] == 0x67 && p[2] == 2 && _entryRenewal)
+                {
+                    _entryRenewal = false;
+                    owner.EntryAcknowledged?.Invoke(); // the preceding upload callback has ACKed the Logo and started its bound
+                }
                 if (p[1] == 0x67 && p[2] == 0) _image.Clear();
                 if (p[1] == 0x67 && p[2] == 1)
                 {
                     if (_image.Count == 0) owner.FirstChunk?.Invoke();
                     _image.AddRange(p.AsSpan(5, Math.Min(60, KeyboardOledFormat.PackedBytes - _image.Count)).ToArray());
-                    if (BinaryPrimitives.ReadUInt16LittleEndian(p.AsSpan(3)) == 0) lock (owner._images) owner._images.Add([.. _image]);
+                    if (BinaryPrimitives.ReadUInt16LittleEndian(p.AsSpan(3)) == 0)
+                    {
+                        var completed = _image.ToArray();
+                        if (completed.AsSpan().SequenceEqual(EntryLogo))
+                        {
+                            owner.EntryLogos++;
+                            _entryRenewal = true;
+                        }
+                        else lock (owner._images) owner._images.Add(completed);
+                    }
                 }
                 if (!(p[1] == 0x67 && p[2] == 2)) lock (owner.Writes) owner.Writes.Add(Convert.ToHexString(p)); // lease renewals are timing, not content
                 await io.WriteAsync(request, ct);

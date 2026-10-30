@@ -163,7 +163,11 @@ public sealed partial class NativeInputDiscoveryTests
             await ((Func<Task>)(() => rig.Actor.StepAsync(Pixels, default))).Should().ThrowAsync<InvalidDataException>();
             rig.Actor.RecoveryBlocked.Should().BeTrue();
         }
-        else (await rig.Actor.StepAsync(Pixels, default)).Should().BeFalse();
+        else
+        {
+            rig.Time.Advance(TimeSpan.FromMilliseconds(100)); // the bounded CAP cache expires before the next physical observation
+            (await rig.Actor.StepAsync(Pixels, default)).Should().BeFalse();
+        }
         rig.Io.PairingEvidence!.Invalidated.Should().BeNull("the evidence was current; the other scope check ended the context");
         rig.Events.OfType<NativeMenuPress>().Should().BeEmpty();
         rig.Events.OfType<NativeMenuContextEnded>().Should().ContainSingle();

@@ -49,6 +49,7 @@ public sealed partial class KeyboardDisplayServiceTests
         var media = new FakeKeyboardOledMedia { Scene = new([new("screen:h2:test", AssetA, TimelineId: id)]) };
         var factory = new TapFactory();
         var time = new ManualTimeProvider();
+        factory.EntryAcknowledged = () => time.Advance(TimeSpan.FromMilliseconds(KeyboardNativePresentation.EntryLogoMs));
         var rgb = DispatchProxy.Create<IRgbService, ReadProxy>();
         _rgbProxy = (ReadProxy)rgb;
         var keyboardScreens = KeyboardAnimationScreens.Create(media);
@@ -58,6 +59,8 @@ public sealed partial class KeyboardDisplayServiceTests
         try
         {
             await WaitAsync(service, "Running");
+            await UntilAsync(() => factory.Count >= 1, "post-entry status content");
+            factory.EntryLogos.Should().Be(1);
             var status = service.ArtworkPixels.ToArray();
             factory.Image(0).Should().Equal(status);
 

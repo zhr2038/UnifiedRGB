@@ -66,7 +66,7 @@ public sealed class CapabilityInputIntegrationTests
                 using (var connection = Connection(io))
                 {
                     var identity = Identity(0x25);
-                    identity[14] = 2;
+                    identity[1] = 0x13;
                     ((Action)(() => connection.RequireFirmwareIdentity(identity, RfFamily)))
                         .Should().Throw<InvalidDataException>();
                     io.Commands.Should().Be(0);

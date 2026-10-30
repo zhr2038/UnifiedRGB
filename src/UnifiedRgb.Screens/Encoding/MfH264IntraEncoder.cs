@@ -23,8 +23,9 @@ internal sealed class MfH264IntraEncoder : IDisposable
     private bool _disposed;
     public int LastSliceCount { get; private set; }
 
-    public MfH264IntraEncoder(int width, int height, bool fullRange = false, bool singleSlice = false, int quality = 95)
+    public MfH264IntraEncoder(int width, int height, bool fullRange = false, bool singleSlice = false, int quality = 95, int? workerThreads = null)
     {
+        if (workerThreads is < 1 or > 16) throw new ArgumentOutOfRangeException(nameof(workerThreads));
         if (quality is < 95 or > 100) throw new ArgumentOutOfRangeException(nameof(quality), "Native quality may only remain95 or increase to100.");
         if (width < 2 || height < 2 || (width & 1) != 0 || (height & 1) != 0 || (long)width * height > 1920L * 1920)
             throw new ArgumentOutOfRangeException(nameof(width), "H.264 needs an even, bounded raster.");
@@ -41,6 +42,9 @@ internal sealed class MfH264IntraEncoder : IDisposable
             Set(codec, "9c27891a-ed7a-40e1-88e8-b22727a024ee", true); // AVLowLatencyMode: one input -> one output
             Set(codec, "1c0608e9-370c-4710-8a58-cb6181c42423", (uint)3); // quality VBR
             Set(codec, "fcbf57a3-7ea5-4b0c-9644-69b40c39c391", (uint)95); // AVEncCommonQuality, legacy ordering
+            // Null preserves the production encoder's automatic thread/slice selection. Golden-wire fixtures can explicitly
+            // reproduce the original machine's 16 workers on a smaller CI VM without changing any golden bytes or live policy.
+            if (workerThreads is { } threads) Set(codec, "b0c8bf60-16f7-4951-a30b-1db1609293d6", (uint)threads);
             if (singleSlice)
             {
                 // Static slice parameters MUST be set before media types; a successful post-start setter can have no effect.

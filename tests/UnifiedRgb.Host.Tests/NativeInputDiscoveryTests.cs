@@ -609,8 +609,13 @@ public sealed partial class NativeInputDiscoveryTests
             return p;
         }
 
-        public Task LeaseAsync(Func<bool> changed, Action renewed, CancellationToken ct) =>
-            throw new InvalidOperationException("No lease in these discovery tests.");
+        public Task LeaseAsync(Func<bool> changed, Action renewed, CancellationToken ct)
+        {
+            ct.ThrowIfCancellationRequested();
+            renewed();
+            changed().Should().BeTrue("the actor requests one renewal and joins before its next exchange");
+            return Task.CompletedTask;
+        }
 
         public void Dispose() { }
     }
