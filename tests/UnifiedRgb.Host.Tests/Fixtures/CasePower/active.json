@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "name": "active",
+  "scene": {
+    "assignments": [
+      { "targets": [{ "controllerId": "fake:case", "zoneId": 0 }], "effectId": "StaticColor", "colors": ["#000000"], "brightness": 0 }
+    ]
+  }
+}
+

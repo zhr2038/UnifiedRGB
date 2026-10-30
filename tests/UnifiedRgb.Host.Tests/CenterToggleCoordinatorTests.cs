@@ -49,11 +49,12 @@ public sealed class CenterToggleCoordinatorTests
     }
 
     [Fact]
-    public async Task Center_actual_owner_profile_fixtures_parse_and_classify_as_ordinary_data_without_theme_rules()
+    public async Task Center_portable_profile_fixtures_parse_and_classify_as_ordinary_data_without_theme_rules()
     {
-        var folder = Path.GetFullPath(Path.Combine(PreviewTests.RepoRoot(), "..", "owner-profile-fixtures"));
-        var active = JsonSerializer.Deserialize(File.ReadAllBytes(Path.Combine(folder, "active.json")), ContractsJsonContext.Default.ProfileDto)!;
-        var backup = JsonSerializer.Deserialize(File.ReadAllBytes(Path.Combine(folder, "Before Lights Off.json")), ContractsJsonContext.Default.ProfileDto)!;
+        using var activeJson = typeof(CenterToggleCoordinatorTests).Assembly.GetManifestResourceStream("CasePower.active.json")!;
+        using var backupJson = typeof(CenterToggleCoordinatorTests).Assembly.GetManifestResourceStream("CasePower.before-lights-off.json")!;
+        var active = JsonSerializer.Deserialize(activeJson, ContractsJsonContext.Default.ProfileDto)!;
+        var backup = JsonSerializer.Deserialize(backupJson, ContractsJsonContext.Default.ProfileDto)!;
         CaseStatusSummary.IsBlackout(active.Scene).Should().BeTrue(); CaseStatusSummary.IsBlackout(backup.Scene).Should().BeFalse();
         var host = new MenuHostFake(active.Scene); host.Profiles[CasePowerCoordinator.BackupProfileName] = backup;
         using var c = new CasePowerCoordinator(host.Connection.Rgb);

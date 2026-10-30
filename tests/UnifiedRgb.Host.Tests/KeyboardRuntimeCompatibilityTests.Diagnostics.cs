@@ -67,12 +67,13 @@ public sealed partial class KeyboardRuntimeCompatibilityTests
     }
 
     [Theory]
-    [InlineData("wired", "001200000025000200")] [InlineData("wired", "00120000002G000100")] [InlineData("wired", "001300000025000100")]
-    [InlineData("wired", "001200000000000000")] [InlineData("wired", Wireless25)] [InlineData("wired", "")]
-    [InlineData("wireless", "0800080025000100")] [InlineData("wireless", "0800070025000200")] [InlineData("wireless", Wired25)]
-    [InlineData("wireless", "08000700250001")] [InlineData("wireless", "")]
-    public void Native_scope_of_a_connection_outside_the_known_identity_family_never_matches(string kind, string header) =>
-        (NativePolicy() with { ConnectionKind = kind, FirmwareHeader = "" }).MatchesScope(NativePolicy().DeviceKey, header, kind).Should().BeFalse();
+    [InlineData("wired", "001200000025000200", true)] [InlineData("wired", "00120000002G000100", false)]
+    [InlineData("wired", "001300000025000100", false)] [InlineData("wired", "001200000000000000", true)]
+    [InlineData("wired", Wireless25, false)] [InlineData("wired", "", false)]
+    [InlineData("wireless", "0800080025000100", true)] [InlineData("wireless", "0800070025000200", true)]
+    [InlineData("wireless", Wired25, false)] [InlineData("wireless", "08000700250001", false)] [InlineData("wireless", "", false)]
+    public void Native_scope_binds_transport_label_grammar_without_interpreting_oem_bytes(string kind, string header, bool matches) =>
+        (NativePolicy() with { ConnectionKind = kind, FirmwareHeader = "" }).MatchesScope(NativePolicy().DeviceKey, header, kind).Should().Be(matches);
 
     [Theory]
     [InlineData("kind-bluetooth")] [InlineData("kind-blank")] [InlineData("kind-case")] [InlineData("key-short")] [InlineData("key-nonhex")]
@@ -104,13 +105,13 @@ public sealed partial class KeyboardRuntimeCompatibilityTests
     }
 
     [Theory]
-    [InlineData("cross-transport")] [InlineData("family")] [InlineData("device")]
+    [InlineData("cross-transport")] [InlineData("malformed-label")] [InlineData("device")]
     public async Task Native_route_journal_never_crosses_transport_family_or_device(string fault)
     {
         var bytes = WriteJournal(new
         {
             Schema = 2, DeviceKey = fault == "device" ? new string('B', 64) : Key,
-            FirmwareHeader = fault switch { "cross-transport" => Wireless25, "family" => "001200000025000200", _ => Wired25 },
+            FirmwareHeader = fault switch { "cross-transport" => Wireless25, "malformed-label" => "001300000025000200", _ => Wired25 },
             Brightness = (byte)25, ProfileToken = (byte)6,
         });
         var wired = new WiredFactory(_ => new Io { Patch = 0x24 });

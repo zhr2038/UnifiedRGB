@@ -100,7 +100,7 @@ public sealed partial class RogNativeMenuSourceTests
     public async Task Absent_default_off_or_invalid_policy_preserves_actual_owner_legacy_page_behavior(string kind)
     {
         var policy = kind switch { "absent" => null, "default" => new KeyboardNativeMenuOptions(),
-            "off" => Policy() with { Enabled = false }, _ => Policy() with { CandidateSha256 = new string('0', 64) } };
+            "off" => Policy() with { Enabled = false }, _ => Policy() with { Enabled = false, DeviceKey = "unqualified-route" } };
         await using var rig = new LegacyPageOwnerRig(policy, true, 7, nativeFirmware: false);
         await rig.Owner.StartAsync(default);
         await Until(() => rig.Owner.GetKeyboardDisplayStatusAsync().GetAwaiter().GetResult().State == "Running");

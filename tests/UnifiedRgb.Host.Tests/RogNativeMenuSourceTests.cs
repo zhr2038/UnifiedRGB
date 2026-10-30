@@ -152,7 +152,7 @@ public sealed partial class RogNativeMenuSourceTests
             case "mode": rig.Io.Mode = 7; break;
             case "profile": rig.Io.Profile = 1; break;
             case "epoch": rig.Io.Epoch++; break;
-            case "firmware": rig.Io.BadBuild = true; break;
+            case "firmware": rig.Io.BadCapabilityGrammar = true; break;
         }
         (await rig.Actor.StepAsync(Pixels, default)).Should().BeFalse();
         rig.Events.OfType<NativeMenuPress>().Should().BeEmpty(); rig.Events.OfType<NativeMenuContextEnded>().Should().ContainSingle();
@@ -511,7 +511,7 @@ public sealed partial class RogNativeMenuSourceTests
         public byte Mode { get; set; } = RogNativeMenuCodec.NativeMode;
         public byte Profile { get; set; }
         public uint Epoch { get; set; } = 1;
-        public bool BadBuild { get; set; }
+        public bool BadCapabilityGrammar { get; set; }
         public string? FailStage { get; set; }
         public string? SemanticFault { get; set; }
         public List<string> Writes { get; } = [];
@@ -556,14 +556,14 @@ public sealed partial class RogNativeMenuSourceTests
                         {
                             if (SemanticFault == "arm-cookie") BinaryPrimitives.WriteUInt64LittleEndian(changed.AsSpan(19), _cookie + 1);
                             if (SemanticFault == "arm-epoch") BinaryPrimitives.WriteUInt32LittleEndian(changed.AsSpan(15), Epoch - 1);
-                            if (SemanticFault == "arm-build") BinaryPrimitives.WriteUInt32LittleEndian(changed.AsSpan(29), 0);
+                            if (SemanticFault == "arm-grammar") changed[9] = 1;
                         }
                         else
                         {
                             if (SemanticFault == "disarm-epoch") BinaryPrimitives.WriteUInt32LittleEndian(changed.AsSpan(15), Epoch - 1);
                             if (SemanticFault == "disarm-status")
                             { changed[10] = 1; changed[14] = 17; BinaryPrimitives.WriteUInt64LittleEndian(changed.AsSpan(19), Cookie); }
-                            if (SemanticFault == "disarm-build") BinaryPrimitives.WriteUInt32LittleEndian(changed.AsSpan(29), 0);
+                            if (SemanticFault == "disarm-grammar") changed[9] = 1;
                         }
                         return Task.FromResult(changed);
                     case (0x67, 2):
@@ -600,13 +600,25 @@ public sealed partial class RogNativeMenuSourceTests
             var p = new byte[65]; p[1] = command; p[2] = 0x7D; "GYM1"u8.CopyTo(p.AsSpan(5)); p[9] = 2;
             p[10] = _cookie == 0 ? (byte)0 : (byte)1; p[11] = Mode; p[12] = Profile; p[13] = _transport; p[14] = _cookie == 0 ? (byte)48 : (byte)49;
             BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(15), Epoch); BinaryPrimitives.WriteUInt64LittleEndian(p.AsSpan(19), _cookie);
-            BinaryPrimitives.WriteUInt16LittleEndian(p.AsSpan(27), _sequence); BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(29), BadBuild ? 0u : 0x25314D49);
-            BinaryPrimitives.WriteUInt16LittleEndian(p.AsSpan(33), 208); p[35] = 64; p[36] = (byte)PixelPayloadCapacity; p[37] = 3; return p;
+            BinaryPrimitives.WriteUInt16LittleEndian(p.AsSpan(27), _sequence); BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(29), 0x25314D49);
+            BinaryPrimitives.WriteUInt16LittleEndian(p.AsSpan(33), 208); p[35] = 64; p[36] = (byte)PixelPayloadCapacity; p[37] = 3; if (BadCapabilityGrammar) p[9] = 1; return p;
         }
         public async Task LeaseAsync(Func<bool> changed, Action renewed, CancellationToken ct)
         {
             PendingLeaseReaders++;
-            try { for (var n = 0; n < 20; n++) { ct.ThrowIfCancellationRequested(); renewed(); await Task.Delay(10, ct); if (changed()) break; } }
+            try
+            {
+                for (var n = 0; n < 20; n++)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    if (FailStage == "renew") throw new IOException("Injected unknown renewal write outcome.");
+                    if (FailStage == "renew-read") throw new InvalidDataException("Injected malformed optional renewal reply.");
+                    if (_frameAwaitingRenewal && _image.Count == 6656) { ImageCommits++; _frameAwaitingRenewal = false; }
+                    renewed();
+                    await Task.Delay(10, ct);
+                    if (changed()) break;
+                }
+            }
             finally { PendingLeaseReaders--; }
         }
         public void Dispose() { }

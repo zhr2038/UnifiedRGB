@@ -20,4 +20,8 @@
     <ProjectReference Include="../../src/UnifiedRgb.App/UnifiedRgb.App.csproj" />
     <ProjectReference Include="../../src/UnifiedRgb.Devices.Virtual/UnifiedRgb.Devices.Virtual.csproj" />
   </ItemGroup>
-  <ItemGroup><EmbeddedResource Include="Actual25Producer.json" LogicalName="Actual25Producer.json" /></ItemGroup></Project>
+  <ItemGroup>
+    <EmbeddedResource Include="Actual25Producer.json" LogicalName="Actual25Producer.json" />
+    <EmbeddedResource Include="Fixtures/CasePower/*.json" LogicalName="CasePower.%(Filename)%(Extension)" />
+  </ItemGroup>
+</Project>

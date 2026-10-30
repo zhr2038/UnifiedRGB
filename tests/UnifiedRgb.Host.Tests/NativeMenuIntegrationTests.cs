@@ -199,7 +199,7 @@ public sealed class NativeMenuServiceIntegrationTests : IAsyncLifetime
                 "press #7 EnsureOn ignored: preference off", "preference saved: on", "armed context 1 as 2 after #7 (enabled)");
             loaded.Should().Match<NativeMenuStatusDto>(s => s.State == "Unavailable" && s.DesiredEnabled && s.SourcePresent && !s.Active
                 && s.LastOutcome == null);
-            loaded.Detail.Should().Contain("没有经验证的连接");
+            loaded.Detail.Should().Contain("菜单连接当前未就绪");
             rearmed.State.Should().Be("Active");
             restarted.Menu.Trace.Should().Equal("preference loaded: on", "source connected", "context 1 profile 3 floor 0",
                 "armed context 1 as 1 after #0 (context began)");

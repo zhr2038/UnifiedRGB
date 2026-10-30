@@ -66,7 +66,7 @@ public sealed partial class RogNativeMenuSourceTests
 
     [Theory]
     [InlineData("old-build")] [InlineData("old-image")] [InlineData("old-contract")]
-    public async Task Old_native5_installation_identity_is_ineligible_before_any_native_IO(string mutation)
+    public async Task Old_installation_notes_do_not_veto_live_native_protocol_admission(string mutation)
     {
         var policy = Policy();
         policy = mutation switch
@@ -78,7 +78,9 @@ public sealed partial class RogNativeMenuSourceTests
         var time = new ManualTimeProvider(); var input = new Input(time, 1); using var io = new Connection(time, 1);
         var source = new RogNativeMenuSource(policy, input, input, time); source.RequestEnabled(true);
         source.IsPresent.Should().BeFalse(); await using var actor = source.Attach(io);
-        (await actor.StepAsync(Pixels, default)).Should().BeFalse();
-        io.Writes.Should().BeEmpty(); input.Opens.Should().Be(0); input.Enumerations.Should().Be(0);
+        (await actor.StepAsync(Pixels, default)).Should().BeTrue();
+        source.IsPresent.Should().BeTrue(); io.Arms.Should().Be(1); input.Opens.Should().Be(1);
+        io.Rebuilt.Should().Equal(Pixels());
+        io.Writes.Should().Contain("12/7D", "support comes from the live protocol, not the old receipt");
     }
 }

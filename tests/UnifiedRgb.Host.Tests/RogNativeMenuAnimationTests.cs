@@ -93,7 +93,7 @@ public sealed partial class RogNativeMenuSourceTests
                 KeyboardDisplay = new() { Enabled = false, ControlVerified = true, LightingVerified = true,
                     DeviceKey = Control.DeviceKey, FirmwareHeader = Control.FirmwareHeader, AnimationAdmitted = true },
             }, rgb, KeyboardAnimationScreens.Create(Media), new LegacyPageFactory(Control, false), new MutationClearGuard(), Bridge,
-                nativeMenu: source, keyboardMedia: Media, sharedTimeline: Timeline, time: new ManualTimeProvider());
+                nativeMenu: source, keyboardMedia: Media, sharedTimeline: Timeline, time: time);
         }
 
         public async ValueTask DisposeAsync()
