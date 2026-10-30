@@ -1,5 +1,6 @@
 using System.Collections;
 using System.Collections.Specialized;
+using System.Collections.Frozen;
 using System.Diagnostics;
 using System.Globalization;
 using System.Windows;
@@ -21,6 +22,19 @@ public sealed class CaseTopology : FrameworkElement
     private readonly Stopwatch _time = new();
     private readonly List<(Rect Rect, StudioZone Zone)> _hits = [];
     private INotifyCollectionChanged? _collection;
+    private bool _watchingCollection;
+    private static readonly Typeface LabelTypeface = new("Microsoft YaHei UI");
+    private static readonly CultureInfo LabelCulture = CultureInfo.GetCultureInfo("zh-CN");
+    private static readonly FrozenDictionary<string, SolidColorBrush> Palette = new[]
+    {
+        "#141414", "#161616", "#181818", "#1B1B1B", "#1C1C1C", "#222222", "#282828", "#292929", "#2B2B2B",
+        "#2D2D2D", "#2E2E2E", "#313131", "#353535", "#393939", "#3C3C3C", "#3D3D3D", "#3F3F3F", "#444444",
+        "#534B3F", "#A9A39A", "#D8B578", "#F3EFE8",
+    }.ToFrozenDictionary(hex => hex, CreateBrush, StringComparer.Ordinal);
+    private readonly Dictionary<(string Text, double Size, string Hex), FormattedText> _labels = [];
+    private double _labelDpi;
+    private string? _lastColor;
+    private SolidColorBrush? _colorBrush, _dimBrush;
     private double _scale = 1;
     private Point _origin;
 
@@ -31,8 +45,8 @@ public sealed class CaseTopology : FrameworkElement
         System.Windows.Automation.AutomationProperties.SetName(this, "机箱分区示意图，可用方向键选择分区");
         _timer = new DispatcherTimer(TimeSpan.FromMilliseconds(40), DispatcherPriority.Render, (_, _) => InvalidateVisual(), Dispatcher);
         _timer.Stop();
-        Unloaded += (_, _) => _timer.Stop();
-        Loaded += (_, _) => UpdateTimer();
+        Unloaded += (_, _) => { _timer.Stop(); WatchCollection(false); };
+        Loaded += (_, _) => { WatchCollection(true); UpdateTimer(); };
         IsVisibleChanged += (_, _) => UpdateTimer();
     }
 
@@ -45,9 +59,19 @@ public sealed class CaseTopology : FrameworkElement
     private static void ZonesChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
         var view = (CaseTopology)d;
-        if (view._collection is not null) view._collection.CollectionChanged -= view.InvalidateCollection;
+        if (view._watchingCollection && view._collection is not null) view._collection.CollectionChanged -= view.InvalidateCollection;
         view._collection = e.NewValue as INotifyCollectionChanged;
-        if (view._collection is not null) view._collection.CollectionChanged += view.InvalidateCollection;
+        if (view._watchingCollection && view._collection is not null) view._collection.CollectionChanged += view.InvalidateCollection;
+    }
+    private void WatchCollection(bool watch)
+    {
+        if (_watchingCollection == watch) return;
+        if (_collection is not null)
+        {
+            if (watch) _collection.CollectionChanged += InvalidateCollection;
+            else _collection.CollectionChanged -= InvalidateCollection;
+        }
+        _watchingCollection = watch;
     }
     private void InvalidateCollection(object? sender, NotifyCollectionChangedEventArgs e) => InvalidateVisual();
     private static void ChangedPlaying(DependencyObject d, DependencyPropertyChangedEventArgs e) => ((CaseTopology)d).UpdateTimer();
@@ -163,7 +187,15 @@ public sealed class CaseTopology : FrameworkElement
 
     private SolidColorBrush Color(StudioZone zone)
     {
-        var brush = Brush(ColorHex);
+        if (_colorBrush is null || _lastColor != ColorHex)
+        {
+            _lastColor = ColorHex;
+            _colorBrush = Brush(ColorHex);
+            var c = _colorBrush.Color;
+            _dimBrush = new SolidColorBrush(System.Windows.Media.Color.FromRgb((byte)(c.R * .12), (byte)(c.G * .12), (byte)(c.B * .12)));
+            _dimBrush.Freeze();
+        }
+        var brush = _colorBrush;
         if (!Playing || Draft is null) return brush;
         var stages = Draft.Stages;
         var total = stages.Sum(s => s.Length);
@@ -175,8 +207,7 @@ public sealed class CaseTopology : FrameworkElement
             if (s.Bindings.Any(b => b.Zone.Ref == zone.Ref))
             {
                 if (source >= offset && source < offset + s.Length) return brush;
-                var c = brush.Color;
-                return new SolidColorBrush(System.Windows.Media.Color.FromRgb((byte)(c.R * .12), (byte)(c.G * .12), (byte)(c.B * .12)));
+                return _dimBrush!;
             }
             offset += s.Length;
         }
@@ -202,12 +233,25 @@ public sealed class CaseTopology : FrameworkElement
     private void Text(DrawingContext dc, string text, double x, double y, double size, string hex)
     {
         if (_scale < .7 && text != "H2") return; // Avoid illegible labels on the compact editor diagram; full names remain in the zone list.
-        dc.DrawText(new FormattedText(text, CultureInfo.GetCultureInfo("zh-CN"), FlowDirection.LeftToRight, new Typeface("Microsoft YaHei UI"), size, Brush(hex), VisualTreeHelper.GetDpi(this).PixelsPerDip), new Point(x, y));
+        var dpi = VisualTreeHelper.GetDpi(this).PixelsPerDip;
+        if (dpi != _labelDpi) { _labels.Clear(); _labelDpi = dpi; }
+        var key = (text, size, hex);
+        if (!_labels.TryGetValue(key, out var label))
+        {
+            if (_labels.Count >= 64) _labels.Clear();
+            label = new FormattedText(text, LabelCulture, FlowDirection.LeftToRight, LabelTypeface, size, Brush(hex), dpi);
+            _labels.Add(key, label);
+        }
+        dc.DrawText(label, new Point(x, y));
     }
-    private static SolidColorBrush Brush(string hex)
+    private static SolidColorBrush Brush(string hex) => Palette.TryGetValue(hex, out var brush) ? brush : CreateBrush(hex);
+    private static SolidColorBrush CreateBrush(string hex)
     {
-        try { return new((Color)ColorConverter.ConvertFromString(hex)); }
-        catch (FormatException) { return new(Colors.Gray); }
+        SolidColorBrush brush;
+        try { brush = new((Color)ColorConverter.ConvertFromString(hex)); }
+        catch (FormatException) { brush = new(Colors.Gray); }
+        brush.Freeze();
+        return brush;
     }
     protected override void OnMouseLeftButtonDown(MouseButtonEventArgs e)
     {

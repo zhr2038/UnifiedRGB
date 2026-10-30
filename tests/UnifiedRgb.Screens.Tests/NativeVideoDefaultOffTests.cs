@@ -62,9 +62,13 @@ public sealed class NativeVideoDefaultOffTests
     /// and increasing within the native session), followed by the selected index and counters after each step.
     /// </summary>
     internal static async Task<string> TranscriptAsync(Func<NativeVideoTrialDto, NativeVideoTrialDto>? flags,
-        Func<UnifiedRgb.Screens.Runtime.ScreenWorkerContext, UnifiedRgb.Screens.Runtime.ScreenWorkerContext>? customize = null)
+        Func<UnifiedRgb.Screens.Runtime.ScreenWorkerContext, UnifiedRgb.Screens.Runtime.ScreenWorkerContext>? customize = null,
+        int? encoderWorkerThreads = 16)
     {
-        using var h = await NativeWorkerHarness.StartAsync(NativeWorkerHarness.NewTrial("wire", flags), customize: customize);
+        // The original golden used the inbox encoder's automatic 16-worker selection. A four-vCPU runner otherwise emits
+        // four different IDR slices. Pin only this fixture's native encoder; every production caller retains its null default.
+        using var h = await NativeWorkerHarness.StartAsync(NativeWorkerHarness.NewTrial("wire", flags),
+            customize: ctx => (customize?.Invoke(ctx) ?? ctx) with { NativeVideoWorkerThreadsForTest = encoderWorkerThreads });
         var text = new StringBuilder();
         var written = 0;
         async Task StepAsync(string name, int expectedPictures)
@@ -115,6 +119,16 @@ public sealed class NativeVideoDefaultOffTests
             && NativeWorkerHarness.Command(all[before + 3]) == ScreenProtocol.PushPngCommand, "stop controls, then the normal image path");
         await StepAsync("trial ended", 17);
         return text.ToString();
+    }
+
+    [MediaFoundationTheory]
+    [InlineData(4, "18FD2B373187058F12A6DCDF27621B08678CD0D33B61117AB2FCCB20F1D43E03")]
+    [InlineData(16, ExpectedTranscriptSha)]
+    public async Task Golden_wire_fixture_reproduces_both_original_and_cloud_encoder_thread_counts(int workers, string expected)
+    {
+        var text = await TranscriptAsync(null, encoderWorkerThreads: workers);
+        text.Should().Contain($", {workers} slices;");
+        Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(text))).Should().Be(expected);
     }
 
     private static async Task<ScreenPerformanceDto> CompletedPictureAsync(Func<ScreenPerformanceDto> snapshot, int expectedPictures)
