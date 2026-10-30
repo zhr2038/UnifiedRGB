@@ -64,6 +64,7 @@ internal static class PreparedOverlayKit
     /// <summary>Advances one period and waits until that one picture (its access unit AND its overlay step) has completed.</summary>
     public static async Task PictureAsync(NativeWorkerHarness h)
     {
+        await CompletedNativePictureAsync(h);
         var data = h.DataWrites;
         var units = h.Worker.Performance.NativeVideo?.AccessUnits ?? 0;
         h.Time.Advance(TimeSpan.FromMilliseconds(NativeWorkerHarness.PeriodMs));
@@ -72,8 +73,22 @@ internal static class PreparedOverlayKit
     }
 
     /// <summary>Waits until the preparer has neither an in-flight nor a pending request (its result, if any, is held).</summary>
-    public static Task IdleAsync(NativeWorkerHarness h) =>
-        Wait.UntilAsync(() => h.Worker.OverlayPreparerForTest?.Snapshot() is { InFlight: false, Pending: false }, "the preparer finished");
+    public static async Task IdleAsync(NativeWorkerHarness h)
+    {
+        // A native data write precedes its overlay composition/queueing. An empty preparer before that point is not idle for
+        // this picture. Wait for the completed overlay decision before checking whether its background encode has finished.
+        await CompletedNativePictureAsync(h);
+        await Wait.UntilAsync(() => h.Worker.OverlayPreparerForTest?.Snapshot() is { InFlight: false, Pending: false }, "the preparer finished");
+    }
+
+    private static Task CompletedNativePictureAsync(NativeWorkerHarness h) => Wait.UntilAsync(() =>
+    {
+        var writes = h.Writes;
+        var start = Array.FindLastIndex(writes, p => NativeWorkerHarness.Command(p) == 15);
+        if (start < 0) return false;
+        var sent = writes.Skip(start + 1).LongCount(p => NativeWorkerHarness.Command(p) == TurzxVideoProtocol.DataCommand);
+        return h.Worker.Performance.NativeVideo?.AccessUnits == sent;
+    }, "the preceding native picture and its overlay decision completed");
 
     /// <summary>A native trial replaces the current one (or starts): the worker's pacing reset admits one picture at once.</summary>
     public static async Task SwitchTrialAsync(NativeWorkerHarness h, NativeVideoTrial trial)

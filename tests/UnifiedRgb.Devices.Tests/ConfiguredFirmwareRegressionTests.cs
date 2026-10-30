@@ -130,9 +130,8 @@ public sealed class ConfiguredFirmwareRegressionTests
     [Fact]
     public async Task Malformed_live_keyboard_envelope_fails_before_any_other_query_or_mutation()
     {
-        // Was keyboard patch 0x24 under a .25 anchor; that is the same 01 family and now connects without repinning
-        // (see reports/EXPECTATION-CHANGES.en.md). A genuinely different keyboard family (02) still fails closed.
-        var identity = new byte[65]; identity[1] = 0x12; identity[5] = 8; identity[7] = 7; identity[9] = 6; identity[11] = 6; identity[12] = 0x24; identity[14] = 2; identity[1] = 0x13;
+        // OEM version bytes are diagnostic. A genuinely malformed command envelope still fails before any later query.
+        var identity = new byte[65]; identity[1] = 0x13; identity[5] = 8; identity[7] = 7; identity[9] = 6; identity[11] = 6; identity[12] = 0x24; identity[14] = 2;
         using var io = new IdentityChannel(identity);
         using var connection = new RogWirelessOledConnection(new(new string('A', 64), 0x1ACE, new Dictionary<byte, HidCollectionInfo>()), io, "0800070025000100", () => true);
         await ((Func<Task>)(() => new RogWiredOledSession(connection).SnapshotAsync("0800070025000100", default))).Should().ThrowAsync<InvalidDataException>()

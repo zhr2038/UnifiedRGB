@@ -6,8 +6,8 @@ namespace UnifiedRgb.Host.Tests;
 /// <summary>
 /// Owner correction: declared build, image, contract and header values are diagnostics only; they never admit, veto, open or
 /// label the native route. Admission is the owner's default-off opt-in plus the captured descriptor route (device key and
-/// transport); the connection checks live identity against the known native family and live CAP grammar decides actual
-/// support. Journals bind device, transport format, family and profile.
+/// transport); the connection checks live identity grammar and same-owner generation, and live CAP decides actual support.
+/// Journals bind device, transport label format and profile; OEM label bytes are diagnostic.
 /// </summary>
 public sealed partial class KeyboardRuntimeCompatibilityTests
 {

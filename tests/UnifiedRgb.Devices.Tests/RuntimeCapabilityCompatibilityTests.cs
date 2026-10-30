@@ -5,8 +5,8 @@ using UnifiedRgb.Transports.Hid;
 namespace UnifiedRgb.Devices.Tests;
 
 /// <summary>
-/// Synthetic in-memory fixtures only: no physical header, build or image is asserted. Same-family identities and GYM1 builds
-/// connect on an unchanged configured anchor; identity layout, report grammar, geometry, lifecycle and generation stay strict.
+/// Synthetic in-memory fixtures only: no physical header, build or image is asserted. OEM identity bytes and GYM1 build tags
+/// are diagnostic; live identity layout, report grammar, geometry, lifecycle and same-owner generation stay strict.
 /// </summary>
 public sealed partial class RuntimeCapabilityCompatibilityTests
 {
