@@ -29,20 +29,34 @@
    <StackPanel DataContext="{Binding KeyboardAnimation}">
     <TextBlock Text="键盘屏幕动画" FontWeight="SemiBold"/>
     <TextBlock Text="{x:Static w:KeyboardAnimationViewModel.Scope}" Style="{StaticResource Caption}" TextWrapping="Wrap"/>
-    <TextBlock Text="动画与场景灯光共用同一条共享时间轴，需单独开启（默认关闭）；不可用时的原因以后台给出的详情为准。" Style="{StaticResource Caption}" TextWrapping="Wrap"/>
+    <TextBlock Text="{x:Static w:KeyboardAnimationViewModel.SourceGuide}" Style="{StaticResource Caption}" TextWrapping="Wrap"/>
     <TextBlock Text="{Binding StateTitle}" Margin="0,6,0,0" TextWrapping="Wrap"/>
     <TextBlock Text="{Binding StatusLine}" Style="{StaticResource Caption}" TextWrapping="Wrap"/>
     <TextBlock Text="{Binding Detail}" Style="{StaticResource Caption}" TextWrapping="Wrap"/>
     <TextBlock Text="{Binding Message}" Style="{StaticResource Caption}" TextWrapping="Wrap"/>
     <TextBlock Text="{Binding RebindHint}" Visibility="{Binding NeedsRebind, Converter={StaticResource Visible}}" Style="{StaticResource Caption}" Margin="0,6,0,0" TextWrapping="Wrap"/>
-    <TextBlock Text="素材（当前场景中按共享时间轴播放的屏幕素材）" Style="{StaticResource Caption}" Margin="0,8,0,2"/>
+    <TextBlock Text="来源" Style="{StaticResource Caption}" Margin="0,8,0,2"/>
+    <ComboBox ItemsSource="{Binding Sources}" SelectedItem="{Binding SelectedSource}" DisplayMemberPath="Label" IsEnabled="{Binding CanEdit}" AutomationProperties.Name="键盘动画来源"/>
+    <TextBlock Text="{Binding SourceNote}" Style="{StaticResource Caption}" TextWrapping="Wrap"/>
+    <TextBlock Text="{Binding ChoicesLabel}" Style="{StaticResource Caption}" Margin="0,8,0,2"/>
     <ComboBox ItemsSource="{Binding Choices}" SelectedItem="{Binding SelectedChoice}" IsEnabled="{Binding CanEdit}" AutomationProperties.Name="键盘动画素材">
      <ComboBox.ItemTemplate>
       <DataTemplate>
-       <TextBlock><Run Text="{Binding Name, Mode=OneWay}"/><Run Text=" · "/><Run Text="{Binding FrameCount, Mode=OneWay}"/><Run Text=" 帧 · "/><Run Text="{Binding ScreenId, Mode=OneWay}"/></TextBlock>
+       <StackPanel Orientation="Horizontal">
+        <TextBlock><Run Text="{Binding Name, Mode=OneWay}"/><Run Text=" · "/><Run Text="{Binding FrameCount, Mode=OneWay}"/><Run Text=" 帧"/></TextBlock>
+        <TextBlock Text="{Binding ScreenId, Mode=OneWay, StringFormat={} · {0}}">
+         <TextBlock.Style>
+          <Style TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
+           <Style.Triggers><DataTrigger Binding="{Binding ScreenId}" Value=""><Setter Property="Visibility" Value="Collapsed"/></DataTrigger></Style.Triggers>
+          </Style>
+         </TextBlock.Style>
+        </TextBlock>
+       </StackPanel>
       </DataTemplate>
      </ComboBox.ItemTemplate>
     </ComboBox>
+    <Button Content="导入文件到本机素材库" Command="{Binding ImportCommand}" Visibility="{Binding CanOfferImport, Converter={StaticResource Visible}, FallbackValue=Collapsed}" Margin="0,6,0,0" Style="{StaticResource QuietButton}" ToolTip="选择图片、GIF 或 MP4，经现有素材上传加入本机素材库并在草稿中选中；不应用到机箱屏幕、场景或灯光，不自动保存键盘设置。"/>
+    <TextBlock Text="{x:Static w:KeyboardAnimationViewModel.ImportNote}" Visibility="{Binding CanOfferImport, Converter={StaticResource Visible}, FallbackValue=Collapsed}" Style="{StaticResource Caption}" TextWrapping="Wrap"/>
     <UniformGrid Columns="3" Margin="0,6,0,0">
      <ComboBox ItemsSource="{Binding Fits}" SelectedItem="{Binding SelectedFit}" DisplayMemberPath="Label" IsEnabled="{Binding CanEdit}" Margin="0,0,4,0" AutomationProperties.Name="适配方式"/>
      <ComboBox ItemsSource="{Binding Encodings}" SelectedItem="{Binding SelectedEncoding}" DisplayMemberPath="Label" IsEnabled="{Binding CanEdit}" Margin="4,0" AutomationProperties.Name="灰度编码"/>

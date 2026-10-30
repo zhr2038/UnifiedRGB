@@ -188,7 +188,8 @@ public sealed class KeyboardAnimationPanelTests : IDisposable
             detached.Texts.Should().Contain(("键盘屏幕动画", false));
             attached.Texts.Should().Contain(("键盘屏幕动画", true));
             attached.Texts.Should().Contain((KeyboardAnimationViewModel.Scope, true));
-            attached.Texts.Should().Contain(("动画与场景灯光共用同一条共享时间轴，需单独开启（默认关闭）；不可用时的原因以后台给出的详情为准。", true));
+            attached.Texts.Should().Contain(t => t.Item2 && t.Item1.Contains("独立待机", StringComparison.Ordinal)
+                && t.Item1.Contains("真实场景同步", StringComparison.Ordinal));
             attached.Texts.Should().NotContain(t => t.Text.Contains("抑制", StringComparison.Ordinal) || t.Text.Contains("审核", StringComparison.Ordinal),
                 "no universal suppression notice; an actual suppression comes from the backend state");
             attached.Texts.Should().Contain(("未开启（默认关闭）", true));

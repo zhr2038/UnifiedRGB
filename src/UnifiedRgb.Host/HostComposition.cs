@@ -190,7 +190,10 @@ public static class HostComposition
             nativePresentation: sp.GetService<IKeyboardNativePresentationCapability>(),
             nativeFrameOverlay: sp.GetRequiredService<KeyboardSceneCycleOverlay>().Apply,
             nativeFrameAcknowledged: sp.GetRequiredService<KeyboardSceneCycleOverlay>().Acknowledge,
-            nativeFrameOverlayRevision: () => sp.GetRequiredService<KeyboardSceneCycleOverlay>().Revision));
+            nativeFrameOverlayRevision: () => sp.GetRequiredService<KeyboardSceneCycleOverlay>().Revision,
+            masterClock: sp.GetRequiredService<IClock>(),
+            sceneLoopDurationMs: id => sp.GetRequiredService<ScenePackageFrameSource>()
+                .TryResolve(id, out var package, out _, out _) ? (int?)package.Manifest.DurationMs : null));
         services.AddSingleton<IKeyboardDisplayService>(sp => sp.GetRequiredService<KeyboardDisplayService>());
         services.AddHostedService(sp => sp.GetRequiredService<KeyboardDisplayService>());
         services.AddSingleton<IPeripheralConfigurationResources, RogPeripheralConfigurationResources>();

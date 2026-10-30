@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using Microsoft.Extensions.Hosting;
 using UnifiedRgb.Contracts;
 using UnifiedRgb.Contracts.Dto;
+using UnifiedRgb.Core.Clock;
 using UnifiedRgb.Devices;
 using UnifiedRgb.Devices.AsusRog;
 using UnifiedRgb.Screens.Runtime;
@@ -60,7 +61,7 @@ public sealed class KeyboardDisplayService : BackgroundService, IKeyboardDisplay
         RogNativeMenuSource? nativeMenu = null, IKeyboardOledMedia? keyboardMedia = null, IScreenTimeline? sharedTimeline = null,
         TimeProvider? time = null, IKeyboardNativePresentationCapability? nativePresentation = null,
         Func<byte[], byte[]>? nativeFrameOverlay = null, Action<byte[]>? nativeFrameAcknowledged = null,
-        Func<long>? nativeFrameOverlayRevision = null)
+        Func<long>? nativeFrameOverlayRevision = null, IClock? masterClock = null, Func<string, int?>? sceneLoopDurationMs = null)
     {
         _options = options; _rgb = rgb; _screens = screens; _factory = factory; _guard = guard;
         _wirelessFactory = wirelessFactory;
@@ -88,7 +89,7 @@ public sealed class KeyboardDisplayService : BackgroundService, IKeyboardDisplay
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException) { _enabled = false; error = "本机控制屏设置无法读取"; }
         _status = new(_enabled, error is null ? "Stopped" : "Error", error ?? "键盘状态屏未启动", 0, 0, null, error);
-        _animation = new KeyboardDisplayAnimation(options.KeyboardDisplay, options.ResolvedDataDirectory, keyboardMedia, sharedTimeline, time);
+        _animation = new KeyboardDisplayAnimation(options.KeyboardDisplay, options.ResolvedDataDirectory, keyboardMedia, sharedTimeline, time, masterClock, sceneLoopDurationMs);
     }
 
     private bool NativeOwnsDisplay => _nativeMenu?.OwnsDisplayOutput == true;
@@ -143,8 +144,10 @@ public sealed class KeyboardDisplayService : BackgroundService, IKeyboardDisplay
             KeyboardDisplayAnimationStates.NotAdmitted => "待机：主机未准许键盘动画，请求键盘自带原动画；",
             KeyboardDisplayAnimationStates.SettingsError => "待机：键盘动画设置无法读取，请求键盘自带原动画；",
             _ when presentation.IdleChoice == KeyboardNativeArtwork.DeviceAnimation =>
-                "待机：自定义键盘动画当前无法播放（" + CustomIdleReason(custom.State) + "），改为请求键盘自带原动画；",
-            _ => "待机：按共享场景时间轴的当前位置播放自定义键盘动画；",
+                "待机：自定义键盘动画当前无法播放（" + CustomIdleReason(custom) + "），改为请求键盘自带原动画；",
+            _ when KeyboardDisplayAnimation.IsLocal(custom.Settings.TimelineId) =>
+                "待机：按共享主时钟的当前位置播放本机素材库中的键盘动画，不依赖机箱屏幕、场景或灯光；",
+            _ => "待机：按共享场景时间轴的当前位置播放跟随场景包的键盘动画；",
         };
         note += "只有有效的拨杆上下拨或按下操作会在操作期间及之后短暂显示状态或场景名称，随后恢复待机；状态屏偏好不改变原生待机；"
             + "键盘原动画仅通过现有恢复请求申请，主机不能确认其已重新加载或可见，以键盘实际显示为准；";
@@ -152,17 +155,21 @@ public sealed class KeyboardDisplayService : BackgroundService, IKeyboardDisplay
         return note;
     }
 
-    // The concrete reason a custom idle is not playable now; the state code stays as the diagnostic value.
-    private static string CustomIdleReason(string state) => state switch
+    // The concrete reason a custom idle is not playable now, by source; the state code stays as the diagnostic value.
+    private static string CustomIdleReason(KeyboardDisplayAnimationStatusDto custom)
     {
-        KeyboardDisplayAnimationStates.Preparing => "正在后台准备画面",
-        KeyboardDisplayAnimationStates.Unavailable => "所选素材不在当前场景的共享时间轴上",
-        KeyboardDisplayAnimationStates.Error => "画面准备失败",
-        KeyboardDisplayAnimationStates.Fallback => "共享时间轴不可用",
-        KeyboardDisplayAnimationStates.BreakerTripped => "动画上传超出预算已停止",
-        KeyboardDisplayAnimationStates.Ready => "已准备，等待更新间隔",
-        _ => "当前不可播放",
-    } + "，状态 " + state;
+        var local = KeyboardDisplayAnimation.IsLocal(custom.Settings.TimelineId);
+        return custom.State switch
+        {
+            KeyboardDisplayAnimationStates.Preparing => "正在后台准备画面",
+            KeyboardDisplayAnimationStates.Unavailable => local ? "所选本机素材不在素材库中" : "所选素材不在当前场景的共享时间轴上",
+            KeyboardDisplayAnimationStates.Error => "画面准备失败",
+            KeyboardDisplayAnimationStates.Fallback => local ? "共享主时钟不可用" : "场景包共享时间轴不可用",
+            KeyboardDisplayAnimationStates.BreakerTripped => "动画上传超出预算已停止",
+            KeyboardDisplayAnimationStates.Ready => "已准备，等待更新间隔",
+            _ => "当前不可播放",
+        } + "，状态 " + custom.State;
+    }
 
     /// <summary>
     /// A valid physical lever action admitted by the native-menu owner (a centre press accepted, or a browse step queued). Under a
@@ -536,7 +543,8 @@ public sealed class KeyboardDisplayService : BackgroundService, IKeyboardDisplay
                 {
                     if (!on) { ordinaryPresentation?.Stepped(false); Publish("Stopped", InactiveDisplayDetail, session); }
                 },
-                restoreNativeGoal: token => RestoreNativeGoalAsync(session, connection, brightness, allowFreshNative: false, token),
+                // The actor performs the one wire restore after this goal-only callback; do not restore here too.
+                restoreNativeGoal: token => Task.FromResult(ResolveNativeGoal(session, connection, brightness, allowFreshNative: false, token)),
                 nativeBrightnessChanged: (current, token) => PersistObservedNativeAsync(connection, session.VerifiedProfileToken, current, token),
                 nativeTick: nativeMenu is null ? null : presentation is null
                     ? token => nativeMenu.StepAsync(() => Volatile.Read(ref _pixels), token)
@@ -621,6 +629,15 @@ public sealed class KeyboardDisplayService : BackgroundService, IKeyboardDisplay
     private async Task<byte> RestoreNativeGoalAsync(RogWiredOledSession session, IRogOledConnection connection,
         byte sourceBrightness, bool allowFreshNative, CancellationToken ct)
     {
+        var goal = ResolveNativeGoal(session, connection, sourceBrightness, allowFreshNative, ct);
+        await session.RestoreAsync(goal, ct).ConfigureAwait(false);
+        return goal;
+    }
+
+    // Resolves and persists only the recorded goal. The caller owns the single fresh checked hardware restore.
+    private byte ResolveNativeGoal(RogWiredOledSession session, IRogOledConnection connection,
+        byte sourceBrightness, bool allowFreshNative, CancellationToken ct)
+    {
         ct.ThrowIfCancellationRequested();
         var scope = new NativeScope(connection.DeviceKey, ConnectionLabel(connection), session.VerifiedProfileToken);
         var preference = ReadNativePreference(scope);
@@ -648,7 +665,6 @@ public sealed class KeyboardDisplayService : BackgroundService, IKeyboardDisplay
         }
         SaveNativePreference(new NativeDisplayPreference(1, scope.DeviceKey, scope.FirmwareHeader, scope.ProfileToken, goal, origin));
         _lastRestoreOrigin = origin;
-        await session.RestoreAsync(goal, ct).ConfigureAwait(false);
         return goal;
     }
 

@@ -353,7 +353,7 @@ PNG 优化器只使用已支持的非交错 RGBA8 PNG，保持图片上限 **524
 | 键盘逐灯 RGB | 本机能力为 `Ready` 时，同一灯区暴露 N 个独立灯位，普通 RGB24 轨道写 N 个颜色 | 本机已启用 85 灯位表；USB 与 2.4G 各完成一轮 3 分钟彩虹实测，主人确认持续播放、空格正常。空格五颗分别寻址，不强制合色。键表来自当前设备固件表与实机抽测，不宣称每个地址都逐一目视验收；蓝牙未测 |
 | Harpe Edition20 鼠标 RGB | 普通 `lighting` 角色，`ledCount: 1`，对应 area0 整区点 | 已有跟随机箱及熄灯实测；没有已确认的鼠标独立灯珠地址，不能制作鼠标内部逐灯跑马 |
 | 键盘 OLED 空闲动画 / 拨杆提示 | 独立键盘显示服务；与场景包屏幕轨道分开 | 2026-10-30 本机应用更新后，用户确认原生光域档空闲播放设备原动画，拨杆操作显示临时提示后自动返回，开关灯正常；不需要追加刷固件。后台指标刷新不会主动弹出提示 |
-| 键盘 OLED 自制动画 | 已有素材转换、共享时间轴选择及本机动画 API；默认关闭 | 场景素材动画与设备内保存的原动画是不同路径；自制空闲素材选择／导入入口正在迭代，尚未据此宣称任意文件或原生高帧率播放已经实测 |
+| 键盘 OLED 主机素材动画 | 已部署素材库导入／编码预览／选择；独立待机、真实场景同步及旧屏幕镜像；默认关闭 | RF10 自制动画已有约 90 秒／32 次 ACK 实测，默认间隔下约 2.6 秒更新；全量上传阻塞逐灯输出，RF30 并发故障尚未闭环，USB 共存与场景同步物理验收未完成 |
 
 这里的整表彩虹实测只证明当次 USB / 2.4G 播放与主人观察；不是所有按键事件、长期运行、跨屏光学同步、蓝牙或 Home Assistant 验收。主机写入、设备回执与实际可见画面分别记录。RF 颜色流允许后续帧持续覆盖更新，不因缺少一次颜色回执就终止整条连接；拨杆与设置指令仍走独立的请求应答。
 
@@ -429,26 +429,98 @@ python .\tools\scene-packages\pack_scene.py build .\my-scenes\peripheral-demo .\
 
 这是一份结构有效的 v1 两轨包；只有目标灯区实际为一个逻辑点时才能绑定。若未来键盘切为已验证 N 键灯区，需要作者生成匹配 N 的另一个内容修订。示例没有屏幕或机箱轨道；加入它们时须保持同一 1000ms 周期，所有 RGB 轨道使用相同帧格，不能另开外设时钟。
 
-鼠标的一像素内容可以由作者对机箱画面选一点或求平均后预先写入 `mouse-rgb`，这属于作者明确的投影选择。另一条现有路径是**本机** `ZoneFollower` 回退：同一渲染 tick 复制一个流式源灯位到未显式分配内容的单点目标；不支持上传循环源、链式跟随或自动平均。显式给鼠标分配场景轨道会优先于该回退。回退关系不写入包，也不改变包时钟。整区外设的实际刷新仍受 adapter / writer 限流；当前键盘代码上限 10 次/秒是主机限制，不能写成逐键或鼠标 60fps 保证。
+鼠标的一像素内容可以由作者对机箱画面选一点或求平均后预先写入 `mouse-rgb`，这属于作者明确的投影选择。另一条现有路径是**本机** `ZoneFollower` 回退：同一渲染 tick 复制一个流式源灯位到未显式分配内容的单点目标；不支持上传循环源、链式跟随或自动平均。显式给鼠标分配场景轨道会优先于该回退。回退关系不写入包，也不改变包时钟。整区外设的实际刷新仍受 adapter / writer 限流；键盘缺省上限为 10 次/秒，就绪逐灯映射可本机显式配置 1–30；不能写成逐键或鼠标 60fps 保证。
 
-### OLED 作者：画布、灰度与当前可走的路线
+### OLED 作者：独立素材、真实场景同步与设备内动画
 
-建议按 **208×64** 横向画布制作高对比、大字、简化图形。输出是 16 级灰度（0 黑，15 白），不是彩色屏；低对比彩色素材可能在转换后消失。现有编码为 `luma-round-v1` 或固定 4×4 Bayer 的 `luma-bayer4-v1`，均使用固定亮度公式 `(54R + 183G + 19B + 128) >> 8`，无自适应调色板。可选择 `contain` 留黑边或 `cover` 居中裁切。
+键盘 OLED 使用**独立的本机显示偏好**，不是第六块机箱 LCD，也不是场景包的新轨道。程序已提供素材导入、编码预览、选择和开启入口；**独立待机不要求先把素材绑定到五块机箱屏中的任何一块**。OLED 伴随素材可以作为单独文件随主题交付，再由使用者导入素材库；不要向 `scene.json` 添加 `oled`、`keyboardScreen` 等字段或虚构 LCD 目标。v1–v4 和 RGB24 契约不变。
 
-传输帧为行优先打包的 4bit 灰度，**每帧 6656 字节**：字节低半字节存偶数像素，高半字节存后一个奇数像素，即 `packed[p] = gray[2*p] | (gray[2*p+1] << 4)`。这是内部编码格式，不是 v1–v4 允许新增的素材后缀或包轨道；作者通常交付 PNG/JPEG/GIF，程序负责转换，不把原始灰度文件伪装成 `screens` 媒体。
+先区分两条播放路径：
 
-目前没有“把屏幕角色绑定到键盘 OLED”的场景包入口，也没有独立 OLED 包字段。现有**本机、默认关闭的动画接口**可从当前已应用的普通屏幕场景取一项素材和它的共享 `TimelineId`，转换为 OLED 帧。具体工作流如下：
+- **设备已存动画**：键盘内已有的原装动画，或此前已保存到设备的自定义动画。停用主机素材后，原生光域档沿已验证的设备待机路径播放；不受下面的主机素材更新间隔限制。本程序尚未实现把 GIF 一次写入设备、再让设备自主循环播放的新功能。
+- **主机素材动画**：本程序从素材库准备 208×64 灰度帧，经同一个键盘 owner 上传。以下导入、时钟、缓存与性能说明针对这条路径，不能当成设备内原生动画的限制。
 
-1. 用现有包屏幕轨道准备素材，先按本指南将其绑定到受支持的普通屏幕并应用。静态 PNG/JPEG、GIF，以及已通过相应 v3/v4 导入验证的 MP4 / 分段素材均走现有素材库与合成器；OLED 不另设一个媒体导入器。完整循环、缓存和准备时限仍须通过，不能因原屏幕播放正常就假定 OLED 已准备成功。
-2. 调用 `IKeyboardDisplayService.GetKeyboardDisplayAnimationAsync()`，从返回的 `Choices` 读取实际 `AssetId`、`TimelineId`。任意上传但尚未进入当前共享屏幕场景的素材，不构成可选项；不要手编标识。现有键盘设置界面也使用同一套接口。
-3. Host 动画准入已开启时，通过 `PreviewKeyboardDisplayAnimationAsync(new KeyboardDisplayAnimationPreviewRequestDto(choice.AssetId, choice.TimelineId, "contain", "luma-round-v1"))` 取得少量位置的实际打包灰度预览；准入关闭或准备任务占用时会明确拒绝。`PositionMs` 是素材内位置，`PackedBase64` 是上述 6656 字节帧；解包后检查文字、裁切和灰阶。预览不发送硬件。
-4. Host、设备和当前显示 owner 具备相应能力时，可显式调用 `SetKeyboardDisplayAnimationAsync(new KeyboardDisplayAnimationSettingsDto(true, choice.AssetId, choice.TimelineId, "contain", "luma-round-v1", status.MinimumIntervalMs))`。这是 C# 既有契约调用（`status` / `choice` 来自第 2 步），不是写入 `scene.json` 的 JSON 示例。偏好保存在本机 `keyboard-display-animation.json`；更新包或换绑定后需重新选择实际有效项。包时间轴不可用时保留绑定并回退设备空闲动画，不私自另起一个包时钟。
+#### 画布与文件
 
-程序按包共享时间选择当下 OLED 帧，不从第 0 帧另起时钟。原生菜单接管、且当前 owner 会话未声明原生画面支持时，通用动画被抑制，保留偏好而不抢写；若固件已声明该能力，现有代码可在入场 Logo 后选择已单独开启、绑定的动画。Host 自绘 Logo 默认约 1.2 秒；设备已自行显示入口 Logo 时，本机 `KeyboardDisplay.DeviceShowsNativeEntryLogo: true` 会跳过第二次 Host Logo 上传，直接衔接后续画面。这只是本机呈现设置，不是包字段，也不能赋予设备原本不存在的播放能力。状态页关闭、素材失效、共享时间轴阻止或上传超时也会导致不同的停止 / 回退状态，须读取返回的 `Admitted`、`State`、`Detail`，不能只看请求中的 `Enabled`。恢复键盘原动画是另一条路径，不与自制场景动画混称。
+推荐 **208×64 横向画布**，高对比、大字和简化图形。通用空闲素材可使用全部 64 行，没有统一的上下裁切规则。当前配套 Pikachu 素材特意把 **47–63 行共 17 行留黑**，供拨杆场景名称／控制提示使用；适配该素材时应保留原图和这块留白，不改已有机箱视频。
 
-动画最小上传间隔默认 **2000ms**，Host 允许配置的下限范围为 1000–10000ms，用户设置的间隔不得小于当前返回的 `MinimumIntervalMs`，且不得超过 10000ms。这是选择 / 上传节流，不是保证 0.5fps 或 1fps 可见播放；缓存采样默认 100ms、准备时合并相同灰度帧，也不会提高上传速度。默认整轮灰度缓存 16MiB，最大可配置 32MiB；准备失败不发布部分帧。当前路线不承诺 15/30/60fps OLED、彩色、原生 GIF 文件上传、固件常驻动画或自定义原生菜单项目。
+复用现有素材库：PNG、JPEG、GIF，以及当前规则允许的 **MP4/H.264 AVC、SDR 8-bit**；不播放音频，不承诺 HEVC/HDR 或任意编码器。单次文件上传上限 12 MiB；MP4 另受 30 秒、1800 源帧等既有导入规则约束。GIF 短延时仍按本指南的既有规则解释。包版本对 MP4 的限制保持不变，键盘本机导入不是给 v1/v2 放宽视频格式。
 
-本节代码核对入口：`src/UnifiedRgb.Host/ScenePackages/ScenePackageService.cs`（精确灯位绑定）、同目录 `ScenePackageFrameSource.cs`（`ScenePackageTimeline`）；`src/UnifiedRgb.Host/Services/WiredKeyboardAdapter.cs`、`src/UnifiedRgb.Devices.AsusRog/RogPerKeyPlan.cs`、`src/UnifiedRgb.Devices.Abstractions/PerKey.cs`（本机映射与逐键门禁）；`src/UnifiedRgb.Core/Engine/RenderLoop.Followers.cs`（单点回退）；`src/UnifiedRgb.Screens/Runtime/ScreenManager.Keyboard.cs`、`src/UnifiedRgb.Screens/Keyboard/KeyboardOledFramePreparer.cs` / 同目录 `KeyboardOledEncoder.cs`、`src/UnifiedRgb.Host/Services/KeyboardDisplayAnimation.cs` / 同目录 `KeyboardDisplayService.cs`、`src/UnifiedRgb.Host/KeyboardDisplayOptions.cs`、`src/UnifiedRgb.Contracts/Dto/KeyboardDisplayAnimationDto.cs` / `src/UnifiedRgb.Contracts/KeyboardOledFormat.cs`（OLED 转换、时序和接口）。2026-10-29 用户分别确认 USB 与 RF 路线的单个 Esc 键显示红色；这只是单键验证，不是完整 81 键键表或完整主题验收。
+`contain` 完整显示并留黑边，`cover` 填满后居中裁切；需要完整人物或边框时优先检查 `contain` 预览。输出为 **16 级灰度**，0 黑、15 白，可选 `luma-round-v1` 或固定 4×4 Bayer 的 `luma-bayer4-v1`。每帧行优先打包为 **6656 字节**：
+
+亮度转换沿用 `(54R + 183G + 19B + 128) >> 8`；普通四舍五入编码按 `(亮度 × 15 + 127) / 255` 取整。离线制作 16 级灰度时可用 0、17、34……255 对应各级，避免导入后因低对比彩色配色丢失层次。
+
+```text
+packed[p] = gray[2*p] | (gray[2*p+1] << 4)
+```
+
+低半字节是偶数像素，高半字节是随后一个奇数像素。这是内部上传／预览格式，不是新增的场景包素材后缀。作者通常交付原始图像或影片，由程序转换。
+
+#### 在界面中使用
+
+1. 打开机箱控制区的“键盘屏幕动画”，读取后台状态。`Admitted` 是本机准入，`Enabled` 是用户请求，两者都不等于已经可见播放；源码默认不准入且不开启，不能为了清除提示伪造设备能力。
+2. 点击“导入文件到本机素材库”，或选已有素材。导入仅增加素材并形成未保存的键盘选择草稿，**不应用机箱场景、灯光或屏幕，也不自动开启动画**。
+3. 明确选择来源和素材，先“生成预览”。预览来自实际打包的 4bit 灰度字节，检查人物、文字、边框、灰阶和裁切；预览不会发送到键盘。
+4. 确认后“保存并开启键盘动画”。看返回的 `State`、`Detail`、缓存、选择和完整上传确认计数；`Playing`、已确认上传仍不是光学验收。失败时保留错误，不对未知结果自动重发。
+5. “停用键盘动画”保留选择与选项。原生光域档返回设备已存动画；普通非原生状态页沿用原有行为。有效拨杆操作短暂显示相关状态或场景名，再回到所选待机内容；遥测、RGB 和 CAP 轮询不应触发弹窗。
+
+#### 时钟与绑定：必须显式选择
+
+| 来源 | 返回的 `TimelineId` | 时间与约束 |
+| --- | --- | --- |
+| 独立待机 | `keyboard-local:<素材ID>` | 素材 ID 是上传接口返回的 16 位十六进制值；以既有共享主时钟 `IClock.Now == 0` 为循环锚点，按当前 `IClock.Now × 1000` 毫秒选帧。机箱 RGB 关闭或五屏休眠时仍可运行，不另开私有时钟 |
+| 场景同步 | `keyboard-scene:<素材ID>:<真实package TimelineId>` | 使用所选真实场景的 `Position`；素材循环总时长与该场景真实循环时长必须**精确相同**，准备后的时长也检查。当前时间轴缺失、被阻止或换绑定时明确回退，绝不偷偷换成独立时钟 |
+| 机箱屏幕镜像（兼容） | 原有 `package:<内容ID>:<绑定ID>` | 保持原先“当前屏幕素材＋共享包时间轴”的绑定语义；不自动改成本机独立素材 |
+
+优先使用 `GetKeyboardDisplayAnimationAsync()` 返回的 `Choices`。本机素材不需要屏幕绑定；场景同步候选则必须对应当前真实场景时间轴和相同时长。没有候选时先检查真实场景／素材时长，不手造 ID、不自动应用主题，也不把已阻止的包绑定重新解释为本机时钟。偏好保存在本机 `keyboard-display-animation.json`，不写入 ZIP 清单。临时提示结束后，主机素材按**所选时钟的当前位置**恢复，不回到第零帧；设备已存动画由键盘自身播放。
+
+当前基座保存一组本机 OLED 素材与时钟选择。它尚不是“每个场景包自动附带一条 OLED 绑定”的配置表：切换到另一真实场景后，需要选择对应候选；不会把上一场景的时间轴移植过去。作者可以先随主题交付独立 OLED 文件及其循环时长说明，用以上通用入口适配。
+
+#### 现有 C# 接口示例
+
+`screens` 和 `oled` 分别是当前连接取得的 `IScreenService`、`IKeyboardDisplayService` 代理；`path` 是用户明确选择的文件，`ct` 是取消令牌。按界面交互边界分步执行，不启动第二个 Host：
+
+```csharp
+var initial = await oled.GetKeyboardDisplayAnimationAsync(ct);
+if (!initial.Admitted) throw new InvalidOperationException(initial.Detail);
+var bytes = await File.ReadAllBytesAsync(path, ct);
+if (bytes.Length > 12 * 1024 * 1024) throw new InvalidOperationException("文件超过 12 MiB");
+var asset = await screens.UploadScreenAssetAsync(
+    new ScreenAssetUploadDto(Path.GetFileName(path), Convert.ToBase64String(bytes)), ct);
+var status = await oled.GetKeyboardDisplayAnimationAsync(ct);
+var choice = status.Choices.Single(c => c.AssetId == asset.Id
+    && c.TimelineId == "keyboard-local:" + asset.Id); // 选择实际返回的独立待机候选
+var preview = await oled.PreviewKeyboardDisplayAnimationAsync(
+    new KeyboardDisplayAnimationPreviewRequestDto(choice.AssetId, choice.TimelineId,
+        "contain", KeyboardDisplayAnimationEncodings.LumaRound), ct);
+// 先显示 preview，待用户确认后再执行保存。场景同步请让用户从返回的
+// Choices 中选择 keyboard-scene: 候选替换 choice，不自行拼造真实场景 ID。
+await oled.SetKeyboardDisplayAnimationAsync(
+    new KeyboardDisplayAnimationSettingsDto(true, choice.AssetId, choice.TimelineId,
+        "contain", KeyboardDisplayAnimationEncodings.LumaRound,
+        Math.Max(2000, status.MinimumIntervalMs)), ct);
+```
+
+用户稍后明确停用时，只改已有偏好的开启项：
+
+```csharp
+var latest = await oled.GetKeyboardDisplayAnimationAsync(ct);
+await oled.SetKeyboardDisplayAnimationAsync(latest.Settings with { Enabled = false }, ct);
+```
+
+预览帧的 `PositionMs` 是素材循环内位置，`PackedBase64` 解码后每帧应为 6656 字节；它们不是硬件回读或 GIF 已驻留设备的证明。
+
+#### 上传节奏、预算与当前实测边界
+
+主机最小上传间隔默认 **2000ms**，可配置的准入下限为 1000–10000ms；用户间隔不得小于返回的 `MinimumIntervalMs`，也不得超过 10000ms。完整上传耗时还会扩大下一次选择间隔。默认缓存 16 MiB、最大 32 MiB，准备预算默认 30 秒、采样网格默认 100ms；准备、取消、缓存和上传超预算保护沿用现有路径，不发布半成品，不通过重发未知报文或并行 writer 追赶。
+
+**2026-10-30 实测快照：**独立导入／预览／播放代码已部署；RF10 的一轮约 90 秒自制动画测试完成 **32 次完整上传确认**，单次约 **564–717ms**。默认 2 秒驻留加上传成本，画面更新约每 **2.6 秒**一次。配套源 GIF 的 16 帧／16 秒、每源帧 1000ms 只是素材时间，不是物理 1fps。
+
+当前一幅 OLED 全量上传会占用同一个串行键盘 owner 约 650ms，期间逐灯 RGB 不能继续发送，用户已观察到周期性卡顿。此前 RF30 原生并发仍出现过 `67/1` 的 `FF AA` 拒绝及 `23/03` 超时；CAP 限频修正未单独解决。13:47 已实际发布停止自制动画时重复恢复的修正；13:49 的 RF30 短测完成 **7 次 ACK、单次约 715ms**。停用并恢复关闭偏好后，短窗内记录到键盘约 30 次完整写入/秒、丢弃 0、无新错误；用户对这次停止转换的物理确认仍待回复。这只是具体软件窗口，不能写成周期性卡顿已消除或无线长期稳定性已修好。
+
+RGB 单独快速彩虹的 20→30 档用户反馈、更高主机写入计数，与 OLED 并发／可见帧率是不同证据。新 USB 共存与场景同步的物理验收仍未完成。完整帧 ACK、`Enabled=true` 或软件预览均不能替代目视检查；本路线不承诺 OLED 15/30/60fps、设备自主循环或一次上传原生 GIF。
+
+代码入口：`IKeyboardDisplayService`、`IScreenService.UploadScreenAssetAsync`；`KeyboardDisplayAnimation`（来源／时钟／预算）、`KeyboardDisplayService`（现有 owner）、`ScreenManager.Keyboard`、`KeyboardOledFramePreparer` 与 `KeyboardOledEncoder`（准备／编码）。这些是通用程序能力，不含 Pikachu 分支、固定灯珠地址或新场景包字段。
 
 ## 本机场景库维护与单屏编辑
 

@@ -52,7 +52,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         Studio = new StudioViewModel(client, ui, ReportError, confirm, client.RequireScreens, client.RequireKeyboardDisplay);
         Studio.ControlPanel.AttachPeripheralConfiguration(new(client.RequirePeripheralConfiguration, ui, ReportError, openLink ?? PeripheralConfigurationViewModel.OpenInBrowser));
         Studio.ControlPanel.AttachNativeMenu(new(client.RequireNativeMenu, ui, ReportError));
-        Studio.ControlPanel.AttachKeyboardAnimation(new(client.RequireKeyboardDisplay, ui, ReportError));
+        Studio.ControlPanel.AttachKeyboardAnimation(new(client.RequireKeyboardDisplay, ui, ReportError,
+            screens: client.RequireScreens, chooseFile: chooseMediaFile));
         Screens = new ScreensViewModel(client.RequireScreens, ui, ReportError, chooseMediaFile ?? (() => null), confirm, deviceSettings: client.RequireScreenSettings);
         Screens.ErrorDismissed += (_, _) => Error = string.Empty;
         Scene = new SceneViewModel(client, ui, ReportError);

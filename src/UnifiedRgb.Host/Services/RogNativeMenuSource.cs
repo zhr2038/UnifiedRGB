@@ -108,6 +108,9 @@ public sealed class RogNativeMenuSource(KeyboardNativeMenuOptions options, IHidI
         private bool _retired, _rejected, _stopped, _observedRequested;
         private int _busy;
         private long _receivedNotifications;
+        // Only an actually received, validated readonly CAP can bound a quiet tick. This never refreshes RF evidence.
+        private RogNativeCapability? _lastReadCapability;
+        private long? _lastReadCapabilityAt;
         internal long ReceivedNotifications => Interlocked.Read(ref _receivedNotifications);
 
         internal Actor(RogNativeMenuSource source, IRogOledConnection connection)
@@ -149,6 +152,7 @@ public sealed class RogNativeMenuSource(KeyboardNativeMenuOptions options, IHidI
             {
                 if (_joinFailed) throw new IOException("Native reader did not join; this owner remains retired.");
                 _latest = latest;
+                var requestChanged = _observedRequested != _source.Requested;
                 _observedRequested = _source.Requested;
                 if (!_observedRequested || _stopped || _rejected || _transport == 0 || !_source.AcceptsScope(_key, _firmware, _kind))
                 {
@@ -158,8 +162,21 @@ public sealed class RogNativeMenuSource(KeyboardNativeMenuOptions options, IHidI
                 }
                 RequireConnection();
                 ValidateCurrentPhysicalScope();
-                // The existing per-tick CAP is this owner's current observation; RF proof is judged only after it, before any drain.
+                byte[]? selectedPixels = null;
+                var selected = false;
+                if (!requestChanged && CanSkipCapability())
+                {
+                    // Select once: the callback may advance an animation's gate/measurement state. If it changed, retain
+                    // these bytes through the fresh CAP below instead of calling it a second time.
+                    selectedPixels = latest(); selected = true;
+                    if (selectedPixels is not null && selectedPixels.Length != RogWiredOledProtocol.PixelBytes)
+                        throw new InvalidDataException("Native artwork must be exactly6656 bytes.");
+                    if (!ArtworkChanged(selectedPixels, _sent) && !_retired && _source.Requested && CanSkipCapability())
+                        return ArtworkActive;
+                }
+                // Only this actual CAP refreshes observation state; queued input and every mutation still use this fresh path.
                 var reply = await ExchangeAsync(RogNativeMenuCodec.CapabilityRequest(), false, ct).ConfigureAwait(false);
+                var observedAt = _source._time.GetTimestamp();
                 RogNativeCapability capability;
                 try { capability = RogNativeMenuCodec.ParseCapability(reply, 0x12, _transport); }
                 catch (InvalidDataException)
@@ -187,6 +204,8 @@ public sealed class RogNativeMenuSource(KeyboardNativeMenuOptions options, IHidI
                     return false;
                 }
                 ValidateCurrentPhysicalScope();
+                _lastReadCapability = capability;
+                _lastReadCapabilityAt = observedAt;
                 Drain();
                 if (_retired && _armed is not null)
                 {
@@ -195,7 +214,7 @@ public sealed class RogNativeMenuSource(KeyboardNativeMenuOptions options, IHidI
                     // control writes, physical changes and failed joins remain latched by their existing paths.
                     return false;
                 }
-                var pixels = latest();
+                var pixels = selected ? selectedPixels : latest();
                 if (pixels is not null && pixels.Length != RogWiredOledProtocol.PixelBytes)
                     throw new InvalidDataException("Native artwork must be exactly6656 bytes.");
                 if (pixels is null && _armed is not null && _sent is not null)
@@ -270,6 +289,18 @@ public sealed class RogNativeMenuSource(KeyboardNativeMenuOptions options, IHidI
 
         private static bool ArtworkChanged(byte[]? latest, byte[]? sent) =>
             latest is null ? sent is not null : sent is null || !latest.AsSpan().SequenceEqual(sent);
+
+        private bool CanSkipCapability()
+        {
+            if (_armed is null || _retired || _stopped || RecoveryBlocked || _reader is not { IsCompleted: false }
+                || !_queue.IsEmpty || _lastReadCapability is not { } observed || _lastReadCapabilityAt is not { } at
+                || !Matches(observed)) return false;
+            var now = _source._time.GetTimestamp();
+            if (now < at || _source._time.GetElapsedTime(at, now) >= TimeSpan.FromMilliseconds(100)) return false;
+            // Checking an immutable owner snapshot is not a new observation. Stale/future/inconsistent proof forces the
+            // actual CAP path and its existing fail-closed checks; no input is drained and no mutation uses this shortcut.
+            return PairingStale(_connection.NativeControlBinding) is null;
+        }
 
         /// <summary>
         /// Null when this RF route's pairing proof is current; wired routes carry none. Owner evidence keeps the initial

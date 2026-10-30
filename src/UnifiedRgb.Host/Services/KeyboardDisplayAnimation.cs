@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text.Json;
 using UnifiedRgb.Contracts;
 using UnifiedRgb.Contracts.Dto;
+using UnifiedRgb.Core.Clock;
 using UnifiedRgb.Host.ScenePackages;
 using UnifiedRgb.Screens.Keyboard;
 using UnifiedRgb.Screens.Runtime;
@@ -15,16 +16,28 @@ namespace UnifiedRgb.Host.Services;
 /// preview: a cancelled decode that has not ended holds back the next, and only the latest binding waits. The owner's display
 /// <c>latest</c> calls <see cref="Select"/>, which is the only cadence gate (so the upload check and the lease wake agree and an
 /// idle lease never spins). Installed native-menu ownership suppresses it entirely; the native artwork, lever and status pixels are untouched.
+/// <para>
+/// A second, explicitly chosen source is a stored library asset bound to <see cref="LocalTimelinePrefix"/> + its asset id. It
+/// never depends on the screen scene, case lighting or sleeping screens; its position is the existing shared master
+/// <see cref="IClock.Now"/> (no other time base). Package timeline ids keep their exact package semantics and are never
+/// reinterpreted as local.
+/// </para>
 /// </summary>
 internal sealed class KeyboardDisplayAnimation : IDisposable
 {
     internal const string FileName = "keyboard-display-animation.json";
+
+    /// <summary>TimelineId of an explicitly chosen stored library asset: this prefix + exactly its asset id.</summary>
+    internal const string LocalTimelinePrefix = "keyboard-local:";
+    internal const string SceneTimelinePrefix = "keyboard-scene:";
+
     private const int PreviewFrames = 4;
     private const int PreviewTimeoutMs = 10_000;
 
     private enum Decision { None, Inactive, Unbound, Blocked, Gated, Playing }
 
-    private sealed record Plan(KeyboardOledFrames Frames, string TimelineId, int IntervalMs, long IntervalTicks, long MaxUploadTicks);
+    private sealed record Plan(KeyboardOledFrames Frames, string TimelineId, int IntervalMs, long IntervalTicks, long MaxUploadTicks,
+        bool Local, string? SceneTimelineId);
     private sealed record SettingsFile(int Schema, bool Enabled, string? AssetId, string? TimelineId, string Fit, string Encoding, int IntervalMs);
     private readonly record struct Key(string AssetId, string Fit, string Encoding);
 
@@ -35,6 +48,9 @@ internal sealed class KeyboardDisplayAnimation : IDisposable
     private readonly KeyboardDisplayOptions _options;
     private readonly IKeyboardOledMedia? _media;
     private readonly IScreenTimeline? _timeline;
+    private readonly IClock? _clock;
+    private readonly Func<string, int?>? _sceneLoopDurationMs;
+    private IReadOnlyDictionary<string, int> _sceneLoops = new Dictionary<string, int>(StringComparer.Ordinal);
     private readonly TimeProvider _time;
     private readonly string _path;
     private readonly object _gate = new();
@@ -67,12 +83,16 @@ internal sealed class KeyboardDisplayAnimation : IDisposable
     private string? _blocked;
     private long _selected, _acknowledged, _skipped, _lastUploadMs = -1;
 
+    // clock: the existing shared master clock, read only for the position of a local library choice; null = local playback
+    // reports the clock as missing. Upload/cadence bounds stay on the TimeProvider.
     public KeyboardDisplayAnimation(KeyboardDisplayOptions options, string dataDirectory, IKeyboardOledMedia? media,
-        IScreenTimeline? timeline, TimeProvider? time = null)
+        IScreenTimeline? timeline, TimeProvider? time = null, IClock? clock = null, Func<string, int?>? sceneLoopDurationMs = null)
     {
         _options = options;
         _media = media;
         _timeline = timeline;
+        _clock = clock;
+        _sceneLoopDurationMs = sceneLoopDurationMs;
         _time = time ?? TimeProvider.System;
         _path = Path.Combine(dataDirectory, "peripherals", FileName);
         _settings = Defaults;
@@ -99,7 +119,7 @@ internal sealed class KeyboardDisplayAnimation : IDisposable
     private KeyboardDisplayAnimationSettingsDto Defaults => new(false, null, null, "contain", KeyboardDisplayAnimationEncodings.LumaRound, MinimumIntervalMs);
 
     internal string? AdmissionProblem => _options.AnimationAdmissionProblem
-        ?? (_media is null ? "no keyboard media service" : _timeline is null ? "no shared timeline" : null);
+        ?? (_media is null ? "no keyboard media service" : _timeline is null && _clock is null ? "no shared timeline" : null);
 
     internal int MinimumIntervalMs => _options.AnimationMinimumIntervalMs is >= 1000 and <= KeyboardDisplayOptions.AnimationMaximumIntervalMs
         ? _options.AnimationMinimumIntervalMs : 2000;
@@ -119,13 +139,37 @@ internal sealed class KeyboardDisplayAnimation : IDisposable
         var plan = Volatile.Read(ref _plan);
         if (plan is null || !pageEnabled || nativeOwnsDisplay || Volatile.Read(ref _breaker) is not null) return Fallback(status, Decision.Inactive);
         if (!Bound(plan)) return Fallback(status, Decision.Unbound);
-        var sample = _timeline!.Position(plan.TimelineId);
-        if (sample is null || sample.Blocked is not null)
+        double positionMs;
+        if (plan.Local)
         {
-            Volatile.Write(ref _blocked, sample?.Blocked ?? "shared timeline is unavailable");
+            // The existing shared master clock in milliseconds; a missing, stopped or invalid clock is reported, never substituted.
+            var seconds = _clock?.Now ?? double.NaN;
+            var problem = _clock is null ? "共享主时钟未接入"
+                : _clock is MasterClock { IsRunning: false } ? "共享主时钟未运行"
+                : !double.IsFinite(seconds) || seconds < 0 ? "共享主时钟读数无效" : null;
+            if (problem is not null)
+            {
+                Volatile.Write(ref _blocked, problem);
+                return Fallback(status, Decision.Blocked);
+            }
+            positionMs = seconds * 1000;
+        }
+        else
+        {
+            var sample = _timeline?.Position(plan.SceneTimelineId ?? plan.TimelineId);
+            if (sample is null || sample.Blocked is not null)
+            {
+                Volatile.Write(ref _blocked, sample?.Blocked ?? "真实场景时间轴不可用");
+                return Fallback(status, Decision.Blocked);
+            }
+            positionMs = sample.PositionMs;
+        }
+        if (!double.IsFinite(positionMs) || positionMs < 0)
+        {
+            Volatile.Write(ref _blocked, "共享时钟位置无效");
             return Fallback(status, Decision.Blocked);
         }
-        var candidate = plan.Frames.FrameAt(plan.Frames.IndexAt(sample.PositionMs));
+        var candidate = plan.Frames.FrameAt(plan.Frames.IndexAt(positionMs));
         if (!ReferenceEquals(plan, _gatePlan))
         {
             // A different prepared loop never shows a frame held from the previous one.
@@ -192,7 +236,11 @@ internal sealed class KeyboardDisplayAnimation : IDisposable
 
     private bool Bound(Plan plan)
     {
+        if (plan.Local) return true; // immutable asset presence is checked when publishing a plan on the monitor path
         var scene = _media!.CurrentReferences();
+        if (plan.SceneTimelineId is { } timelineId)
+            return scene is not null && scene.Assignments.Any(a => a.TimelineId == timelineId)
+                && Volatile.Read(ref _sceneLoops).TryGetValue(timelineId, out var duration) && duration == plan.Frames.DurationMs;
         if (ReferenceEquals(scene, _checkedScene) && ReferenceEquals(plan, _checkedPlan)) return _bound;
         _checkedScene = scene; _checkedPlan = plan; _bound = false;
         if (scene is null) return false;
@@ -211,17 +259,24 @@ internal sealed class KeyboardDisplayAnimation : IDisposable
     {
         if (AdmissionProblem is not null) return;
         IReadOnlyList<KeyboardDisplayAnimationChoiceDto> choices;
+        IReadOnlyDictionary<string, int> loops;
         try
         {
             using var bound = CancellationTokenSource.CreateLinkedTokenSource(ct); bound.CancelAfter(5000);
             var scene = await screens.GetScreenSceneAsync(bound.Token).ConfigureAwait(false);
             var assets = await screens.ListScreenAssetsAsync(bound.Token).ConfigureAwait(false);
-            choices = Choices(scene, assets);
+            var knownLoops = new Dictionary<string, int>(StringComparer.Ordinal);
+            foreach (var id in scene.Assignments.Select(a => a.TimelineId).OfType<string>().Distinct(StringComparer.Ordinal))
+                if (ScenePackageIds.TryParse(id, out _, out _) && _sceneLoopDurationMs?.Invoke(id) is > 0 and var duration)
+                    knownLoops[id] = duration;
+            loops = knownLoops;
+            choices = [.. Choices(scene, assets), .. _clock is null ? [] : LocalChoices(assets), .. SceneChoices(assets, knownLoops)];
         }
         catch (Exception ex) when (ex is not OutOfMemoryException && !ct.IsCancellationRequested) { return; }
         lock (_gate)
         {
             _choices = choices;
+            Volatile.Write(ref _sceneLoops, loops);
             Reconcile();
         }
     }
@@ -237,7 +292,9 @@ internal sealed class KeyboardDisplayAnimation : IDisposable
             await RefreshAsync(screens, ct).ConfigureAwait(false);
             lock (_gate)
                 if (!_choices.Any(c => c.AssetId == value.AssetId && c.TimelineId == value.TimelineId))
-                    throw new InvalidOperationException("所选素材不在当前场景的共享时间轴上；设置未保存");
+                    throw new InvalidOperationException(IsLocal(value.TimelineId) ? "所选素材不在本机素材库中；设置未保存"
+                        : IsScene(value.TimelineId) ? "所选素材与真实场景循环时长不匹配，或场景已不可用；设置未保存"
+                        : "所选素材不在当前场景的共享时间轴上；设置未保存");
         }
         ct.ThrowIfCancellationRequested();
         lock (_gate)
@@ -262,7 +319,8 @@ internal sealed class KeyboardDisplayAnimation : IDisposable
         await RefreshAsync(screens, ct).ConfigureAwait(false);
         lock (_gate)
             if (!_choices.Any(c => c.AssetId == request.AssetId && c.TimelineId == request.TimelineId))
-                throw new InvalidOperationException("所选素材不在当前场景的共享时间轴上");
+                throw new InvalidOperationException(IsLocal(request.TimelineId) ? "所选素材不在本机素材库中"
+                    : IsScene(request.TimelineId) ? "所选素材与真实场景循环时长不匹配，或场景已不可用" : "所选素材不在当前场景的共享时间轴上");
         var work = new Work(null, 0, CancellationTokenSource.CreateLinkedTokenSource(ct));
         lock (_gate)
         {
@@ -319,6 +377,8 @@ internal sealed class KeyboardDisplayAnimation : IDisposable
         var breaker = Volatile.Read(ref _breaker);
         var decision = (Decision)Volatile.Read(ref _decision);
         var listed = choices.Any(c => c.AssetId == settings.AssetId && c.TimelineId == settings.TimelineId);
+        var local = IsLocal(settings.TimelineId);
+        var sceneBound = IsScene(settings.TimelineId);
         var interval = Interval(settings);
         var (state, detail) =
             settingsError is not null ? (KeyboardDisplayAnimationStates.SettingsError, settingsError)
@@ -327,16 +387,23 @@ internal sealed class KeyboardDisplayAnimation : IDisposable
             : nativeOwnsDisplay ? (KeyboardDisplayAnimationStates.SuppressedByNativeMenu,
                 "已安装的原生光域菜单拥有键盘屏幕输出：不发送动画画面，原生状态画面与拨杆不受影响；绑定与开启偏好已保留")
             : !pageEnabled ? (KeyboardDisplayAnimationStates.PageOff, "键盘状态屏已关闭，键盘显示 ROG 原动画；开启状态屏后才会播放")
-            : !listed ? (KeyboardDisplayAnimationStates.Unavailable, BindingUnavailableDetail(settings, choices))
+            : !listed ? (KeyboardDisplayAnimationStates.Unavailable, local
+                ? "所选本机素材不在素材库中（或素材库暂未读到）；已保存的键盘设置未改变；需要重新选择"
+                : sceneBound ? "所选素材与真实场景循环时长不匹配，或当前场景时间轴已不可用；未自动改为独立待机"
+                : BindingUnavailableDetail(settings, choices))
             : prepareError is not null ? (KeyboardDisplayAnimationStates.Error, prepareError + "；显示状态屏，重新保存设置后才会再次准备")
             : breaker is not null ? (KeyboardDisplayAnimationStates.BreakerTripped, breaker)
             : preparing || plan is null ? (KeyboardDisplayAnimationStates.Preparing,
                 !waiting ? "正在后台准备键盘画面；显示状态屏"
                 : previewing ? "键盘预览正在生成；结束后才准备当前绑定；显示状态屏"
                 : "上一次键盘画面准备已取消，正在等待其底层解码结束（不强行终止）；结束后才准备当前绑定；显示状态屏")
-            : decision == Decision.Playing ? (KeyboardDisplayAnimationStates.Playing, string.Create(CultureInfo.InvariantCulture,
-                $"按共享场景时间轴选帧；最多每 {interval / 1000.0:0.#} 秒更新一次（不是帧率）"))
-            : decision == Decision.Blocked ? (KeyboardDisplayAnimationStates.Fallback, "共享时间轴不可用（" + Volatile.Read(ref _blocked) + "）；显示状态屏")
+            : decision == Decision.Playing ? (KeyboardDisplayAnimationStates.Playing, local
+                ? string.Create(CultureInfo.InvariantCulture,
+                    $"本机键盘素材库：按共享主时钟选帧，不跟随屏幕场景；最多每 {interval / 1000.0:0.#} 秒更新一次（不是帧率）")
+                : string.Create(CultureInfo.InvariantCulture, $"按真实场景时间轴的当前位置选帧；最多每 {interval / 1000.0:0.#} 秒更新一次（不是帧率）"))
+            : decision == Decision.Blocked ? (KeyboardDisplayAnimationStates.Fallback, local
+                ? "本机素材的共享主时钟不可用（" + Volatile.Read(ref _blocked) + "）；不发送动画画面"
+                : "共享时间轴不可用（" + Volatile.Read(ref _blocked) + "）；显示状态屏")
             : decision == Decision.Gated ? (KeyboardDisplayAnimationStates.Ready, "已准备；等待更新间隔后恢复动画，当前显示状态屏")
             : decision == Decision.Unbound ? (KeyboardDisplayAnimationStates.Unavailable, BindingUnavailableDetail(settings, choices))
             : (KeyboardDisplayAnimationStates.Ready, string.Create(CultureInfo.InvariantCulture, $"已准备 {plan.Frames.Count} 帧；等待键盘状态屏运行"));
@@ -397,12 +464,30 @@ internal sealed class KeyboardDisplayAnimation : IDisposable
         var key = new Key(s.AssetId, s.Fit, s.Encoding);
         if (_frames is { } frames && new Key(frames.AssetId, frames.Fit, frames.Encoding) == key)
         {
+            // A library choice plays only while its asset is a known stored asset (scene-bound choices keep their Bound check).
+            if ((IsLocal(s.TimelineId) || IsScene(s.TimelineId)) && !_choices.Any(c => c.AssetId == s.AssetId && c.TimelineId == s.TimelineId))
+            {
+                Volatile.Write(ref _plan, null);
+                return;
+            }
+            string? sceneId = null;
+            if (TryScene(s.TimelineId, out _, out var realId))
+            {
+                if (!_sceneLoops.TryGetValue(realId, out var loop) || frames.DurationMs != loop)
+                {
+                    _prepareError = "素材实际循环时长与真实场景循环不一致；未发布画面";
+                    Volatile.Write(ref _plan, null);
+                    return;
+                }
+                sceneId = realId;
+            }
             var interval = Interval(s);
             var current = Volatile.Read(ref _plan);
             if (current is null || !ReferenceEquals(current.Frames, frames) || current.TimelineId != s.TimelineId || current.IntervalMs != interval)
             {
                 var f = _time.TimestampFrequency;
-                Volatile.Write(ref _plan, new Plan(frames, s.TimelineId, interval, interval * f / 1000, _options.AnimationMaximumUploadMs * f / 1000));
+                Volatile.Write(ref _plan, new Plan(frames, s.TimelineId, interval, interval * f / 1000, _options.AnimationMaximumUploadMs * f / 1000,
+                    IsLocal(s.TimelineId), sceneId));
             }
             return;
         }
@@ -481,11 +566,39 @@ internal sealed class KeyboardDisplayAnimation : IDisposable
         : s.IntervalMs < minimumIntervalMs || s.IntervalMs > KeyboardDisplayOptions.AnimationMaximumIntervalMs
             ? string.Create(CultureInfo.InvariantCulture, $"更新间隔必须在 {minimumIntervalMs}..{KeyboardDisplayOptions.AnimationMaximumIntervalMs} ms")
         : s.AssetId is not null && !IsAssetId(s.AssetId) ? "素材标识无效"
+        : IsLocal(s.TimelineId) ? (s.AssetId is null || s.TimelineId != LocalTimelineId(s.AssetId) ? "本机素材库标识必须与所选素材一致" : null)
+        : IsScene(s.TimelineId) ? (!TryScene(s.TimelineId, out var asset, out _) || asset != s.AssetId ? "场景同步标识必须包含相同素材与真实场景时间轴" : null)
         : s.TimelineId is not null && !ScenePackageIds.TryParse(s.TimelineId, out _, out _) ? "共享时间轴标识无效"
         : s.Enabled && (s.AssetId is null || s.TimelineId is null) ? "开启动画需要先选择当前场景中的素材"
         : null;
 
     private static bool IsAssetId(string id) => id.Length == 16 && id.All(c => c is (>= '0' and <= '9') or (>= 'a' and <= 'f'));
+
+    internal static string LocalTimelineId(string assetId) => LocalTimelinePrefix + assetId;
+
+    internal static bool IsLocal(string? timelineId) => timelineId is not null && timelineId.StartsWith(LocalTimelinePrefix, StringComparison.Ordinal);
+    internal static bool IsScene(string? timelineId) => timelineId is not null && timelineId.StartsWith(SceneTimelinePrefix, StringComparison.Ordinal);
+    internal static string SceneTimelineId(string assetId, string realTimelineId) => SceneTimelinePrefix + assetId + ":" + realTimelineId;
+    internal static bool TryScene(string? value, out string assetId, out string realTimelineId)
+    {
+        assetId = realTimelineId = string.Empty;
+        if (!IsScene(value) || value!.Length <= SceneTimelinePrefix.Length + 17) return false;
+        assetId = value.Substring(SceneTimelinePrefix.Length, 16);
+        if (value[SceneTimelinePrefix.Length + 16] != ':') return false;
+        realTimelineId = value[(SceneTimelinePrefix.Length + 17)..];
+        return IsAssetId(assetId) && ScenePackageIds.TryParse(realTimelineId, out _, out _);
+    }
+
+    private static IReadOnlyList<KeyboardDisplayAnimationChoiceDto> SceneChoices(IReadOnlyList<ScreenAssetDto> assets, IReadOnlyDictionary<string, int> loops) =>
+        [.. assets.Where(a => IsAssetId(a.Id)).DistinctBy(a => a.Id, StringComparer.Ordinal)
+            .SelectMany(a => loops.Where(l => l.Value == a.DurationMs)
+                .Select(l => new KeyboardDisplayAnimationChoiceDto(a.Id, SceneTimelineId(a.Id, l.Key), string.Empty,
+                    a.Name + " · 场景 " + l.Key[8..16], a.FrameCount, a.DurationMs, a.Kind)))];
+
+    /// <summary>Every stored library asset as an explicit local choice (no screen, no scene timeline), in library order.</summary>
+    internal static IReadOnlyList<KeyboardDisplayAnimationChoiceDto> LocalChoices(IReadOnlyList<ScreenAssetDto> assets) =>
+        [.. assets.Where(a => IsAssetId(a.Id)).DistinctBy(a => a.Id, StringComparer.Ordinal)
+            .Select(a => new KeyboardDisplayAnimationChoiceDto(a.Id, LocalTimelineId(a.Id), string.Empty, a.Name, a.FrameCount, a.DurationMs, a.Kind))];
 
     /// <summary>Assignments of the current screen scene with a shared TimelineId and a stored asset, one per (asset, timeline).</summary>
     internal static IReadOnlyList<KeyboardDisplayAnimationChoiceDto> Choices(ScreenSceneDto scene, IReadOnlyList<ScreenAssetDto> assets)
