@@ -582,6 +582,7 @@ public sealed partial class RogNativeMenuSourceTests
                     case (0x21, 0): b[5] = 3; break;
                     case (0x23, 2): b[5] = 1; break;
                     case (0x23, 3): b[5] = 100; break;
+                    case (0x27, 0): b[5] = 0; break;
                     case (0x61, 0): NativeRestores++; break;
                     case (0x68, 0): b = (byte[])request.Clone(); break;
                     case (0x25, 0x0E):

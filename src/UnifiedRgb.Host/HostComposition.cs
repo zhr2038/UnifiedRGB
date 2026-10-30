@@ -173,7 +173,7 @@ public static class HostComposition
             sp.GetService<IScreenSceneBinding>()));
         services.AddSingleton<IRogWiredOledFactory, RogWiredOledFactory>();
         services.AddSingleton<IRogWirelessOledFactory, RogWirelessOledFactory>();
-        services.AddSingleton<IKeyboardNativePresentationCapability>(_ => new RogNative49PresentationCapability(options.KeyboardNativeMenu));
+        services.AddSingleton<IKeyboardNativePresentationCapability>(_ => new RogNative49PresentationCapability(options.KeyboardNativeMenu, options.KeyboardDisplay));
         // Scene-cycle caption: a pure overlay over an immutable snapshot; the keyboard display applies it to native frames only.
         services.AddSingleton<KeyboardSceneCycleOverlay>();
         // Same arguments the former type registration resolved; nativeFrameOverlay is the Logo provider's optional final parameter.
@@ -189,7 +189,8 @@ public static class HostComposition
             time: sp.GetService<TimeProvider>(),
             nativePresentation: sp.GetService<IKeyboardNativePresentationCapability>(),
             nativeFrameOverlay: sp.GetRequiredService<KeyboardSceneCycleOverlay>().Apply,
-            nativeFrameAcknowledged: sp.GetRequiredService<KeyboardSceneCycleOverlay>().Acknowledge));
+            nativeFrameAcknowledged: sp.GetRequiredService<KeyboardSceneCycleOverlay>().Acknowledge,
+            nativeFrameOverlayRevision: () => sp.GetRequiredService<KeyboardSceneCycleOverlay>().Revision));
         services.AddSingleton<IKeyboardDisplayService>(sp => sp.GetRequiredService<KeyboardDisplayService>());
         services.AddHostedService(sp => sp.GetRequiredService<KeyboardDisplayService>());
         services.AddSingleton<IPeripheralConfigurationResources, RogPeripheralConfigurationResources>();
@@ -199,7 +200,8 @@ public static class HostComposition
         // One default-off source. Exact local installation/route policy never replaces its fresh actual CAP/input admission.
         services.AddSingleton(TimeProvider.System);
         services.AddSingleton<RogNativeMenuSource>(sp => new(options.KeyboardNativeMenu,
-            sp.GetService<IHidInputReportDevices>(), sp.GetService<IHidContainerResolver>(), sp.GetRequiredService<TimeProvider>()));
+            sp.GetService<IHidInputReportDevices>(), sp.GetService<IHidContainerResolver>(), sp.GetRequiredService<TimeProvider>(),
+            displayOptions: options.KeyboardDisplay));
         services.AddSingleton<INativeMenuSource>(sp => sp.GetRequiredService<RogNativeMenuSource>());
         // Up/Down scene browsing: Host-local, fed only by NativeMenuService's validated steps; it reads nothing before the first
         // step and resolves its RGB/package services lazily. Center stays the existing case Toggle.

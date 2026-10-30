@@ -32,4 +32,21 @@ public sealed record KeyboardNativeMenuOptions
     internal bool MatchesScope(string key, string header, string kind) => HasQualifiedRoute
         && string.Equals(DeviceKey, key, StringComparison.OrdinalIgnoreCase) && ConnectionKind == kind
         && RogRuntimeCompatibility.IsCompatibleAnchor(header, RouteAnchor);
+
+    /// <summary>
+    /// Use the existing OLED owner's exact locally verified identities on either transport. The native opt-in still needs its
+    /// qualified route; an alternate route never inherits legacy display/lighting admission or a configured firmware version.
+    /// USB has the same priority as the ordinary OLED owner. A missing route may select the other known transport, while a
+    /// failed open or failed live capability must not fall through to another owner.
+    /// </summary>
+    internal KeyboardNativeMenuOptions[] QualifiedRoutes(KeyboardDisplayOptions? display)
+    {
+        if (!HasQualifiedRoute) return [];
+        var wired = ConnectionKind == "wired" ? this : display?.HasVerifiedWiredIdentity == true
+            ? this with { DeviceKey = display.DeviceKey, ConnectionKind = "wired", FirmwareHeader = display.FirmwareHeader } : null;
+        var wireless = ConnectionKind == "wireless" ? this : display?.HasVerifiedWirelessIdentity == true
+            ? this with { DeviceKey = display.WirelessReceiverKey, ConnectionKind = "wireless", FirmwareHeader = display.WirelessFirmwareHeader } : null;
+        return wired is not null ? wireless is not null ? [wired, wireless] : [wired]
+            : wireless is not null ? [wireless] : [];
+    }
 }

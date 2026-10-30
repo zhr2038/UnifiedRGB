@@ -66,6 +66,9 @@ public sealed class KeyboardSceneCycleOverlay
     /// <summary>The caption shown now, or null.</summary>
     public KeyboardSceneCycleCaption? Current => Volatile.Read(ref _caption);
 
+    /// <summary>Changes with a shown or hidden caption, independently of the background animation cadence.</summary>
+    public long Revision => Current?.Revision ?? 0;
+
     internal void Show(KeyboardSceneCycleCaption? caption)
     {
         lock (_sync)

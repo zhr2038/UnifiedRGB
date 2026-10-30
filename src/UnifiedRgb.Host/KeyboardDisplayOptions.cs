@@ -14,6 +14,10 @@ public sealed record KeyboardDisplayOptions
     public string WirelessFirmwareHeader { get; init; } = string.Empty;
     public byte Brightness { get; init; } = 100;
 
+    /// <summary>The installed keyboard already draws the native entry Logo. Do not upload a second Host Logo;
+    /// ordinary, non-native display output keeps its existing entry presentation. Local presentation preference only.</summary>
+    public bool DeviceShowsNativeEntryLogo { get; init; }
+
     /// <summary>
     /// Host admission of the local keyboard OLED animation (stock/legacy owner only; suppressed under installed native-menu
     /// ownership). Off by default: no preparation, timeline read or animation frame happens. An out-of-range bound below keeps

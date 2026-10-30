@@ -12,8 +12,10 @@ namespace UnifiedRgb.Host.Services;
 /// existing owner's previous upload/renew reader has joined. No timer, independent animation clock, or RPC injection seam.
 /// </summary>
 public sealed class RogNativeMenuSource(KeyboardNativeMenuOptions options, IHidInputReportDevices? inputs = null,
-    IHidContainerResolver? containers = null, TimeProvider? time = null, Func<ulong>? cookie = null) : INativeMenuSource
+    IHidContainerResolver? containers = null, TimeProvider? time = null, Func<ulong>? cookie = null,
+    KeyboardDisplayOptions? displayOptions = null) : INativeMenuSource
 {
+    private readonly KeyboardNativeMenuOptions[] _routes = options.QualifiedRoutes(displayOptions);
     private readonly object _sync = new();
     private readonly IHidInputReportDevices? _inputs = inputs;
     private readonly IHidContainerResolver? _containers = containers;
@@ -27,8 +29,8 @@ public sealed class RogNativeMenuSource(KeyboardNativeMenuOptions options, IHidI
     /// <summary>The pinned installed policy owns OLED output even while native operation is disabled or outside mode9.</summary>
     public bool OwnsDisplayOutput => options.Admitted;
     internal bool Requested => OwnsDisplayOutput && Volatile.Read(ref _requested) != 0;
-    internal KeyboardNativeMenuOptions? QualifiedRoute => options.HasQualifiedRoute ? options : null;
-    internal bool AcceptsScope(string key, string header, string kind) => options.MatchesScope(key, header, kind);
+    internal IReadOnlyList<KeyboardNativeMenuOptions> QualifiedRoutes => _routes;
+    internal bool AcceptsScope(string key, string header, string kind) => _routes.Any(route => route.MatchesScope(key, header, kind));
 
     public IDisposable Connect(Action<NativeMenuSourceEvent> deliver)
     {

@@ -19,6 +19,55 @@ public sealed partial class RogNativeMenuSourceTests
     private const string SuppressedDetail = "已安装的原生光域菜单拥有键盘屏幕输出：不发送动画画面，原生状态画面与拨杆不受影响；绑定与开启偏好已保留";
 
     [Fact]
+    public void Scene_caption_revision_bypasses_animation_frame_interval()
+    {
+        long revision = 0;
+        var calls = 0;
+        using var state = new PresentationState(false, selected =>
+        {
+            calls++;
+            selected[0] = (byte)revision;
+            return selected;
+        }, () => revision);
+        var first = state.Presentation.Latest(state.Status, true);
+        state.Presentation.Stepped(true);
+        state.Presentation.Latest(state.Status, true).Should().BeSameAs(first);
+        calls.Should().Be(1);
+        revision++;
+        var next = state.Presentation.Latest(state.Status, true);
+        next[0].Should().Be(1);
+        calls.Should().Be(2, "a scene name changes immediately without advancing the background clock");
+        state.Status[0].Should().Be(0x0F, "the overlay must not rewrite the source frame");
+        state.Presentation.Latest(state.Status, true).Should().BeSameAs(next);
+    }
+
+    [Fact]
+    public async Task Device_owned_entry_logo_is_not_uploaded_again_by_the_host_and_native_input_keeps_working()
+    {
+        await using var rig = new PresentationRig(new DeclaredPresentation(KeyboardNativePresentationSupport.Available),
+            mode: 7, animation: false, deviceShowsLogo: true);
+        await rig.Owner.StartAsync(default);
+        await rig.RunningNative(); await rig.Declared();
+        rig.Control.Mode = RogNativeMenuCodec.NativeMode;
+        await Until(() => rig.Control.ImageBegins == 1 && rig.Shows(rig.Owner.ArtworkPixels.ToArray()));
+        rig.Shows(rig.Logo).Should().BeFalse("the physical entry already displayed the device's Logo");
+        rig.Input.Send(Notice(1, 0, 3)); rig.Input.Send(Notice(2, 2, 1));
+        await Until(() => rig.Events.OfType<NativeMenuPress>().Count() == 1);
+        rig.Clock.Advance(TimeSpan.FromSeconds(3));
+        await rig.NextTick();
+        rig.Control.ImageBegins.Should().Be(1, "no deferred second Logo is queued");
+        rig.Control.Arms.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Device_owned_entry_logo_option_does_not_remove_the_ordinary_host_entry_logo()
+    {
+        await using var rig = new PresentationRig(null, mode: 7, policy: false, animation: false, deviceShowsLogo: true);
+        await rig.Owner.StartAsync(default);
+        await Until(() => rig.Control.ImageBegins == 1 && rig.Shows(rig.Logo));
+    }
+
+    [Fact]
     public async Task Declared_presentation_shows_the_entry_logo_then_the_shared_timeline_frame_at_nonzero_elapsed_time_while_the_lever_keeps_working()
     {
         var capability = new DeclaredPresentation(KeyboardNativePresentationSupport.Available);
@@ -346,11 +395,11 @@ public sealed partial class RogNativeMenuSourceTests
         public byte[] Status { get; } = KeyboardDisplayServiceTests.Fill(0x0F);
         public byte[] Logo { get; } = KeyboardDisplayServiceTests.Fill(0xF0);
         public KeyboardNativePresentation Presentation { get; }
-        public PresentationState(bool logo)
+        public PresentationState(bool logo, Func<byte[], byte[]>? overlay = null, Func<long>? revision = null)
         {
             // Not admitted: the selector answers with the status artwork, which is the original base presentation.
             _animation = new KeyboardDisplayAnimation(new KeyboardDisplayOptions(), _data, null, null, Clock);
-            Presentation = new(_animation, logo ? Logo : null, Clock);
+            Presentation = new(_animation, logo ? Logo : null, Clock, overlay, overlayRevision: revision);
         }
         public void Dispose() { _animation.Dispose(); if (Directory.Exists(_data)) Directory.Delete(_data, true); }
     }
@@ -376,7 +425,8 @@ public sealed partial class RogNativeMenuSourceTests
         public KeyboardDisplayService Owner { get; }
         public byte[] Logo => Owner.EntryLogoPixels.ToArray();
 
-        public PresentationRig(IKeyboardNativePresentationCapability? capability, byte mode, bool policy = true, bool animation = true)
+        public PresentationRig(IKeyboardNativePresentationCapability? capability, byte mode, bool policy = true, bool animation = true,
+            bool deviceShowsLogo = false)
         {
             Directory.CreateDirectory(Path.Combine(Data, "peripherals"));
             File.WriteAllBytes(Path.Combine(Data, "peripherals", "keyboard-display.json"), Encoding.UTF8.GetBytes("{\"Schema\": 1, \"Enabled\": true}"));
@@ -395,7 +445,8 @@ public sealed partial class RogNativeMenuSourceTests
             {
                 DataDirectory = Data,
                 KeyboardDisplay = new() { Enabled = false, ControlVerified = true, LightingVerified = true,
-                    DeviceKey = Control.DeviceKey, FirmwareHeader = Control.FirmwareHeader, AnimationAdmitted = true },
+                    DeviceKey = Control.DeviceKey, FirmwareHeader = Control.FirmwareHeader, AnimationAdmitted = true,
+                    DeviceShowsNativeEntryLogo = deviceShowsLogo },
             }, rgb, KeyboardAnimationScreens.Create(Media), Factory, new MutationClearGuard(), Bridge,
                 nativeMenu: Source, keyboardMedia: Media, sharedTimeline: Timeline, time: Clock, nativePresentation: capability);
         }

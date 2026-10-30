@@ -352,7 +352,7 @@ PNG 优化器只使用已支持的非交错 RGBA8 PNG，保持图片上限 **524
 | 键盘整区 RGB | 普通 `lighting` 角色，`ledCount: 1`，一个 RGB 值覆盖整键盘；通过共享键盘 owner 输出 | 已有整区场景输出路径。它不能表现独立 W/A/S/D 或逐键波浪；必须绑定当前发现的整区灯区 |
 | 键盘逐键 RGB | 本机逐键能力为 `Ready` 时，同一灯区暴露 N 个逻辑灯位，普通 RGB24 轨道写 N 个颜色 | 逐键后端已部署；**目前仅原生 LED 0 → Esc 的红色在 USB 和 2.4G 两条路由上均获主人目视确认**。完整 81 键表未验收，不能按 81 键已就绪发布主题；蓝牙未验证 |
 | Harpe Edition20 鼠标 RGB | 普通 `lighting` 角色，`ledCount: 1`，对应 area0 整区点 | 已有跟随机箱及熄灯实测；没有已确认的鼠标独立灯珠地址，不能制作鼠标内部逐灯跑马 |
-| 键盘 OLED 状态页 / 原生菜单呈现 | 独立键盘显示服务；与场景包屏幕轨道分开 | 不等于场景素材播放器。本机已更新入口图并目视确认首屏为 Logo；目前连续出现两次 Logo，已记录待修。主题包无需为此改动素材或共享时间轴，不把软件预览写成设备已显示 |
+| 键盘 OLED 状态页 / 原生菜单呈现 | 独立键盘显示服务；与场景包屏幕轨道分开 | 不等于场景素材播放器。2026-10-30 本机已更新应用，用户确认切档只显示一次 Logo、按压亮灭正常；场景名称更新独立于背景动画刷新间隔。主题包无需为此改动素材或共享时间轴，不把软件预览写成设备已显示 |
 | 键盘 OLED 场景动画 | 已有素材转换、共享时间轴选择及本机动画 API；默认关闭，受准入与显示 owner 限制 | 本次未核验当前场景动画开启 / 绑定及实机播放；保留原生菜单 / 拨杆时恢复键盘原动画的接口仍有固件阻塞。不能宣传任意包可直接投放 OLED 或高帧率播放 |
 
 这里的 USB / 2.4G Esc 确认只证明该键、该颜色和各自传输路径，不能扩展为全部键位、完整动画、光学同步、蓝牙或 Home Assistant 集成已完成。主机发送完成 / ACK 与实际可见画面仍须分别记录。
@@ -419,7 +419,7 @@ python .\tools\scene-packages\pack_scene.py build .\my-scenes\peripheral-demo .\
 3. Host 动画准入已开启时，通过 `PreviewKeyboardDisplayAnimationAsync(new KeyboardDisplayAnimationPreviewRequestDto(choice.AssetId, choice.TimelineId, "contain", "luma-round-v1"))` 取得少量位置的实际打包灰度预览；准入关闭或准备任务占用时会明确拒绝。`PositionMs` 是素材内位置，`PackedBase64` 是上述 6656 字节帧；解包后检查文字、裁切和灰阶。预览不发送硬件。
 4. 只有 Host 准入、设备与显示 owner 路径具备条件时，才可显式调用 `SetKeyboardDisplayAnimationAsync(new KeyboardDisplayAnimationSettingsDto(true, choice.AssetId, choice.TimelineId, "contain", "luma-round-v1", status.MinimumIntervalMs))`。这是 C# 既有契约调用（`status` / `choice` 来自第 2 步），不是写入 `scene.json` 的 JSON 示例，也不绕过当前固件阻塞。偏好保存在本机 `keyboard-display-animation.json`；更新包或换绑定后需重新选择实际有效项。
 
-程序按包共享时间选择当下 OLED 帧，不从第 0 帧另起时钟。原生菜单接管、且当前 owner 会话未声明原生画面支持时，通用动画被抑制，保留偏好而不抢写；若固件已声明该能力，现有代码允许约 1.2 秒入场 Logo 后选择已单独开启、绑定的动画，仍须实际验证，不能靠本机改标记冒充固件能力。状态页关闭、素材失效、共享时间轴阻止或上传超时也会导致不同的停止 / 回退状态，须读取返回的 `Admitted`、`State`、`Detail`，不能只看请求中的 `Enabled`。恢复键盘原动画是另一条路径，不与自制场景动画混称。
+程序按包共享时间选择当下 OLED 帧，不从第 0 帧另起时钟。原生菜单接管、且当前 owner 会话未声明原生画面支持时，通用动画被抑制，保留偏好而不抢写；若固件已声明该能力，现有代码可在入场 Logo 后选择已单独开启、绑定的动画。Host 自绘 Logo 默认约 1.2 秒；设备已自行显示入口 Logo 时，本机 `KeyboardDisplay.DeviceShowsNativeEntryLogo: true` 会跳过第二次 Host Logo 上传，直接衔接后续画面。这只是本机呈现设置，不是包字段，也不能赋予设备原本不存在的播放能力。状态页关闭、素材失效、共享时间轴阻止或上传超时也会导致不同的停止 / 回退状态，须读取返回的 `Admitted`、`State`、`Detail`，不能只看请求中的 `Enabled`。恢复键盘原动画是另一条路径，不与自制场景动画混称。
 
 动画最小上传间隔默认 **2000ms**，Host 允许配置的下限范围为 1000–10000ms，用户设置的间隔不得小于当前返回的 `MinimumIntervalMs`，且不得超过 10000ms。这是选择 / 上传节流，不是保证 0.5fps 或 1fps 可见播放；缓存采样默认 100ms、准备时合并相同灰度帧，也不会提高上传速度。默认整轮灰度缓存 16MiB，最大可配置 32MiB；准备失败不发布部分帧。当前路线不承诺 15/30/60fps OLED、彩色、原生 GIF 文件上传、固件常驻动画或自定义原生菜单项目。
 

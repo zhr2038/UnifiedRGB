@@ -205,19 +205,21 @@ public sealed partial class RogNativeMenuSourceTests
     }
 
     [Fact]
-    public async Task Native49_missing_selected_wired_route_does_not_fall_back_to_verified_legacy_RF()
+    public async Task Native49_absent_known_USB_route_checks_the_configured_RF_route_without_legacy_output()
     {
         var data = Path.Combine(Path.GetTempPath(), "SolNative49NoFallback-" + Guid.NewGuid().ToString("N"));
-        var source = new RogNativeMenuSource(Policy()); source.RequestEnabled(true);
+        var display = new KeyboardDisplayOptions { WirelessControlVerified = true, WirelessLightingVerified = true,
+            WirelessReceiverKey = new string('A', 64), WirelessFirmwareHeader = "0800070025000100" };
+        var source = new RogNativeMenuSource(Policy(), displayOptions: display); source.RequestEnabled(true);
         var wired = new Native49ClosedWired(); var wireless = new Native49ClosedWireless();
         var rgb = DispatchProxy.Create<IRgbService, KeyboardDisplayServiceTests.ReadProxy>(); var screens = DispatchProxy.Create<IScreenService, KeyboardDisplayServiceTests.ReadProxy>();
-        using var owner = new KeyboardDisplayService(new() { DataDirectory = data, KeyboardDisplay = new()
-        { WirelessControlVerified = true, WirelessLightingVerified = true, WirelessReceiverKey = new string('A', 64), WirelessFirmwareHeader = "0800070025000100" } },
+        using var owner = new KeyboardDisplayService(new() { DataDirectory = data, KeyboardDisplay = display },
             rgb, screens, wired, new MutationClearGuard(), wirelessFactory: wireless, nativeMenu: source);
         try
         {
-            await owner.StartAsync(default); await Until(() => wired.Calls == 1); await Task.Delay(50);
-            wired.Calls.Should().Be(1); wireless.Calls.Should().Be(0); source.IsPresent.Should().BeFalse();
+            await owner.StartAsync(default); await Until(() => wireless.Calls == 1); await Task.Delay(50);
+            wired.Calls.Should().Be(1); wireless.Calls.Should().Be(1); source.IsPresent.Should().BeFalse();
+            (await owner.GetKeyboardDisplayStatusAsync()).FramesAcknowledged.Should().Be(0);
         }
         finally { await owner.StopAsync(default); if (Directory.Exists(data)) Directory.Delete(data, true); }
     }

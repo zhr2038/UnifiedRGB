@@ -25,6 +25,7 @@ public sealed class KeyboardDisplayService : BackgroundService, IKeyboardDisplay
     private readonly IKeyboardNativePresentationCapability? _nativePresentation;
     private readonly Func<byte[], byte[]>? _nativeFrameOverlay;
     private readonly Action<byte[]>? _nativeFrameAcknowledged;
+    private readonly Func<long>? _nativeFrameOverlayRevision;
     private readonly TimeProvider _time;
     private byte[]? _entryLogo;
     private KeyboardNativePresentation? _presentation; // the running owner session's declared native presentation (volatile)
@@ -55,7 +56,8 @@ public sealed class KeyboardDisplayService : BackgroundService, IKeyboardDisplay
         IRogWirelessOledFactory? wirelessFactory = null, PeripheralConfigurationGate? configurationGate = null,
         RogNativeMenuSource? nativeMenu = null, IKeyboardOledMedia? keyboardMedia = null, IScreenTimeline? sharedTimeline = null,
         TimeProvider? time = null, IKeyboardNativePresentationCapability? nativePresentation = null,
-        Func<byte[], byte[]>? nativeFrameOverlay = null, Action<byte[]>? nativeFrameAcknowledged = null)
+        Func<byte[], byte[]>? nativeFrameOverlay = null, Action<byte[]>? nativeFrameAcknowledged = null,
+        Func<long>? nativeFrameOverlayRevision = null)
     {
         _options = options; _rgb = rgb; _screens = screens; _factory = factory; _guard = guard;
         _wirelessFactory = wirelessFactory;
@@ -64,6 +66,7 @@ public sealed class KeyboardDisplayService : BackgroundService, IKeyboardDisplay
         _nativePresentation = nativePresentation;
         _nativeFrameOverlay = nativeFrameOverlay;
         _nativeFrameAcknowledged = nativeFrameAcknowledged;
+        _nativeFrameOverlayRevision = nativeFrameOverlayRevision;
         _time = time ?? TimeProvider.System;
         _lighting = lighting ?? new RogWiredLightingBridge();
         _settingsPath = Path.Combine(options.ResolvedDataDirectory, "peripherals", "keyboard-display.json");
@@ -119,7 +122,9 @@ public sealed class KeyboardDisplayService : BackgroundService, IKeyboardDisplay
     private string NativePresentationNote()
     {
         if (Volatile.Read(ref _presentation) is not { } presentation) return string.Empty;
-        var note = presentation.LogoAvailable ? "每次进入原生光域模式先显示光域标志约 1.2 秒，" : "光域标志渲染失败，进入原生光域模式直接显示所选画面，";
+        var note = _options.KeyboardDisplay.DeviceShowsNativeEntryLogo
+            ? "进入光域时由键盘显示一次标志，程序直接衔接所选画面；"
+            : presentation.LogoAvailable ? "每次进入原生光域模式先显示光域标志约 1.2 秒，" : "光域标志渲染失败，进入原生光域模式直接显示所选画面，";
         note += _enabled ? "随后显示机箱状态（或已单独开启并绑定的键盘动画）；"
             : "状态屏偏好为关：原生模式下保留拨杆的键盘原动画尚无已验证接口，" + "沿用更新前的关闭页面输出" + "（不是原动画）；";
         if (presentation.OverlayProblem is { } problem) note += problem + "，场景叠加暂不可用，显示普通画面；";
@@ -169,7 +174,7 @@ public sealed class KeyboardDisplayService : BackgroundService, IKeyboardDisplay
     private void RequirePins()
     {
         var o = _options.KeyboardDisplay;
-        var native = _nativeMenu?.Requested == true && _nativeMenu.QualifiedRoute is not null;
+        var native = _nativeMenu?.Requested == true && _nativeMenu.QualifiedRoutes.Count != 0;
         if ((!HasWiredPins(o) && !HasWirelessPins(o) && !native) || o.Brightness > 100)
             throw new InvalidOperationException("Keyboard display needs a verified wired or wireless identity and firmware pin.");
     }
@@ -259,36 +264,40 @@ public sealed class KeyboardDisplayService : BackgroundService, IKeyboardDisplay
     private Task<IRogOledConnection?> OpenConnectionAsync(CancellationToken ct)
     {
         return _configurationGate is null
-            ? Task.FromResult(OpenCurrentConnection())
+            ? Task.FromResult(SelectConnection())
             : _configurationGate.RunAcquisitionAsync(token =>
             {
                 token.ThrowIfCancellationRequested();
                 return Task.FromResult(_configurationGate.RogAcquisitionAllowed || _configurationGate.FreshResumeAllowed
-                    ? OpenCurrentConnection() : null);
+                    ? SelectConnection() : null);
             }, ct);
+    }
 
-        IRogOledConnection? OpenCurrentConnection()
+    /// <summary>The existing OLED owner selects one exact configured transport; native control borrows that same connection.</summary>
+    internal IRogOledConnection? SelectConnection()
+    {
+        if (_nativeMenu?.Requested == true)
         {
-            if (_nativeMenu?.Requested == true)
+            foreach (var native in _nativeMenu.QualifiedRoutes)
             {
-                var native = _nativeMenu.QualifiedRoute;
-                // Native admission is independent of legacy OLED/lighting pins. A miss stays a miss:
-                // never fall through to another factory or a legacy image owner after native selection.
-                // The configured native header is diagnostic; the route opens on its known identity family anchor.
-                return native?.ConnectionKind switch
+                // Only an absent exact route permits the next known transport. Exceptions and live CAP rejection do not.
+                // The configured native header is diagnostic; every open uses its neutral transport label.
+                IRogOledConnection? selected = native.ConnectionKind switch
                 {
                     "wired" => _factory.TryOpen(native.DeviceKey, native.RouteAnchor),
                     "wireless" => _wirelessFactory?.TryOpen(native.DeviceKey, native.RouteAnchor),
                     _ => null,
                 };
+                if (selected is not null) return selected;
             }
-            IRogOledConnection? connection = HasWiredPins(_options.KeyboardDisplay)
-                && (_enabled || _options.KeyboardDisplay.HasVerifiedWiredLighting || _nativeMenu?.Requested == true) ? _factory.TryOpen(_options.KeyboardDisplay.DeviceKey, WiredLabel) : null;
-            if (connection is null && _wirelessFactory is not null && HasWirelessPins(_options.KeyboardDisplay)
-                && (_enabled || _options.KeyboardDisplay.HasVerifiedWirelessLighting || _nativeMenu?.Requested == true))
-                connection = _wirelessFactory.TryOpen(_options.KeyboardDisplay.WirelessReceiverKey, WirelessLabel);
-            return connection;
+            return null;
         }
+        IRogOledConnection? connection = HasWiredPins(_options.KeyboardDisplay)
+            && (_enabled || _options.KeyboardDisplay.HasVerifiedWiredLighting) ? _factory.TryOpen(_options.KeyboardDisplay.DeviceKey, WiredLabel) : null;
+        if (connection is null && _wirelessFactory is not null && HasWirelessPins(_options.KeyboardDisplay)
+            && (_enabled || _options.KeyboardDisplay.HasVerifiedWirelessLighting))
+            connection = _wirelessFactory.TryOpen(_options.KeyboardDisplay.WirelessReceiverKey, WirelessLabel);
+        return connection;
     }
 
     public async Task ReleaseForPeripheralConfigurationAsync(CancellationToken ct)
@@ -306,7 +315,8 @@ public sealed class KeyboardDisplayService : BackgroundService, IKeyboardDisplay
         if (active is not null) throw new IOException("Keyboard original settings remain unrecovered; journal retained and no restoration retry was made.");
         var prior = Read<RecoveryRecord>(_journalPath);
         IRogOledConnection? connection;
-        var native = _nativeMenu?.QualifiedRoute;
+        var native = _nativeMenu?.QualifiedRoutes.FirstOrDefault(route => prior.DeviceKey == route.DeviceKey
+            && SameProtocol(prior.FirmwareHeader, route.RouteAnchor));
         // A journal is recovered only through a route of the same device and transport label (the profile is checked on the open
         // connection); its recorded OEM bytes and today's header notes are diagnostic, so older labels stay readable as-is.
         if (native is not null && prior.DeviceKey == native.DeviceKey && SameProtocol(prior.FirmwareHeader, native.RouteAnchor))
@@ -443,7 +453,7 @@ public sealed class KeyboardDisplayService : BackgroundService, IKeyboardDisplay
             if (ownsLighting) lighting = _lighting.Attach();
             monitor = MonitorAsync();
             var presentation = nativeMenu is not null && NativePresentationDeclared(connection)
-                ? new KeyboardNativePresentation(_animation, EntryLogo(), _time, _nativeFrameOverlay, _nativeFrameAcknowledged) : null;
+                ? new KeyboardNativePresentation(_animation, _options.KeyboardDisplay.DeviceShowsNativeEntryLogo ? null : EntryLogo(), _time, _nativeFrameOverlay, _nativeFrameAcknowledged, _nativeFrameOverlayRevision) : null;
             // Ordinary application output has its own entry too. It must not upload a status/animation frame before a later
             // native entry gets its logo. Reuse only the pure selector and the existing owner's upload acknowledgement/lease.
             var ordinaryPresentation = !NativeOwnsDisplay ? new KeyboardNativePresentation(_animation, EntryLogo(), _time) : null;

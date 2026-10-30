@@ -50,7 +50,7 @@ internal enum KeyboardNativeArtwork
 /// reports); the actor's artwork comparison and lease wake are its clock, so there is no timer or sender here.
 /// </summary>
 internal sealed class KeyboardNativePresentation(KeyboardDisplayAnimation animation, byte[]? logo, TimeProvider time,
-    Func<byte[], byte[]>? overlay = null, Action<byte[]>? frameAcknowledged = null)
+    Func<byte[], byte[]>? overlay = null, Action<byte[]>? frameAcknowledged = null, Func<long>? overlayRevision = null)
 {
     /// <summary>Nominal entry overlay; it ends at this bound after the logo's acknowledged upload, never later.</summary>
     internal const int EntryLogoMs = 1200;
@@ -60,6 +60,7 @@ internal sealed class KeyboardNativePresentation(KeyboardDisplayAnimation animat
     private byte[]? _chosen, _chosenBase, _shown, _shownBase, _overlayBase, _overlaid;
     private KeyboardNativeArtwork _chosenKind;
     private long _overlayNext;
+    private long _overlaidRevision;
     private int _shownKind, _reported;
     private string? _overlayProblem;
 
@@ -143,8 +144,11 @@ internal sealed class KeyboardNativePresentation(KeyboardDisplayAnimation animat
     {
         if (overlay is null) return selected;
         var now = time.GetTimestamp();
-        if (ReferenceEquals(selected, _overlayBase) && _overlaid is { } previous && now < _overlayNext) return previous;
+        var revision = overlayRevision?.Invoke() ?? 0;
+        if (ReferenceEquals(selected, _overlayBase) && _overlaid is { } previous && now < _overlayNext
+            && revision == _overlaidRevision) return previous;
         _overlayBase = selected;
+        _overlaidRevision = revision;
         _overlayNext = now + animation.MinimumIntervalMs * time.TimestampFrequency / 1000;
         byte[]? result = null;
         string? problem = null;
