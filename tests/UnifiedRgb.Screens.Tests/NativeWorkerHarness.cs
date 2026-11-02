@@ -59,7 +59,8 @@ internal sealed class NativeWorkerHarness : IDisposable
     }
 
     public static async Task<NativeWorkerHarness> StartAsync(NativeVideoTrial? trial, string overlay = "dashboard",
-        Func<ScreenWorkerContext, ScreenWorkerContext>? customize = null, Func<byte, uint, int, byte[]?>? reply = null)
+        Func<ScreenWorkerContext, ScreenWorkerContext>? customize = null, Func<byte, uint, int, byte[]?>? reply = null,
+        Func<ScreenAssignmentDto, ScreenAssignmentDto>? initialAssignment = null)
     {
         var h = new NativeWorkerHarness(reply);
         try
@@ -71,6 +72,7 @@ internal sealed class NativeWorkerHarness : IDisposable
             h.Trial = trial;
             h.SetTelemetry(10);
             h.Assignment = new ScreenAssignmentDto(Devices.Turzx.Id, h.Asset.Id, Overlay: overlay, Fps: Fps);
+            if (initialAssignment is not null) h.Assignment = initialAssignment(h.Assignment);
             var options = new ScreensOptions { BackoffInitialMs = 20, BackoffMaxMs = 80, DiscoveryIntervalMs = 250, NvmlTelemetry = false };
             Rig.AllOutput(options);
             var ctx = new ScreenWorkerContext(options, h.Opener, new FakeContention(), h.Assets, () => Volatile.Read(ref h._telemetry), h.Time,

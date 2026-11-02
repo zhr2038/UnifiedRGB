@@ -14,12 +14,13 @@ internal static class PreparedOverlayKit
         NativeWorkerHarness.NewTrial(id, t => t with { PreparedOverlay = true, MeasureQueueAfterOverlay = measure, SimpleOverlayPng = simple });
 
     public static Task<NativeWorkerHarness> StartAsync(NativeVideoTrial trial, OverlayEncoder? encoder, string overlay = "dashboard",
-        Func<ScreenWorkerContext, ScreenWorkerContext>? customize = null, Func<byte, uint, int, byte[]?>? reply = null) =>
+        Func<ScreenWorkerContext, ScreenWorkerContext>? customize = null, Func<byte, uint, int, byte[]?>? reply = null,
+        Func<ScreenAssignmentDto, ScreenAssignmentDto>? initialAssignment = null) =>
         NativeWorkerHarness.StartAsync(trial, overlay, c =>
         {
             if (encoder is not null) c = c with { PrepareOverlayForTest = encoder.Encode };
             return customize is null ? c : customize(c);
-        }, reply);
+        }, reply, initialAssignment);
 
     public static int[] Commands(IEnumerable<byte[]> writes) => [.. writes.Select(p => (int)NativeWorkerHarness.Command(p))];
 
@@ -80,7 +81,8 @@ internal static class PreparedOverlayKit
         h.DataWrites.Should().Be(data + 1, "a frozen clock admits exactly one picture per period");
     }
 
-    private static async Task<ScreenPerformanceDto> CompletedSubmittedPicturesAsync(NativeWorkerHarness h)
+    /// <summary>Completes currently submitted pictures without advancing time or awaiting an intentionally gated preparer.</summary>
+    public static async Task<ScreenPerformanceDto> CompletedSubmittedPicturesAsync(NativeWorkerHarness h)
     {
         ScreenPerformanceDto? completed = null;
         await Wait.UntilAsync(() =>
