@@ -64,11 +64,44 @@ internal static class PreparedOverlayKit
     /// <summary>Advances one period and waits until that one picture (its access unit AND its overlay step) has completed.</summary>
     public static async Task PictureAsync(NativeWorkerHarness h)
     {
+        // A raw 121 write is visible before its overlay reply, next-due update and performance sample.
+        // Finish that picture before advancing the frozen clock; otherwise its late completion can
+        // satisfy the wait for the NEXT picture and consume the clock advance meant for that picture.
+        var previous = await CompletedSubmittedPicturesAsync(h);
         var data = h.DataWrites;
-        var units = h.Worker.Performance.NativeVideo?.AccessUnits ?? 0;
+        var units = previous.NativeVideo?.AccessUnits ?? 0;
         h.Time.Advance(TimeSpan.FromMilliseconds(NativeWorkerHarness.PeriodMs));
-        await Wait.UntilAsync(() => h.Worker.Performance.NativeVideo is { } v && v.AccessUnits > units, "one more native picture");
+        await Wait.UntilAsync(() =>
+        {
+            var p = h.Worker.Performance;
+            return p.NativeVideo is { } v && v.AccessUnits > units && p.FramesWritten > previous.FramesWritten
+                && (p.SourceSelection?.Submissions ?? 0) > (previous.SourceSelection?.Submissions ?? 0);
+        }, "one more native picture, including its completed performance sample");
         h.DataWrites.Should().Be(data + 1, "a frozen clock admits exactly one picture per period");
+    }
+
+    private static async Task<ScreenPerformanceDto> CompletedSubmittedPicturesAsync(NativeWorkerHarness h)
+    {
+        ScreenPerformanceDto? completed = null;
+        await Wait.UntilAsync(() =>
+        {
+            var submitted = 0;
+            var native = false;
+            foreach (var packet in h.Writes)
+            {
+                var command = NativeWorkerHarness.Command(packet);
+                if (command == 41) native = true; // includes Begin's transparent PNG, never a content picture
+                else if (command is 111 or 123) native = false;
+                // The harness's tiny access units fit one data packet (PictureAsync keeps asserting exactly one).
+                // Count ordinary images too, so a completed image between native sessions cannot mask an in-flight frame.
+                else if (command == TurzxVideoProtocol.DataCommand || command == ScreenProtocol.PushPngCommand && !native) submitted++;
+            }
+            var p = h.Worker.Performance;
+            if (submitted == 0 || p.FramesWritten < submitted || (p.SourceSelection?.Submissions ?? 0) < submitted) return false;
+            completed = p;
+            return true;
+        }, "all currently submitted pictures to finish pacing and performance publication");
+        return completed!;
     }
 
     /// <summary>Waits until the preparer has neither an in-flight nor a pending request (its result, if any, is held).</summary>
