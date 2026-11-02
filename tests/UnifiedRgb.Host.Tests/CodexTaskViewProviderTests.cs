@@ -4,6 +4,9 @@ using Xunit;
 
 namespace UnifiedRgb.Host.Tests;
 
+// Refresh renders real WPF artwork. Keep cold STA/font initialization out of parallel test contention;
+// the production five-second rendering bound remains unchanged.
+[Collection("Host")]
 public sealed class CodexTaskViewProviderTests
 {
     [Fact]

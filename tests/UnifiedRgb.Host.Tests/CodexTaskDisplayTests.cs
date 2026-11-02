@@ -6,6 +6,8 @@ using Xunit;
 
 namespace UnifiedRgb.Host.Tests;
 
+// Includes native-geometry WPF rendering with the production five-second bound.
+[Collection("Host")]
 public sealed class CodexTaskDisplayTests
 {
     private static readonly DateTimeOffset Now = DateTimeOffset.Parse("2026-11-02T12:00:00Z", CultureInfo.InvariantCulture);

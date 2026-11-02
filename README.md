@@ -108,7 +108,9 @@ cd UnifiedRGB
 
 dotnet restore .\src\UnifiedRgb.sln
 dotnet build .\src\UnifiedRgb.sln -c Release --no-restore -warnaserror
-dotnet test .\src\UnifiedRgb.sln -c Release --no-build -m:1
+dotnet test .\src\UnifiedRgb.sln -c Release --no-build -m:1 --filter 'FullyQualifiedName!~UnifiedRgb.Core.Tests.ClockTests'
+dotnet build-server shutdown
+dotnet test .\tests\UnifiedRgb.Core.Tests -c Release --no-build --filter 'FullyQualifiedName~UnifiedRgb.Core.Tests.ClockTests'
 ```
 
 源码默认启用虚拟适配器，关闭真实设备后端和屏幕输出；无线设备列表与 ROG 设备绑定为空。构建不会复制作者机器的配置，也不会自动停止厂商程序。
@@ -129,7 +131,7 @@ Start-Process .\src\UnifiedRgb.App\bin\Release\net10.0-windows\UnifiedRgb.App.ex
 
 测试覆盖效果数学、上传预算、传输规则、设备状态机、场景包安全与事务、屏幕编码和方向持久化、界面草稿及恢复行为。
 
-当前完整回归仍有已知基线失败，不能据本页或定向测试结果宣称全套通过。CI 的实际结果以对应提交的 [Actions](https://github.com/zhr2038/UnifiedRGB/actions) 为准。
+完整功能回归、单独的真实时钟性能门槛和安装生命周期由 CI 验证；缺少私有 codec 或抓包前提的用例会明确跳过，不分发这些私有材料。定向测试通过不能代替全部硬件验收，实际结果以对应提交的 [Actions](https://github.com/zhr2038/UnifiedRGB/actions) 为准。[本轮逐功能审核与修复记录](design/FUNCTIONAL-AUDIT-20261102.zh-CN.md)。
 
 - 通用回归使用仓库内的合成样例和 fake 设备，无需机箱硬件。
 - 建议按上述命令串行运行测试程序集，避免调度计时测试与其他进程的 WPF 编码测试争用资源；计时测试仍保留原有2ms阈值。
