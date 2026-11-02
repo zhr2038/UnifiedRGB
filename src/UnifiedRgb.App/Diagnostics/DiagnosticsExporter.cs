@@ -25,26 +25,31 @@ public static partial class DiagnosticsExporter
         AddFile(sources, Path.Combine(hostDataDirectory, "status.json"), "status.json");
         AddFile(sources, Path.Combine(hostDataDirectory, "profiles", "active.json"), "active-profile.json");
 
-        var tmp = zipPath + ".tmp";
-        using (var zip = ZipFile.Open(tmp, ZipArchiveMode.Create))
+        var tmp = zipPath + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try
         {
-            foreach (var (entry, path) in sources)
+            using (var zip = ZipFile.Open(tmp, ZipArchiveMode.Create))
             {
-                var text = ReadShared(path);
-                var e = zip.CreateEntry(entry, CompressionLevel.Optimal);
-                using var w = new StreamWriter(e.Open(), new UTF8Encoding(false));
-                w.Write(Redact(text));
+                foreach (var (entry, path) in sources)
+                {
+                    var text = ReadShared(path);
+                    var e = zip.CreateEntry(entry, CompressionLevel.Optimal);
+                    using var w = new StreamWriter(e.Open(), new UTF8Encoding(false));
+                    w.Write(Redact(text));
+                }
+
+                foreach (var (entry, text) in extra ?? new Dictionary<string, string>())
+                {
+                    var e = zip.CreateEntry(entry, CompressionLevel.Optimal);
+                    using var w = new StreamWriter(e.Open(), new UTF8Encoding(false));
+                    w.Write(Redact(text));
+                }
             }
 
-            foreach (var (entry, text) in extra ?? new Dictionary<string, string>())
-            {
-                var e = zip.CreateEntry(entry, CompressionLevel.Optimal);
-                using var w = new StreamWriter(e.Open(), new UTF8Encoding(false));
-                w.Write(Redact(text));
-            }
+            File.Move(tmp, zipPath, overwrite: true);
         }
+        finally { if (File.Exists(tmp)) File.Delete(tmp); }
 
-        File.Move(tmp, zipPath, overwrite: true);
         return sources.Select(s => s.Entry).Concat(extra?.Keys ?? []).ToArray();
     }
 

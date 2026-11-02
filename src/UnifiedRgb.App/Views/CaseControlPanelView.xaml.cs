@@ -23,6 +23,7 @@ public partial class CaseControlPanelView : UserControl
                 vm.NativeMenu?.ReadCommand.Execute(null);
                 vm.KeyboardAnimation?.ExpireObservation();
                 vm.KeyboardAnimation?.ReadCommand.Execute(null);
+                vm.KeyboardAnimation?.Codex.ReadCommand.Execute(null);
             }, Dispatcher);
         _poll.Stop();
         Loaded += (_, _) => UpdatePolling();
@@ -40,5 +41,6 @@ public partial class CaseControlPanelView : UserControl
         vm.Peripherals?.ReadCommand.Execute(null);
         vm.NativeMenu?.ReadCommand.Execute(null);
         vm.KeyboardAnimation?.ReadCommand.Execute(null);
+        vm.KeyboardAnimation?.Codex.ReadCommand.Execute(null);
     }
 }

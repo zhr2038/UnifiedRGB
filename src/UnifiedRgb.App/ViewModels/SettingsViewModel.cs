@@ -61,10 +61,9 @@ public sealed class SettingsViewModel : ObservableObject
         get => _startWithWindows;
         set
         {
-            if (SetProperty(ref _startWithWindows, value))
-            {
-                _autostart.Set(value ? _appCommand : null);
-            }
+            if (_startWithWindows == value) return;
+            _autostart.Set(value ? _appCommand : null);
+            SetProperty(ref _startWithWindows, value);
         }
     }
 

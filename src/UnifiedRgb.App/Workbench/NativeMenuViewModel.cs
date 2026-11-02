@@ -91,7 +91,7 @@ public sealed class NativeMenuViewModel : ObservableObject
     {
         var epoch = Volatile.Read(ref _epoch);
         ExpireObservation(); // An expired status never authorises a request.
-        if (!CanToggle) return; // ExecuteAsync does not consult CanExecute.
+        if (!CanToggle) return; // Direct method callers must obey the same admission as the command.
         INativeMenuService proxy;
         // One proxy per intent: neither the request nor its readback can move to a connection this intent never saw.
         try { proxy = _service(); }

@@ -177,19 +177,11 @@ internal static class Pkg
         }).ToList();
     }
 
-    /// <summary>A file of the work tree found by walking up from the test output (fixtures are not copied to the output).</summary>
+    /// <summary>A fixture from the checkout that compiled these tests; binary output locations never select another checkout.</summary>
     public static string FindUp(string relative)
     {
-        for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)
-        {
-            var candidate = Path.Combine(dir.FullName, relative);
-            if (File.Exists(candidate))
-            {
-                return candidate;
-            }
-        }
-
-        throw new FileNotFoundException(relative);
+        var candidate = Path.Combine(RepositoryPaths.Root(), relative);
+        return File.Exists(candidate) ? candidate : throw new FileNotFoundException(relative, candidate);
     }
 
     public static byte[] GenericFixture() => File.ReadAllBytes(FindUp(Path.Combine("tests", "UnifiedRgb.Host.Tests", "Fixtures", "ScenePackages", "generic-two-role-v1.zip")));

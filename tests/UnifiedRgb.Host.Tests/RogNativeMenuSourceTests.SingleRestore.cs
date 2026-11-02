@@ -18,6 +18,9 @@ public sealed partial class RogNativeMenuSourceTests
         await rig.NextTick();
         var restores = rig.Control.NativeRestores;
         var before = rig.Control.Packets.Count;
+        rig.SetBlackout(true);
+        await Until(() => rig.Owner.GetKeyboardDisplayAnimationAsync().GetAwaiter().GetResult().Detail
+            .StartsWith("机箱已熄灯", StringComparison.Ordinal));
         await rig.Owner.SetKeyboardDisplayAnimationAsync(new(false, null, null, "contain", KeyboardDisplayAnimationEncodings.LumaRound, 2000));
         await Until(() => rig.Control.Disarms == 1 && rig.Control.Arms == 2 && rig.Control.NativeRestores > restores);
         await Task.Delay(220); // also includes ordinary idle observations, which must not count as restore readbacks

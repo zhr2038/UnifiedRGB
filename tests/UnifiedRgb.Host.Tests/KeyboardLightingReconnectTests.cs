@@ -10,16 +10,17 @@ using UnifiedRgb.Contracts.Dto;
 namespace UnifiedRgb.Host.Tests;
 
 /// <summary>
-/// The explicit “重连键盘灯光” action reasserts exactly the page preference of a fresh read through the existing
-/// SetKeyboardDisplayEnabledAsync: once per click, on the captured proxy, and only while the Host reports a keyboard Error
-/// with a trustworthy preference. It never toggles the page and claims no recovery. Callable fakes record every proxy,
+/// The explicit communication recovery reasserts exactly the page preference of a fresh read through the existing
+/// SetKeyboardDisplayEnabledAsync: once per click, on the captured proxy, after fresh normal-maintenance checks.
+/// Stable Error/Stopped/Waiting/Running states are eligible, but unreadable settings and transitions are refused.
+/// It never toggles the page or exits maintenance and claims no optical recovery. Callable fakes record every proxy,
 /// read and write; a headless view only: no browser, window, Host, pipe or device.
 /// </summary>
 #pragma warning disable VSTHRD003 // Test-owned tasks script held and lost answers.
 [Collection("Host")]
 public sealed class KeyboardLightingReconnectTests : IDisposable
 {
-    private const string Reconnect = "重连键盘灯光";
+    private const string Reconnect = "恢复键盘通信";
     private const string EnablePage = "开启光域状态屏";
     private const string RestoreNative = "恢复键盘原动画";
     private const string UnreadableSettings = "本机控制屏设置无法读取";
@@ -70,8 +71,8 @@ public sealed class KeyboardLightingReconnectTests : IDisposable
             rig.Vm.KeyboardReconnectNote.Should().Contain("后台正在连接或恢复键盘");
             lock (notes)
             {
-                notes.Should().Contain(n => n.Contains($"正在请求重连键盘灯光（光域状态屏保持{Page(enabled)}）"));
-                notes.Should().Contain(n => n.Contains("后台已接受重连键盘灯光指令"));
+                notes.Should().Contain(n => n.Contains($"正在请求恢复键盘通信（显示开关保持{Page(enabled)}）"));
+                notes.Should().Contain(n => n.Contains("后台已接受恢复键盘通信指令"));
                 foreach (var note in notes) Claims(note);
             }
             Claims(rig.Vm.KeyboardTransportNote); Claims(rig.Vm.KeyboardReconnectNote);
@@ -94,14 +95,10 @@ public sealed class KeyboardLightingReconnectTests : IDisposable
     [InlineData("disconnected", "后台未连接", false)]
     [InlineData("Connecting", "后台正在连接或恢复键盘（状态 Connecting）", true)]
     [InlineData("Stopping", "后台正在连接或恢复键盘（状态 Stopping）", true)]
-    [InlineData("Waiting", "键盘未接入（后台状态 Waiting）", true)]
-    [InlineData("Stopped", "后台未报告键盘错误（状态 Stopped）", true)]
-    [InlineData("Running", "后台未报告键盘错误（状态 Running）", true)]
     [InlineData("unreadable-settings", "开关值不可信", true)]
-    [InlineData("config-entering", "键鼠外设配置中或未确认恢复联动", false)]
-    [InlineData("config-unread", "键鼠外设配置中或未确认恢复联动", false)]
-    [InlineData("config-expired", "键鼠外设配置中或未确认恢复联动", false)]
-    public async Task Unavailable_reconnect_explains_why_and_a_click_calls_nothing(string condition, string reason, bool commandEnabled)
+    [InlineData("config-entering", "键鼠外设配置中或未确认恢复联动", true)]
+    [InlineData("config-unread", "键鼠外设配置中或未确认恢复联动", true)]
+    public async Task Unavailable_reconnect_rechecks_fresh_state_without_sending_a_write(string condition, string reason, bool commandEnabled)
     {
         var rig = Create(Long);
         rig.Keyboard.Status = Faulted(false);
@@ -112,28 +109,46 @@ public sealed class KeyboardLightingReconnectTests : IDisposable
             case "unreadable-settings": rig.Keyboard.Status = Faulted(false, UnreadableSettings); break;
             case "config-entering": rig.Peripherals.Current = Peripheral("Entering", true, false); break;
             case "config-unread": rig.Peripherals.ReadOverride = _ => Task.FromException<PeripheralConfigurationStatusDto>(new IOException("fake handoff status lost")); break;
-            case "Connecting" or "Stopping" or "Waiting" or "Stopped" or "Running": rig.Keyboard.Status = State(condition == "Running", condition); break;
+            case "Connecting" or "Stopping": rig.Keyboard.Status = State(false, condition); break;
         }
         await Observe(rig);
         if (condition == "disconnected") rig.Vm.SetConnected(false);
-        if (condition == "config-expired") rig.Clock.Advance(Expired);
         var before = rig.Pipes.Snapshot();
         before.Should().Contain("A.read", "the keyboard fake is wired and was read by the poll");
 
         using (new AssertionScope())
         {
             rig.Vm.CanReconnectKeyboardLighting.Should().BeFalse();
-            rig.Vm.ReconnectKeyboardLightingCommand.CanExecute(null).Should().Be(commandEnabled, "CanExecute follows only connection and handoff");
+            rig.Vm.ReconnectKeyboardLightingCommand.CanExecute(null).Should().Be(commandEnabled, "the action can refresh maintenance state, but never bypasses it");
             rig.Vm.KeyboardReconnectNote.Should().Contain(reason);
             Claims(rig.Vm.KeyboardReconnectNote);
         }
         await Click(rig.Vm);
 
-        rig.Pipes.Snapshot().Should().Equal(before, "a refused click calls neither the proxy factory nor the service");
+        var expected = condition is "disconnected" or "config-entering" or "config-unread" ? before : before.Concat(["proxy A", "A.read"]);
+        rig.Pipes.Snapshot().Should().Equal(expected, "normal maintenance is checked before the bounded fresh keyboard preflight");
         rig.Keyboard.Writes.Should().BeEmpty();
         rig.Vm.CanReconnectKeyboardLighting.Should().BeFalse();
         rig.Peripherals.Writes.Should().BeEmpty(); rig.Opened.Should().BeEmpty(); rig.Rpc.Writes.Should().BeEmpty();
         rig.Errors.Should().BeEmpty();
+    }
+
+    [Theory]
+    [InlineData("Waiting")]
+    [InlineData("Stopped")]
+    [InlineData("Running")]
+    [InlineData("expired-maintenance-observation")]
+    public async Task Stable_states_and_a_successful_fresh_maintenance_check_allow_one_explicit_same_value_recovery(string state)
+    {
+        var rig = Create(Long);
+        rig.Keyboard.Status = State(false, state == "expired-maintenance-observation" ? "Stopped" : state);
+        await Observe(rig);
+        if (state == "expired-maintenance-observation") rig.Clock.Advance(Expired);
+        await Click(rig.Vm);
+        rig.Keyboard.Writes.Should().Equal(false);
+        rig.Peripherals.Writes.Should().BeEmpty();
+        rig.Rpc.Writes.Should().BeEmpty();
+        rig.Vm.KeyboardCommunicationRecoveryNote.Should().NotContain("恢复成功");
     }
 
     [Fact]
@@ -234,20 +249,20 @@ public sealed class KeyboardLightingReconnectTests : IDisposable
             switch (outcome)
             {
                 case "lost-answer-read-back":
-                    lock (notes) notes.Should().Contain(n => n.Contains("重连键盘灯光结果未确认") && n.Contains("未自动重发"));
+                    lock (notes) notes.Should().Contain(n => n.Contains("恢复键盘通信结果未确认") && n.Contains("未自动重发"));
                     rig.Vm.KeyboardTransportNote.Should().Contain("Stopping", "the readback, not the lost answer, supplies the state");
                     rig.Vm.KeyboardToggleLabel.Should().Be(EnablePage);
                     rig.Errors.Should().BeEmpty();
                     break;
                 case "lost-answer-unread":
                     rig.Vm.HasKeyboardDisplayService.Should().BeFalse();
-                    rig.Vm.KeyboardTransportNote.Should().Contain("重连键盘灯光结果未知").And.Contain("未自动重发").And.NotContain("已确认");
+                    rig.Vm.KeyboardTransportNote.Should().Contain("恢复键盘通信结果未知").And.Contain("未自动重发").And.NotContain("已确认");
                     rig.Vm.KeyboardReconnectNote.Should().Contain("键盘状态未知");
                     rig.Errors.Should().BeEmpty();
                     break;
                 default:
                     rig.Errors.Should().ContainSingle().Which.Should().BeOfType<RemoteInvocationException>();
-                    lock (notes) notes.Should().Contain(n => n.Contains("后台对重连键盘灯光指令返回错误"));
+                    lock (notes) notes.Should().Contain(n => n.Contains("后台对恢复键盘通信指令返回错误"));
                     rig.Vm.KeyboardTransportNote.Should().Contain("后台状态 Error", "the Error is shown as read back");
                     rig.Vm.CanReconnectKeyboardLighting.Should().BeTrue("only a further explicit click may ask again");
                     break;
@@ -286,11 +301,12 @@ public sealed class KeyboardLightingReconnectTests : IDisposable
         using (new AssertionScope())
         {
             var calls = rig.Pipes.Snapshot().Skip(2).ToArray();
-            if (preflight == "preference-changed")
+            if (preflight is "preference-changed" or "recovered")
             {
-                calls.Should().Equal("proxy A", "A.read", "A.write(true)", "A.read");
-                rig.Keyboard.Writes.Should().Equal([true], "the fresh preference is reasserted as read, not the stale one");
-                lock (notes) notes.Should().Contain(n => n.Contains("光域状态屏保持开启"));
+                var enabled = preflight == "preference-changed";
+                calls.Should().Equal("proxy A", "A.read", Write("A", enabled), "A.read");
+                rig.Keyboard.Writes.Should().Equal([enabled], "the fresh preference is reasserted as read, not the stale one");
+                lock (notes) notes.Should().Contain(n => n.Contains("显示开关保持" + Page(enabled)));
             }
             else
             {
@@ -299,8 +315,8 @@ public sealed class KeyboardLightingReconnectTests : IDisposable
             }
             switch (preflight)
             {
-                case "recovered": rig.Vm.KeyboardReconnectNote.Should().Contain("后台未报告键盘错误（状态 Stopped）"); break;
-                case "unread": rig.Vm.KeyboardTransportNote.Should().Be("键盘状态未读到，未发送重连请求；请稍后重试。"); break;
+                case "recovered": rig.Vm.KeyboardCommunicationRecoveryNote.Should().Contain("正在重建键盘连接"); break;
+                case "unread": rig.Vm.KeyboardTransportNote.Should().Be("键盘状态未读到，未发送恢复通信请求；请稍后重试。"); break;
                 case "unreadable-settings": rig.Vm.KeyboardReconnectNote.Should().Contain("开关值不可信"); break;
                 case "handoff-began":
                     rig.Vm.KeyboardReconnectNote.Should().Contain("键鼠外设配置中");
@@ -322,7 +338,7 @@ public sealed class KeyboardLightingReconnectTests : IDisposable
     [Fact]
     public async Task A_connection_change_during_the_preflight_ends_the_intent_without_any_write()
     {
-        var rig = Create(Long, handoff: false); // Without the handoff section, only the connection epoch can stop the write.
+        var rig = Create(Long); // Recovery also requires a fresh normal-maintenance observation.
         rig.Keyboard.Status = Faulted(false);
         await Observe(rig);
         var preflight = new TaskCompletionSource<KeyboardDisplayStatusDto>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -337,10 +353,10 @@ public sealed class KeyboardLightingReconnectTests : IDisposable
             rig.Pipes.Snapshot().Skip(2).Should().Equal(["proxy A", "A.read"], "nothing is written through a connection that changed meanwhile");
             rig.Keyboard.Writes.Should().BeEmpty();
             rig.Vm.HasKeyboardDisplayService.Should().BeFalse("the old preflight is not shown on the new connection");
-            rig.Vm.KeyboardTransportNote.Should().Be("键盘状态未知，等待新的后台回读。");
+            rig.Vm.KeyboardTransportNote.Should().Be("外设配置状态未确认，暂不切换键盘显示。");
             rig.Vm.CanReconnectKeyboardLighting.Should().BeFalse();
         }
-        await rig.Vm.RefreshAsync();
+        await rig.Config.RefreshAsync(); await rig.Vm.RefreshAsync();
         rig.Vm.CanReconnectKeyboardLighting.Should().BeTrue("the new connection's own read may offer it again");
         rig.Keyboard.Writes.Should().BeEmpty("offering again never sends by itself");
         rig.Errors.Should().BeEmpty();
@@ -371,7 +387,7 @@ public sealed class KeyboardLightingReconnectTests : IDisposable
     [InlineData(true)]
     public async Task An_old_answer_after_a_reconnect_never_alters_the_new_connection(bool rejected)
     {
-        var rig = Create(Long, handoff: false);
+        var rig = Create(Long);
         rig.Keyboard.Status = Faulted(false);
         await Observe(rig);
         var answer = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -382,7 +398,7 @@ public sealed class KeyboardLightingReconnectTests : IDisposable
         var fresh = new FakeKeyboard("B", rig.Pipes) { Status = State(true, "Running") };
         rig.Pipes.Current = fresh;
         rig.Vm.SetConnected(true);
-        await rig.Vm.RefreshAsync();
+        await rig.Config.RefreshAsync(); await rig.Vm.RefreshAsync();
         var shown = (rig.Vm.KeyboardTransportNote, rig.Vm.KeyboardToggleLabel, rig.Vm.KeyboardReconnectNote, rig.Vm.CanToggleKeyboardDisplay);
         shown.KeyboardToggleLabel.Should().Be(RestoreNative, "the new connection reads its own state");
         shown.CanToggleKeyboardDisplay.Should().BeTrue("an old connection's request does not hold the new one");
@@ -411,6 +427,10 @@ public sealed class KeyboardLightingReconnectTests : IDisposable
         pipes.Current.Status = Faulted(false);
         var errors = new List<Exception>();
         using var studio = new StudioViewModel(new FakeConnection(proxy).Connect(), InlineDispatcher.Instance, errors.Add, keyboardDisplay: pipes.Connect);
+        var maintenance = new FakePeripherals();
+        var config = new PeripheralConfigurationViewModel(() => maintenance, InlineDispatcher.Instance, errors.Add, _ => throw new InvalidOperationException("No browser"));
+        studio.ControlPanel.AttachPeripheralConfiguration(config);
+        await config.RefreshAsync();
         studio.Draft.Name = "未应用的草稿";
         studio.Draft.Dirty.Should().BeTrue();
         var draft = (studio.Draft.Name, studio.Draft.Dirty, studio.Draft.Revision, studio.Draft.DraftState, studio.Draft.Stages.Count);
@@ -443,7 +463,7 @@ public sealed class KeyboardLightingReconnectTests : IDisposable
         {
             rig.Config.IsReady.Should().BeTrue();
             rig.Vm.CanReconnectKeyboardLighting.Should().BeFalse();
-            rig.Vm.ReconnectKeyboardLightingCommand.CanExecute(null).Should().BeFalse();
+            rig.Vm.ReconnectKeyboardLightingCommand.CanExecute(null).Should().BeTrue("the click may re-read maintenance, but cannot resume it");
             rig.Vm.KeyboardReconnectNote.Should().Contain("键鼠外设配置中");
         }
         await Click(rig.Vm);
@@ -452,7 +472,7 @@ public sealed class KeyboardLightingReconnectTests : IDisposable
         {
             rig.Pipes.Snapshot().Should().Equal(trace);
             rig.Keyboard.Writes.Should().BeEmpty();
-            rig.Peripherals.Reads.Should().Be(peripheralReads); rig.Peripherals.Writes.Should().BeEmpty();
+            rig.Peripherals.Reads.Should().Be(peripheralReads + 1); rig.Peripherals.Writes.Should().BeEmpty();
             rig.Config.IsReady.Should().BeTrue("Ready remains the backend's actual release");
             rig.Config.Status!.State.Should().Be("Ready");
             rig.Opened.Should().BeEmpty("only the explicit Gear Link click opens the page");
@@ -475,7 +495,6 @@ public sealed class KeyboardLightingReconnectTests : IDisposable
         var rig = Create(Long);
         rig.Keyboard.Status = State(false, "Stopped");
         await Observe(rig);
-        var healthyNote = rig.Vm.KeyboardReconnectNote;
         var healthy = Render(rig.Vm);
         rig.Keyboard.Status = Faulted(false);
         await rig.Vm.RefreshAsync(); // Property changes only: no command event reaches the ended render thread.
@@ -484,13 +503,11 @@ public sealed class KeyboardLightingReconnectTests : IDisposable
 
         using (new AssertionScope())
         {
-            healthy.Buttons.Should().ContainKey(Reconnect).WhoseValue.Enabled.Should().BeFalse();
-            healthy.Buttons[Reconnect].Help.Should().Be(healthyNote).And.Contain("后台未报告键盘错误（状态 Stopped）");
-            healthy.Texts.Should().Contain((healthyNote, true));
+            healthy.Buttons.Should().ContainKey(Reconnect).WhoseValue.Enabled.Should().BeTrue();
+            healthy.Texts.Should().Contain((rig.Vm.KeyboardCommunicationRecoveryNote, true));
             faulted.Buttons.Should().ContainKey(Reconnect).WhoseValue.Enabled.Should().BeTrue();
-            faulted.Buttons[Reconnect].Help.Should().Be(rig.Vm.KeyboardReconnectNote).And.Contain("光域状态屏保持未启用");
-            faulted.Buttons[Reconnect].ToolTip.Should().Contain("原样请求一次").And.Contain("不切换显示").And.Contain("未答复不自动重发");
-            faulted.Texts.Should().Contain((rig.Vm.KeyboardReconnectNote, true));
+            faulted.Buttons[Reconnect].ToolTip.Should().Contain("保持当前显示开关").And.Contain("单次请求").And.Contain("维护期间不会恢复或退出维护");
+            faulted.Texts.Should().Contain((rig.Vm.KeyboardCommunicationRecoveryNote, true));
             faulted.Buttons.Should().ContainKey(EnablePage).WhoseValue.Enabled.Should().BeTrue("the existing toggle is unchanged");
             faulted.Texts.Should().ContainSingle(t => t.Text.Contains("兜底")).Which.Shown.Should().BeTrue();
             foreach (var view in new[] { healthy, faulted })

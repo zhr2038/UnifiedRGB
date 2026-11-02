@@ -45,7 +45,7 @@ public sealed partial class RuntimeCapabilityCompatibilityTests
     [Theory]
     [InlineData("major")] [InlineData("minor")] [InlineData("build")] [InlineData("command")] [InlineData("prefix")]
     [InlineData("length")] [InlineData("other-anchor")]
-    public void Wired_other_family_envelope_or_anchor_fails_closed(string fault)
+    public void Wired_identity_requires_BasicInfo_grammar_while_OEM_bytes_and_labels_are_diagnostic(string fault)
     {
         using var io = new NoIo();
         using var connection = new RogWiredOledConnection(io, () => true, () => Key, () => Wired24);
@@ -61,16 +61,26 @@ public sealed partial class RuntimeCapabilityCompatibilityTests
             case "length": identity = identity[..64]; break;
             default: expected = Wired25; break;
         }
-        ((Action)(() => connection.RequireFirmwareIdentity(identity, expected))).Should().Throw<InvalidDataException>().WithMessage("*firmware differs*");
-        connection.ObservedFirmwareHeader.Should().BeNull("a rejected identity is never remembered");
+        var admit = (Action)(() => connection.RequireFirmwareIdentity(identity, expected));
+        if (fault is "command" or "prefix" or "length")
+        {
+            admit.Should().Throw<InvalidDataException>().WithMessage("*BasicInfo grammar*");
+            connection.ObservedFirmwareHeader.Should().BeNull("a rejected identity is never remembered");
+        }
+        else
+        {
+            admit.Should().NotThrow();
+            connection.ObservedFirmwareHeader.Should().Be(Convert.ToHexString(identity.AsSpan(0, 9)));
+            connection.FirmwareHeader.Should().Be(Wired24, "neither version bytes nor expected labels replace route metadata");
+        }
     }
 
     [Theory]
-    [InlineData("receiver-major", "*firmware differs*")] [InlineData("receiver-minor", "*firmware differs*")]
-    [InlineData("keyboard-major", "*firmware differs*")] [InlineData("keyboard-minor", "*firmware differs*")]
-    [InlineData("envelope", "*pin is invalid*")] [InlineData("anchor", "*pin is invalid*")]
+    [InlineData("receiver-major", null)] [InlineData("receiver-minor", null)]
+    [InlineData("keyboard-major", null)] [InlineData("keyboard-minor", null)]
+    [InlineData("envelope", "*envelope is invalid*")] [InlineData("anchor", null)]
     [InlineData("asleep", "*identity is unavailable*")]
-    public void Wireless_other_family_envelope_or_sleeping_keyboard_fails_closed(string fault, string message)
+    public void Wireless_identity_requires_a_present_peer_and_valid_envelope_while_OEM_bytes_are_diagnostic(string fault, string? message)
     {
         using var io = new NoIo();
         using var connection = Wireless(io, Wireless25);
@@ -86,8 +96,18 @@ public sealed partial class RuntimeCapabilityCompatibilityTests
             case "anchor": anchor = "08000700250001"; break;
             default: identity.AsSpan(12, 4).Clear(); break;
         }
-        ((Action)(() => connection.RequireFirmwareIdentity(identity, anchor))).Should().Throw<InvalidDataException>().WithMessage(message);
-        connection.ObservedFirmwareHeader.Should().BeNull();
+        var admit = (Action)(() => connection.RequireFirmwareIdentity(identity, anchor));
+        if (message is not null)
+        {
+            admit.Should().Throw<InvalidDataException>().WithMessage(message);
+            connection.ObservedFirmwareHeader.Should().BeNull();
+        }
+        else
+        {
+            admit.Should().NotThrow();
+            connection.ObservedFirmwareHeader.Should().Be(Convert.ToHexString(identity.AsSpan(5, 4)) + Convert.ToHexString(identity.AsSpan(12, 4)));
+            connection.FirmwareHeader.Should().Be(Wireless25);
+        }
     }
 
     [Fact]
@@ -110,10 +130,10 @@ public sealed partial class RuntimeCapabilityCompatibilityTests
     }
 
     [Fact]
-    public void Legacy_one_argument_connection_accepts_its_family_but_never_adopts_another_anchor()
+    public void Legacy_one_argument_connection_accepts_diagnostic_versions_but_never_adopts_another_label()
     {
         using var io = new NoIo(); using var connection = new RogWiredOledConnection(io, () => true);
-        ((Action)(() => connection.RequireFirmwareIdentity(WiredIdentity(0x26), Wired26))).Should().Throw<InvalidDataException>();
+        ((Action)(() => connection.RequireFirmwareIdentity(WiredIdentity(0x26), Wired26))).Should().NotThrow();
         ((Action)(() => connection.RequireFirmwareIdentity(WiredIdentity(0x26), RogWiredOledProtocol.LegacyFirmwareHeader))).Should().NotThrow();
         connection.FirmwareHeader.Should().Be(RogWiredOledProtocol.LegacyFirmwareHeader); io.Commands.Should().Be(0);
     }
@@ -146,8 +166,8 @@ public sealed partial class RuntimeCapabilityCompatibilityTests
     }
 
     [Theory]
-    [InlineData("profile")] [InlineData("selector")] [InlineData("content")] [InlineData("brightness")] [InlineData("family")]
-    public async Task Same_family_number_does_not_substitute_for_reply_grammar(string fault)
+    [InlineData("profile")] [InlineData("selector")] [InlineData("content")] [InlineData("brightness")] [InlineData("envelope")]
+    public async Task Valid_version_bytes_do_not_substitute_for_reply_grammar(string fault)
     {
         var device = new WiredDevice { Patch = 0x25 };
         switch (fault)
@@ -156,7 +176,7 @@ public sealed partial class RuntimeCapabilityCompatibilityTests
             case "selector": device.Selector = 2; break;
             case "content": device.Content = 0; break;
             case "brightness": device.Brightness = 101; break;
-            default: device.Major = 2; break;
+            default: device.BadIdentityEnvelope = true; break;
         }
         using var connection = new RogWiredOledConnection(device, () => true, () => Key, () => Wired24);
         var session = new RogWiredOledSession(connection);
@@ -195,9 +215,9 @@ public sealed partial class RuntimeCapabilityCompatibilityTests
     public void Unknown_optional_capability_bits_are_ignored_and_not_surfaced(byte unknown)
     {
         var idle = RogNativeMenuCodec.ParseCapability(Capability(flags: (byte)(48 | unknown)), 0x12, 1);
-        idle.Flags.Should().Be(48);
+        idle.Flags.Should().Be((byte)(48 | (unknown & RogNativeMenuCodec.DedicatedPageFlag)), "0x40 now declares the dedicated physical page; only 0x80 remains unknown");
         var armed = RogNativeMenuCodec.ParseCapability(Capability(status: 1, flags: (byte)(49 | unknown), command: 0x71), 0x71, 1);
-        armed.Flags.Should().Be(49);
+        armed.Flags.Should().Be((byte)(49 | (unknown & RogNativeMenuCodec.DedicatedPageFlag)));
         var state = new RogNativeMenuState();
         state.Arm(idle, armed, armed.Cookie);
         state.Matches(armed).Should().BeTrue();
@@ -268,7 +288,7 @@ public sealed partial class RuntimeCapabilityCompatibilityTests
 
     [Theory]
     [InlineData("wired-major")] [InlineData("wired-minor")] [InlineData("receiver-major")] [InlineData("keyboard-major")] [InlineData("asleep")]
-    public void Native_family_anchor_still_rejects_other_identity_families(string fault)
+    public void Native_route_labels_accept_diagnostic_identity_bytes_but_still_reject_an_absent_peer(string fault)
     {
         using var io = new NoIo();
         if (fault.StartsWith("wired", StringComparison.Ordinal))
@@ -276,7 +296,8 @@ public sealed partial class RuntimeCapabilityCompatibilityTests
             var anchor = RogRuntimeCompatibility.NativeFamilyAnchor("wired")!;
             using var wired = new RogWiredOledConnection(io, () => true, () => Key, () => anchor);
             var identity = WiredIdentity(0x25); identity[fault == "wired-major" ? 7 : 6] ^= 1;
-            ((Action)(() => wired.RequireFirmwareIdentity(identity, anchor))).Should().Throw<InvalidDataException>();
+            ((Action)(() => wired.RequireFirmwareIdentity(identity, anchor))).Should().NotThrow();
+            wired.ObservedFirmwareHeader.Should().Be(Convert.ToHexString(identity.AsSpan(0, 9)));
             return;
         }
         var rf = RogRuntimeCompatibility.NativeFamilyAnchor("wireless")!;
@@ -288,16 +309,25 @@ public sealed partial class RuntimeCapabilityCompatibilityTests
             case "keyboard-major": reply[14] = 2; break;
             default: reply.AsSpan(12, 4).Clear(); break;
         }
-        ((Action)(() => wireless.RequireFirmwareIdentity(reply, rf))).Should().Throw<InvalidDataException>();
-        wireless.ObservedFirmwareHeader.Should().BeNull();
+        var admit = (Action)(() => wireless.RequireFirmwareIdentity(reply, rf));
+        if (fault == "asleep")
+        {
+            admit.Should().Throw<InvalidDataException>();
+            wireless.ObservedFirmwareHeader.Should().BeNull();
+        }
+        else
+        {
+            admit.Should().NotThrow();
+            wireless.ObservedFirmwareHeader.Should().Be(Convert.ToHexString(reply.AsSpan(5, 4)) + Convert.ToHexString(reply.AsSpan(12, 4)));
+        }
     }
 
     [Theory]
     [InlineData("wired", Wired25, true)] [InlineData("wired", Wired24, true)] [InlineData("wired", "001200000051000100", true)]
     [InlineData("wireless", Wireless25, true)] [InlineData("wireless", "0900070024000100", true)]
-    [InlineData("wired", "001200000025000200", false)] [InlineData("wired", Wireless25, false)] [InlineData("wireless", Wired25, false)]
-    [InlineData("wireless", "0800080025000100", false)] [InlineData("wireless", "0800070025000200", false)]
-    public void Native_family_anchor_reads_journals_of_any_former_route_label_of_that_family(string kind, string recorded, bool compatible)
+    [InlineData("wired", "001200000025000200", true)] [InlineData("wired", Wireless25, false)] [InlineData("wireless", Wired25, false)]
+    [InlineData("wireless", "0800080025000100", true)] [InlineData("wireless", "0800070025000200", true)]
+    public void Native_route_anchor_reads_journals_for_the_same_transport_independently_of_OEM_version(string kind, string recorded, bool compatible)
     {
         RogRuntimeCompatibility.IsCompatibleAnchor(recorded, RogRuntimeCompatibility.NativeFamilyAnchor(kind)).Should().Be(compatible);
         RogRuntimeCompatibility.NativeFamilyAnchor("bluetooth").Should().BeNull(); RogRuntimeCompatibility.NativeFamilyAnchor(null).Should().BeNull();
@@ -305,13 +335,13 @@ public sealed partial class RuntimeCapabilityCompatibilityTests
 
     [Theory]
     [InlineData(Wired24, Wired25, true)] [InlineData(Wired26, Wired24, true)] [InlineData(Wired25, "001200000025000100", true)]
-    [InlineData(Wired24, "001200000024000200", false)] [InlineData(Wired24, "001200000024010100", false)]
+    [InlineData(Wired24, "001200000024000200", true)] [InlineData(Wired24, "001200000024010100", true)]
     [InlineData(Wireless24, Wireless26, true)] [InlineData(Wireless25, "0900070024000100", true)]
-    [InlineData(Wireless24, "0800080024000100", false)] [InlineData(Wireless24, "0800070024000200", false)]
+    [InlineData(Wireless24, "0800080024000100", true)] [InlineData(Wireless24, "0800070024000200", true)]
     [InlineData(Wired24, Wireless24, false)] [InlineData(Wireless24, Wired24, false)]
     [InlineData(Wired24, "00120000002G000100", false)] [InlineData(Wired24, "001300000024000100", false)]
     [InlineData(Wired24, "", false)] [InlineData(null, Wired24, false)] [InlineData(null, null, false)]
-    public void Recorded_anchor_fingerprint_binds_transport_and_family_not_patch_bytes(string? recorded, string? current, bool compatible)
+    public void Recorded_anchor_label_binds_transport_and_valid_label_grammar_independently_of_OEM_version(string? recorded, string? current, bool compatible)
     {
         RogRuntimeCompatibility.IsCompatibleAnchor(recorded, current).Should().Be(compatible);
         RogRuntimeCompatibility.IsCompatibleAnchor(current, recorded).Should().Be(compatible);
@@ -350,6 +380,7 @@ public sealed partial class RuntimeCapabilityCompatibilityTests
         private readonly Queue<byte[]> _replies = new();
         public byte Patch { get; set; } = 0x24;
         public byte Major { get; set; } = 1;
+        public bool BadIdentityEnvelope { get; set; }
         public byte ActiveProfile { get; set; } = 6;
         public byte Selector { get; set; } = 3;
         public byte Content { get; set; } = 1;
@@ -360,7 +391,7 @@ public sealed partial class RuntimeCapabilityCompatibilityTests
             var p = report.ToArray(); var b = new byte[65]; p.AsSpan(0, 5).CopyTo(b);
             switch (p[1], p[2])
             {
-                case (0x12, 0): b[5] = Patch; b[7] = Major; b[9] = 6; b[11] = ActiveProfile; break;
+                case (0x12, 0): b[5] = Patch; b[7] = Major; b[9] = 6; b[11] = ActiveProfile; if (BadIdentityEnvelope) b[2] = 1; break;
                 case (0x21, 0): b[5] = Selector; break;
                 case (0x23, 2): b[5] = Content; break;
                 case (0x23, 3): b[5] = Brightness; break;

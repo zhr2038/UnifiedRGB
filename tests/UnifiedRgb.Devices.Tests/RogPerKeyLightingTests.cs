@@ -95,8 +95,9 @@ public sealed class RogPerKeyLightingTests
     {
         using var io = new HeaderEchoFake(rf) { RefuseAt = 1 }; using var connection = Open(io, rf);
 
-        await ((Func<Task>)(() => RogPerKeyLighting.WriteAsync(connection.ExchangeAsync, Keys(40), default)))
-            .Should().ThrowAsync<InvalidDataException>().WithMessage("*connection poisoned; no retry*");
+        var failure = await ((Func<Task>)(() => RogPerKeyLighting.WriteAsync(connection.ExchangeAsync, Keys(40), default)))
+            .Should().ThrowAsync<Exception>().WithMessage("*connection poisoned; no retry*");
+        failure.Which.Should().BeOfType(rf ? typeof(RogOledEnvelopeRefusedException) : typeof(InvalidDataException));
 
         io.Written.Should().HaveCount(2, "the third report is never sent and the refused one is not repeated");
         await ((Func<Task>)(() => connection.ExchangeAsync(RogWiredOledProtocol.Query(0x12, 0), false, default)))
@@ -123,8 +124,9 @@ public sealed class RogPerKeyLightingTests
     public async Task Only_the_stock_C082_count_and_zero_tail_are_accepted_for_a_pending_C081(bool rf, string defect)
     {
         using var io = new HeaderEchoFake(rf) { ReplyDefect = defect }; using var connection = Open(io, rf);
-        await ((Func<Task>)(() => RogPerKeyLighting.WriteAsync(connection.ExchangeAsync, Keys(1), default)))
-            .Should().ThrowAsync<InvalidDataException>().WithMessage("*connection poisoned; no retry*");
+        var failure = await ((Func<Task>)(() => RogPerKeyLighting.WriteAsync(connection.ExchangeAsync, Keys(1), default)))
+            .Should().ThrowAsync<Exception>().WithMessage("*connection poisoned; no retry*");
+        failure.Which.Should().BeOfType(rf && defect != "tail" ? typeof(RogOledUnexpectedReplyException) : typeof(InvalidDataException));
         io.Written.Should().HaveCount(1);
     }
 

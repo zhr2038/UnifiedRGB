@@ -64,6 +64,27 @@ public sealed partial class ScenePackageWorkbenchTests
         vm.Title.Should().Be("Package b"); vm.Selected!.Id.Should().Be("b");
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Late_editor_errors_from_a_previous_selection_do_not_disable_current_editing(bool unsupported)
+    {
+        var service = new Packages(); using var vm = New(service); await SelectAsync(vm);
+        var gate = new TaskCompletionSource<ScenePackageEditorStateDto>(TaskCreationOptions.RunContinuationsAsynchronously);
+        service.EditorRead = id => id == "a" ? gate.Task : Task.FromResult(new ScenePackageEditorStateDto(id, "saved", new(), [], true, [], []));
+        var old = vm.ReadSelectionAsync();
+        vm.Selected = vm.Packages[1]; await vm.ReadSelectionAsync();
+        vm.EditorAvailable.Should().BeTrue();
+        var note = vm.PreviewNote;
+
+        gate.SetException(unsupported ? new NotSupportedException("old host") : new IOException("old preview"));
+        await old;
+        vm.Title.Should().Be("Package b");
+        vm.EditorAvailable.Should().BeTrue();
+        vm.PreviewNote.Should().Be(note);
+        service.Writes.Should().BeEmpty();
+    }
+
     [Fact]
     public async Task Selecting_new_package_disables_apply_while_details_are_loading()
     {
@@ -142,6 +163,7 @@ public sealed partial class ScenePackageWorkbenchTests
         public List<string> Writes { get; } = [];
         public ScenePackageBindingStateDto State { get; set; } = new("a", null, [], false, ["unbound roles"]);
         public Func<string, Task<ScenePackageDetailsDto>>? Read { get; set; }
+        public Func<string, Task<ScenePackageEditorStateDto>>? EditorRead { get; set; }
         public Func<ScenePackageBindingsDto, Task<ScenePackageBindingStateDto>>? Save { get; set; }
         public ScenePackageApplyDto ApplyResult { get; set; } = new(true, "a", "saved", "applied");
         public bool ChangeAtCheckedApply { get; set; }
@@ -153,6 +175,10 @@ public sealed partial class ScenePackageWorkbenchTests
         public Task<IReadOnlyList<ScenePackageInfoDto>> ListScenePackagesAsync(CancellationToken ct = default) { Calls.Add("List"); return Task.FromResult<IReadOnlyList<ScenePackageInfoDto>>([Info("a"), Info("b")]); }
         public Task<ScenePackageDetailsDto> GetScenePackageAsync(string contentId, CancellationToken ct = default) { Calls.Add("Get:" + contentId); return Read?.Invoke(contentId) ?? Task.FromResult(Detail(contentId)); }
         public Task<ScenePackageBindingStateDto> GetScenePackageBindingsAsync(string contentId, CancellationToken ct = default) => Task.FromResult(State with { ContentId = contentId });
+        public Task<ScenePackageEditorStateDto> GetScenePackageEditorAsync(string contentId, string? bindingId = null, CancellationToken ct = default)
+            => EditorRead?.Invoke(contentId) ?? throw new NotSupportedException("No editor fixture.");
+        public Task<ScenePackagePreviewDto> GetScenePackagePreviewAsync(string contentId, CancellationToken ct = default)
+            => Task.FromResult(new ScenePackagePreviewDto(contentId, contentId, 12000, [], []));
         public Task<ScenePackageDetailsDto> ImportScenePackageAsync(ScenePackageUploadDto package, CancellationToken ct = default) => throw new InvalidOperationException("Import not expected");
         public Task<ScenePackageBindingStateDto> SaveScenePackageBindingsAsync(ScenePackageBindingsDto bindings, CancellationToken ct = default)
         {

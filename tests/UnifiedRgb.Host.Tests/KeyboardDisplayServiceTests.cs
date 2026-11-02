@@ -221,6 +221,10 @@ public sealed partial class KeyboardDisplayServiceTests : IDisposable
         try
         {
             await WaitAsync(service, "Running");
+            using (var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5)))
+            {
+                while (wireless.Channels[0].Inner.Data < 2 * 113) await Task.Delay(10, deadline.Token);
+            }
             wired.Opens.Should().Be(0); wireless.Opens.Should().Be(1);
             wireless.Channels[0].DeclaredChunks.Should().Be(113);
             wireless.Channels[0].Remaining.Should().Be(0);
@@ -585,14 +589,14 @@ public sealed partial class KeyboardDisplayServiceTests : IDisposable
             {
                 while (true)
                 {
-                    using var preference = JsonDocument.Parse(File.ReadAllBytes(preferencePath));
+                    using var preference = ReadPreferenceSnapshot(preferencePath);
                     if (preference.RootElement.GetProperty("Brightness").GetByte() == 20) break;
                     await Task.Delay(20, bound.Token);
                 }
             }
             await service.ReleaseForPeripheralConfigurationAsync(default);
             File.Exists(journal).Should().BeFalse();
-            using (var preference = JsonDocument.Parse(File.ReadAllBytes(preferencePath)))
+            using (var preference = ReadPreferenceSnapshot(preferencePath))
             {
                 preference.RootElement.GetProperty("Brightness").GetByte().Should().Be(20);
                 preference.RootElement.GetProperty("Origin").GetString().Should().Be("fresh-native-while-disabled");
@@ -621,7 +625,7 @@ public sealed partial class KeyboardDisplayServiceTests : IDisposable
             factory.Io.Brightness.Should().Be(20);
             factory.Io.Data.Should().Be(0);
             factory.Io.RenewPackets.Should().Be(0);
-            using (var preference = JsonDocument.Parse(File.ReadAllBytes(preferencePath)))
+            using (var preference = ReadPreferenceSnapshot(preferencePath))
             {
                 preference.RootElement.GetProperty("Brightness").GetByte().Should().Be(20);
                 preference.RootElement.GetProperty("Origin").GetString().Should().Be("fresh-native-while-disabled");
@@ -636,7 +640,7 @@ public sealed partial class KeyboardDisplayServiceTests : IDisposable
             await bridge.WriteAsync(new(0, 255, 0), default);
             factory.Io.NativeWrites.Should().Be(writes + 1);
             await service.ReleaseForPeripheralConfigurationAsync(default);
-            using (var preference = JsonDocument.Parse(File.ReadAllBytes(preferencePath)))
+            using (var preference = ReadPreferenceSnapshot(preferencePath))
                 preference.RootElement.GetProperty("Brightness").GetByte().Should().Be(20);
         }
         finally { await service.StopAsync(default); }
@@ -817,13 +821,14 @@ public sealed partial class KeyboardDisplayServiceTests : IDisposable
 
     public class ReadProxy : DispatchProxy
     {
+        public bool Blackout { get; set; } = true;
         public int CaseMutations { get; private set; }
         public int ScreenMutations { get; private set; }
         protected override object? Invoke(MethodInfo? targetMethod, object?[]? args)
         {
             return targetMethod?.Name switch
             {
-                "GetSceneAsync" => Task.FromResult(new SceneDto([new([new("case:one", 0)], "StaticColor", ["#000000"], Brightness: 0)])),
+                "GetSceneAsync" => Task.FromResult(new SceneDto([new([new("case:one", 0)], "StaticColor", [Blackout ? "#000000" : "#FF0000"], Brightness: Blackout ? 0 : 1)])),
                 "ListControllersAsync" => Task.FromResult<IReadOnlyList<ControllerDto>>([new("case:one", "fake", "case", "Virtual", "Linear", "", [new(0, "zone", "Linear", 1, 0, 0)], 60, "Active", null, true)]),
                 "GetScreenSceneAsync" => Task.FromResult(new ScreenSceneDto([new("screen:h2:test")])),
                 "ListScreensAsync" => Task.FromResult<IReadOnlyList<ScreenDeviceDto>>([new("screen:h2:test", "H2", "H2", 400, 400, "Sleeping", null, true, 0, 0, null, 0)]),
@@ -926,7 +931,7 @@ public sealed partial class KeyboardDisplayServiceTests : IDisposable
             if (wired[1] == 0x12 && wired[2] == 0)
             {
                 wired[5] = 8; wired[6] = 0; wired[7] = 7; wired[8] = 0;
-                wired[12] = BadFirmware ? (byte)0x25 : (byte)0x24; wired[13] = 0; wired[14] = 1; wired[15] = 0;
+                wired[2] = BadFirmware ? (byte)1 : (byte)0; wired[12] = 0x24; wired[13] = 0; wired[14] = 1; wired[15] = 0;
             }
             var wireless = new byte[64]; wired.AsSpan(1, 63).CopyTo(wireless.AsSpan(1)); wireless[0] = 2;
             wireless.CopyTo(buffer); return wireless.Length;
@@ -938,6 +943,7 @@ public sealed partial class KeyboardDisplayServiceTests : IDisposable
     {
         private readonly Channel<byte[]> _queue = Channel.CreateBounded<byte[]>(8);
         public byte Brightness { get; set; } = 25;
+        public byte SoftwareControl { get; set; }
         public bool BadFirmware { get; set; }
         public byte ProfileToken { get; set; } = 6;
         public bool StallFirstBegin { get; set; }
@@ -962,15 +968,18 @@ public sealed partial class KeyboardDisplayServiceTests : IDisposable
             EofFirstBegin = EofFirstBegin,
             FailRestoreBrightness = FailRestoreBrightness,
             _native = _native,
+            SoftwareControl = SoftwareControl,
         };
         public ValueTask WriteAsync(ReadOnlyMemory<byte> request, CancellationToken ct)
         {
             ct.ThrowIfCancellationRequested(); var p = request.ToArray(); var b = new byte[65]; p.AsSpan(0, 5).CopyTo(b);
             switch (p[1], p[2])
             {
-                case (0x12, 0): b[5] = BadFirmware ? (byte)0x25 : (byte)0x24; b[7] = 1; b[9] = 6; b[11] = ProfileToken; break;
+                case (0x12, 0): b[2] = BadFirmware ? (byte)1 : (byte)0; b[5] = 0x24; b[7] = 1; b[9] = 6; b[11] = ProfileToken; break;
                 case (0x25, 0x0E): Convert.FromHexString(_native.Payloads[0]).CopyTo(b, 5); break;
                 case (0x51, 0x2C): _native = new(0, new[] { Convert.ToHexString(p.AsSpan(5, 14)) }); NativeWrites++; b = p; break;
+                case (0x27, 0): b[5] = SoftwareControl; break;
+                case (0x74, 0): SoftwareControl = p[5]; b[5] = SoftwareControl; Mutations++; break;
                 case (0x21, 0): b[5] = 3; break;
                 case (0x23, 2): b[5] = 1; break;
                 case (0x23, 3): b[5] = Brightness; break;

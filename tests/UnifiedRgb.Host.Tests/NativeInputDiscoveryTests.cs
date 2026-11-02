@@ -114,6 +114,7 @@ public sealed partial class NativeInputDiscoveryTests
         rig.World.OpenedPaths.Should().Equal((transport == 1 ? WiredTarget : ReceiverTarget).Path);
         rig.World.Enumerations.Should().Be(1);
         rig.Io.Arms.Should().Be(1);
+        rig.Io.Renewals.Should().Be(1, "a completed native image is renewed once through the same owner");
         rig.Io.LiveInputAtArm.Should().Be(1, "PrepareInput binds the actual collection before ARM");
         rig.Io.ReadingAtArm.Should().BeFalse();
         rig.Io.MaximumControl.Should().Be(1);
@@ -553,6 +554,7 @@ public sealed partial class NativeInputDiscoveryTests
         public uint Epoch { get; private set; } = 1;
         public int Exchanges { get; private set; }
         public int Arms { get; private set; }
+        public int Renewals { get; private set; }
         public int Disarms { get; private set; }
         public int MaximumControl { get; private set; }
         public int LiveInputAtArm { get; private set; } = -1;
@@ -609,8 +611,19 @@ public sealed partial class NativeInputDiscoveryTests
             return p;
         }
 
-        public Task LeaseAsync(Func<bool> changed, Action renewed, CancellationToken ct) =>
-            throw new InvalidOperationException("No lease in these discovery tests.");
+        public Task LeaseAsync(Func<bool> changed, Action renewed, CancellationToken ct)
+        {
+            ct.ThrowIfCancellationRequested();
+            MaximumControl = Math.Max(MaximumControl, Interlocked.Increment(ref _pending));
+            try
+            {
+                // The actor now commits each completed image through the existing owner's bounded first renewal.
+                // This fake owns no optional-reply reader; only an admitted send can invoke the completion callback.
+                if (!changed()) { Renewals++; renewed(); }
+                return Task.CompletedTask;
+            }
+            finally { Interlocked.Decrement(ref _pending); }
+        }
 
         public void Dispose() { }
     }

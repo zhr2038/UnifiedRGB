@@ -58,7 +58,10 @@ public sealed class RelayCommand(Action<object?> execute, Func<object?, bool>? c
 
     public bool CanExecute(object? parameter) => canExecute?.Invoke(parameter) ?? true;
 
-    public void Execute(object? parameter) => execute(parameter);
+    public void Execute(object? parameter)
+    {
+        if (CanExecute(parameter)) execute(parameter);
+    }
 
     public void RaiseCanExecuteChanged() => CanExecuteChanged?.Invoke(this, EventArgs.Empty);
 }
@@ -81,7 +84,10 @@ public sealed class AsyncCommand(Func<object?, Task> execute, Action<Exception> 
     public bool CanExecute(object? parameter) => !_running && (canExecute?.Invoke(parameter) ?? true);
 
 #pragma warning disable VSTHRD100, AsyncFixer03 // ICommand.Execute is void by contract; exceptions are routed to onError
-    public async void Execute(object? parameter) => await ExecuteAsync(parameter).ConfigureAwait(true);
+    public async void Execute(object? parameter)
+    {
+        if (CanExecute(parameter)) await ExecuteAsync(parameter).ConfigureAwait(true);
+    }
 #pragma warning restore VSTHRD100, AsyncFixer03
 
     public async Task ExecuteAsync(object? parameter = null)

@@ -37,7 +37,8 @@ public sealed class PipeClient : IHostConnection, IAsyncDisposable
     private volatile IKeyboardDisplayService? _keyboardDisplay;
     private volatile IPeripheralConfigurationService? _peripheralConfiguration;
     private volatile INativeMenuService? _nativeMenu;
-    private ConnectionState _state = ConnectionState.Disconnected;
+    private volatile IFirmwareUpdateService? _firmware;
+    private volatile ConnectionState _state = ConnectionState.Disconnected;
     private volatile ConnectionDiagnostic? _diagnostic;
     private string? _uiFault;
     private int _disposed;
@@ -71,7 +72,11 @@ public sealed class PipeClient : IHostConnection, IAsyncDisposable
     public bool IsBlockedForUiFault => Volatile.Read(ref _uiFault) is not null;
 
     /// <summary>The live proxy, or null while disconnected.</summary>
-    public IRgbService? Service => IsBlockedForUiFault ? null : _service;
+    public IRgbService? Service => IsBlockedForUiFault || Volatile.Read(ref _disposed) != 0 || !HasConnectedSession ? null : _service;
+
+    // The RGB reference is published last and revoked first. Connected is the release/acquire boundary for the whole cohort,
+    // not permission to expose an individual optional proxy while the other attachments are still being built or cleared.
+    private bool HasConnectedSession => _state == ConnectionState.Connected && _service is not null;
 
     /// <summary>Number of successful connections so far (a Host restart increments it).</summary>
     public int Connections { get; private set; }
@@ -98,6 +103,7 @@ public sealed class PipeClient : IHostConnection, IAsyncDisposable
     public IPeripheralConfigurationService RequirePeripheralConfiguration() => Gate(_peripheralConfiguration);
     /// <summary>Optional native-menu preference/status proxy; an older Host answers its calls with method-not-found.</summary>
     public INativeMenuService RequireNativeMenu() => Gate(_nativeMenu);
+    public IFirmwareUpdateService RequireFirmware() => Gate(_firmware);
     public IScenePackageService RequirePackages() => Gate(_packages);
     public ISceneLibraryService RequireLibrary() => Gate(_library);
 
@@ -143,7 +149,7 @@ public sealed class PipeClient : IHostConnection, IAsyncDisposable
 
         var poll = TimeSpan.FromMilliseconds(50);
         var clock = Stopwatch.StartNew();
-        while (_service is null)
+        while (!HasConnectedSession)
         {
             cancellationToken.ThrowIfCancellationRequested();
             if (Volatile.Read(ref _disposed) != 0 || IsBlockedForUiFault)
@@ -160,7 +166,7 @@ public sealed class PipeClient : IHostConnection, IAsyncDisposable
             await Task.Delay(remaining < poll ? remaining : poll, cancellationToken).ConfigureAwait(false);
         }
 
-        return !IsBlockedForUiFault;
+        return Volatile.Read(ref _disposed) == 0 && !IsBlockedForUiFault && HasConnectedSession;
     }
 
     public async ValueTask DisposeAsync()
@@ -206,20 +212,27 @@ public sealed class PipeClient : IHostConnection, IAsyncDisposable
                 var library = rpc.Attach<ISceneLibraryService>();
                 var screenSettings = rpc.Attach<IScreenDeviceSettingsService>();
                 var screenPerformance = rpc.Attach<IScreenPerformanceService>();
+                var screenVideo = rpc.Attach<IScreenVideoService>();
+                var keyboardDisplay = rpc.Attach<IKeyboardDisplayService>();
+                var peripheralConfiguration = rpc.Attach<IPeripheralConfigurationService>();
+                var nativeMenu = rpc.Attach<INativeMenuService>();
+                var firmware = rpc.Attach<IFirmwareUpdateService>();
                 proxy.ControllersChanged += (s, e) => ControllersChanged?.Invoke(this, e);
                 proxy.StatusChanged += (s, e) => StatusChanged?.Invoke(this, e);
                 proxy.TelemetryTick += (s, e) => TelemetryTick?.Invoke(this, e);
                 rpc.StartListening();
-                _service = proxy;
+                ct.ThrowIfCancellationRequested();
                 _screens = screens;
                 _packages = packages;
                 _library = library;
                 _screenSettings = screenSettings;
                 _screenPerformance = screenPerformance;
-                _screenVideo = rpc.Attach<IScreenVideoService>();
-                _keyboardDisplay = rpc.Attach<IKeyboardDisplayService>();
-                _peripheralConfiguration = rpc.Attach<IPeripheralConfigurationService>();
-                _nativeMenu = rpc.Attach<INativeMenuService>();
+                _screenVideo = screenVideo;
+                _keyboardDisplay = keyboardDisplay;
+                _peripheralConfiguration = peripheralConfiguration;
+                _nativeMenu = nativeMenu;
+                _firmware = firmware;
+                _service = proxy;
                 Connections++;
                 attempt = 0;
                 _diagnostic = null;
@@ -249,6 +262,7 @@ public sealed class PipeClient : IHostConnection, IAsyncDisposable
                 _keyboardDisplay = null;
                 _peripheralConfiguration = null;
                 _nativeMenu = null;
+                _firmware = null;
                 await pipe.DisposeAsync().ConfigureAwait(false);
             }
 
@@ -278,6 +292,8 @@ public sealed class PipeClient : IHostConnection, IAsyncDisposable
         {
             throw new HostAccessBlockedException(fault);
         }
+
+        if (Volatile.Read(ref _disposed) != 0 || !HasConnectedSession) throw new HostNotConnectedException();
 
         return service ?? throw new HostNotConnectedException();
     }

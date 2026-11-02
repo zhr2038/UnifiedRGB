@@ -1,0 +1,18 @@
+# These eight retained transaction sources are hash-pinned in core-manifest.json.
+# Keep the reviewed wire/transaction implementation byte-identical. Only the
+# listed naming, interop-allocation and style/performance diagnostics are waived;
+# analyzers remain enabled for the worker adapters and every other diagnostic.
+[AppTransaction.cs]
+dotnet_diagnostic.CA1512.severity = none
+dotnet_diagnostic.CA1826.severity = none
+
+[LedgerState.cs]
+dotnet_diagnostic.CA1859.severity = none
+
+[r4/Inventory.cs]
+dotnet_diagnostic.CA1711.severity = none
+dotnet_diagnostic.CA1838.severity = none
+
+[r4/Protocol.cs]
+dotnet_diagnostic.CA2208.severity = none
+dotnet_diagnostic.CA1859.severity = none

@@ -1,5 +1,4 @@
 using System.Reflection;
-using System.Runtime.CompilerServices;
 using UnifiedRgb.App.Mvvm;
 using UnifiedRgb.App.Workbench;
 using UnifiedRgb.Contracts;
@@ -24,6 +23,45 @@ public sealed class KeyboardLocalIdleTests : IDisposable
 
     private KeyboardDisplayAnimation Make(Func<string, int?>? duration = null) => new(
         new KeyboardDisplayOptions { AnimationAdmitted = true }, _data, _media, _timeline, _time, _clock, duration);
+
+    [Fact]
+    public void Case_power_policy_requests_original_only_after_confirmed_blackout_even_without_an_asset()
+    {
+        using var animation = Make();
+        var off = false;
+        var status = new byte[6656];
+        var presentation = new KeyboardNativePresentation(animation, null, _time, caseBlackout: () => off);
+        presentation.Native(status).Should().BeSameAs(status);
+        presentation.IdleChoice.Should().Be(KeyboardNativeArtwork.StatusPage);
+        off = true;
+        presentation.Native(status).Should().BeNull();
+        presentation.IdleChoice.Should().Be(KeyboardNativeArtwork.DeviceAnimation);
+        presentation.InteractionBegan(false);
+        presentation.Native(status).Should().BeSameAs(status);
+        _time.Advance(TimeSpan.FromMilliseconds(2600));
+        presentation.Native(status).Should().BeNull();
+        off = false;
+        presentation.Native(status).Should().BeSameAs(status);
+    }
+
+    [Fact]
+    public async Task Case_power_policy_preserves_custom_preference_and_resumes_current_phase_after_blackout()
+    {
+        using var animation = Make(); var screens = KeyboardAnimationScreens.Create(_media);
+        await animation.SaveAsync(Settings(KeyboardDisplayAnimation.LocalTimelineId(Asset)), screens, true, false, default);
+        await Ready(animation);
+        var off = false;
+        var presentation = new KeyboardNativePresentation(animation, null, _time, caseBlackout: () => off);
+        var status = new byte[6656];
+        presentation.Native(status).Should().Equal(FakeKeyboardOledMedia.Bytes(Asset)[1]);
+        presentation.Acknowledge(); off = true;
+        presentation.Native(status).Should().BeNull();
+        animation.Status(true, false).Settings.Enabled.Should().BeTrue();
+        animation.Status(true, false).State.Should().NotBe(KeyboardDisplayAnimationStates.Playing);
+        _clock.Now = 5.5; off = false;
+        presentation.Native(status).Should().Equal(FakeKeyboardOledMedia.Bytes(Asset)[2]);
+        _media.Scene = new([]);
+    }
 
     [Fact]
     public async Task LocalIdle_empty_screen_scene_lists_library_assets_and_uses_master_epoch_without_scene_reads()
@@ -140,22 +178,22 @@ public sealed class KeyboardLocalIdleTests : IDisposable
     }
 
     [Fact]
-    public void LocalIdle_supplied_packed_art_keeps_all_16_frames_and_black_caption_rows_with_even_pixel_low_nibble()
+    public void LocalIdle_animation_preview_preserves_all_16_frames_and_black_caption_rows_with_even_pixel_low_nibble()
     {
-        var packed = File.ReadAllBytes(ArtworkPath());
-        packed.Should().HaveCount(16 * 6656);
+        // Public synthetic animation: the owner's private art is not a prerequisite for testing the decoder's format.
         for (var i = 0; i < 16; i++)
         {
-            var frame = packed.AsSpan(i * 6656, 6656).ToArray();
+            var expected = Enumerable.Range(0, 208 * 64).Select(pixel =>
+                (byte)(pixel / 208 >= 47 ? 0 : (pixel % 208 + 3 * (pixel / 208) + i) % 16)).ToArray();
+            var frame = new byte[6656];
+            for (var pixel = 0; pixel < expected.Length; pixel += 2)
+                frame[pixel / 2] = (byte)(expected[pixel] | expected[pixel + 1] << 4);
             frame.AsSpan(47 * 104).ContainsAnyExcept((byte)0).Should().BeFalse();
             var decoded = KeyboardAnimationViewModel.Decode(new(i * 1000, Convert.ToBase64String(frame)));
-            decoded.Levels[0].Should().Be((byte)(frame[0] & 15));
-            decoded.Levels[1].Should().Be((byte)(frame[0] >> 4));
+            decoded.Levels.Should().Equal(expected, "every pixel, including the black caption rows, retains its frame and nibble order");
         }
     }
 
-    private static string ArtworkPath([CallerFilePath] string source = "") => Path.GetFullPath(Path.Combine(Path.GetDirectoryName(source)!,
-        "../../assets/scenes/pikachu/peripheral-design-20261030/oled/gray4-frames.bin"));
     private static KeyboardDisplayAnimationSettingsDto Settings(string id) => new(true, Asset, id, "contain", KeyboardDisplayAnimationEncodings.LumaRound, 2000);
     private static async Task Ready(KeyboardDisplayAnimation animation)
     {

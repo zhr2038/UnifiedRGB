@@ -15,6 +15,8 @@ public interface IRogOledConnection : IDisposable
     bool SameDevice();
     void RequireFirmwareIdentity(byte[] identity, string expectedHeader);
     Task<byte[]> ExchangeAsync(byte[] request, bool zeroAck, CancellationToken ct);
+    /// <summary>Explicit native67/1 data role. Existing implementations keep strict failure/ACK behavior.</summary>
+    Task<byte[]> ExchangeNativePixelAsync(byte[] request, CancellationToken ct) => ExchangeAsync(request, true, ct);
     /// <summary>
     /// Writes one complete per-key frame through this owner. The default route requires each strict C0/82 reply;
     /// the real RF route completes on bounded Windows writes only, without claiming receiver or optical acknowledgement.

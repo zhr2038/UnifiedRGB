@@ -30,7 +30,7 @@ public sealed class RogAtomicTransactionTests
         await ((Func<Task>)(() => connection.ExchangeAsync(RogWiredOledProtocol.Query(0x23, 3), false, stop.Token))).Should().ThrowAsync<OperationCanceledException>();
         io.AfterWrite = null; io.Brightness = 20;
         (await connection.ExchangeAsync(RogWiredOledProtocol.Query(0x23, 3), false, default))[5].Should().Be(20);
-        io.Queued.Should().Be(0); io.Reads.Should().Be(2);
+        io.Queued.Should().Be(0); io.RepliesRead.Should().Be(2, "RF quiet-window reads are not replies to either query");
     }
 
     [Theory] [InlineData(false)] [InlineData(true)]
@@ -69,7 +69,8 @@ public sealed class RogAtomicTransactionTests
     {
         using var io = new Fake(rf); using var connection = Open(io, rf);
         var stale = new byte[65]; stale[1] = 0x51; stale[2] = 0x2C; stale[5] = 30; io.Enqueue(stale);
-        var failure = await ((Func<Task>)(() => connection.ExchangeAsync(RogWiredOledProtocol.Query(0x12, 0), false, default))).Should().ThrowAsync<InvalidDataException>();
+        var failure = await ((Func<Task>)(() => connection.ExchangeAsync(RogWiredOledProtocol.Query(0x12, 0), false, default))).Should().ThrowAsync<Exception>();
+        failure.Which.Should().BeOfType(rf ? typeof(RogOledUnexpectedReplyException) : typeof(InvalidDataException));
         failure.Which.Message.Should().Contain("stage=optional-renewal").And.Contain("request=" + (rf ? "02" : "00") + "12000000")
             .And.Contain("reply=" + (rf ? "02" : "00") + "512C0000");
         io.Queued.Should().Be(1); await NoFurtherIo(connection, io); io.Queued.Should().Be(1);
@@ -157,7 +158,7 @@ public sealed class RogAtomicTransactionTests
         public byte Brightness = 100;
         public bool NonzeroAck, BadEcho, BlockRenewWrite, GateRenewWrite, EchoRenew, ShortNextOut, DropReply, WriteCancellationObserved;
         public Action? AfterWrite;
-        public int Writes, Reads, PendingWrites, PendingReads;
+        public int Writes, Reads, RepliesRead, PendingWrites, PendingReads;
         public TaskCompletionSource RenewAdmitted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource FinishRenew { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public void Enqueue(byte[] normalized)
@@ -192,7 +193,7 @@ public sealed class RogAtomicTransactionTests
         public async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct)
         {
             ct.ThrowIfCancellationRequested(); Reads++; PendingReads++;
-            try { var b = await _queue.Reader.ReadAsync(ct); b.CopyTo(buffer); return b.Length; }
+            try { var b = await _queue.Reader.ReadAsync(ct); RepliesRead++; b.CopyTo(buffer); return b.Length; }
             finally { PendingReads--; }
         }
         public void Dispose() => _queue.Writer.TryComplete();

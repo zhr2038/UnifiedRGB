@@ -181,8 +181,13 @@ public sealed class RogWiredOledSession(IRogOledConnection connection)
         var p = RogWiredOledProtocol.Brightness(brightness);
         if (!(await ExchangeAsync(p, false, ct).ConfigureAwait(false)).AsSpan().SequenceEqual(p))
             throw new InvalidDataException("OLED brightness echo differs.");
-        if ((await ExchangeAsync(RogWiredOledProtocol.Query(0x23, 3), false, ct).ConfigureAwait(false))[5] != brightness)
-            throw new InvalidDataException("OLED brightness readback differs.");
+        try
+        {
+            if ((await ExchangeAsync(RogWiredOledProtocol.Query(0x23, 3), false, ct).ConfigureAwait(false))[5] != brightness)
+                throw new InvalidDataException("OLED brightness readback differs.");
+        }
+        catch (RogOledTimeoutException ex)
+        { throw new RogOledTimeoutException("operation=brightness-setter-readback; mandatory verification failed; " + ex.Message, ex); }
     }
 
     public async Task RestoreAsync(byte brightness, CancellationToken ct)
@@ -232,9 +237,12 @@ public sealed class RogWiredOledSession(IRogOledConnection connection)
         while (!ct.IsCancellationRequested)
         {
             // This boundary follows the completed prior lease/read/upload. Native code borrows THIS actor only.
-            var nativeActive = nativeTick is not null && await nativeTick(ct).ConfigureAwait(false);
+            var imageAborted = false; var nativeActive = false;
+            try { nativeActive = nativeTick is not null && await nativeTick(ct).ConfigureAwait(false); }
+            catch (RogNativeImageContinuationException)
+            { imageAborted = true; nativeWasActive = false; } // no image ACK/lease/restore; this turn still serves RGB
             var desired = displayEnabled?.Invoke() ?? display;
-            if (!nativeActive && (desired != display || nativeWasActive))
+            if (!imageAborted && !nativeActive && (desired != display || nativeWasActive))
             {
                 if (desired) await StartOutputAsync(brightness, ct).ConfigureAwait(false);
                 else
@@ -245,7 +253,7 @@ public sealed class RogWiredOledSession(IRogOledConnection connection)
                 display = desired; sent = null; displayChanged?.Invoke(display);
             }
             var pixels = latest();
-            if (!nativeActive && display && (sent is null || !pixels.AsSpan().SequenceEqual(sent)))
+            if (!imageAborted && !nativeActive && display && (sent is null || !pixels.AsSpan().SequenceEqual(sent)))
             {
                 await RequireCurrentScopeAsync(ct).ConfigureAwait(false);
                 using var upload = CancellationTokenSource.CreateLinkedTokenSource(ct); upload.CancelAfter(8000);
@@ -277,7 +285,7 @@ public sealed class RogWiredOledSession(IRogOledConnection connection)
                     try
                     {
                         _ = OriginalLighting ?? throw new InvalidOperationException("Wired lighting not snapshotted.");
-                        await RequireCurrentScopeAsync(ct).ConfigureAwait(false);
+                        await RequireReadOnlyScopeAsync(RogReadOnlyOperation.PreKeyFrameScope, ct).ConfigureAwait(false);
                         _keyOutputActive = true;
                         await SetSoftwareControlAsync(1, ct).ConfigureAwait(false);
                         LightingTouched = true; // An unknown reply must still trigger the original-lighting restore.
@@ -292,8 +300,15 @@ public sealed class RogWiredOledSession(IRogOledConnection connection)
             if (!nativeActive && !display && (!responsive || !_keyOutputActive || Elapsed(_lastObservation) >= ObservationInterval))
             {
                 _lastObservation = Timestamp();
-                await RequireCurrentScopeAsync(ct).ConfigureAwait(false);
-                var current = (await ExchangeAsync(RogWiredOledProtocol.Query(0x23, 3), false, ct).ConfigureAwait(false))[5];
+                await RequireReadOnlyScopeAsync(RogReadOnlyOperation.IdleScopeObservation, ct).ConfigureAwait(false);
+                byte current;
+                try { current = (await ExchangeAsync(RogWiredOledProtocol.Query(0x23, 3), false, ct).ConfigureAwait(false))[5]; }
+                catch (RogOledTimeoutException ex)
+                { throw new RogReadOnlyObservationTimeoutException(RogReadOnlyOperation.IdleBrightnessObservation,
+                    connection.DeviceKey, connection.ConnectionKind, VerifiedProfileToken, ex); }
+                catch (RogOledUnexpectedReplyException ex)
+                { throw new RogReadOnlyObservationUnexpectedReplyException(RogReadOnlyOperation.IdleBrightnessObservation,
+                    connection.DeviceKey, connection.ConnectionKind, VerifiedProfileToken, ex); }
                 if (current > 100) throw new InvalidDataException("Native brightness observation is invalid.");
                 if (current != CurrentNativeBrightness)
                 {
@@ -303,7 +318,7 @@ public sealed class RogWiredOledSession(IRogOledConnection connection)
                 }
             }
             nativeWasActive = nativeActive;
-            if (nativeActive || display)
+            if (!imageAborted && (nativeActive || display))
             {
                 Func<bool> changed = () => lighting?.HasWork == true || nativeWake?.Invoke() == true
                     || (!nativeActive && (displayEnabled?.Invoke() ?? display) != display)
@@ -325,6 +340,15 @@ public sealed class RogWiredOledSession(IRogOledConnection connection)
 
     private Task LeaseAsync(Func<bool> changed, CancellationToken ct) =>
         connection.LeaseAsync(changed, Renewed, ct);
+
+    private async Task RequireReadOnlyScopeAsync(RogReadOnlyOperation operation, CancellationToken ct)
+    {
+        try { await RequireCurrentScopeAsync(ct).ConfigureAwait(false); }
+        catch (RogOledTimeoutException ex)
+        { throw new RogReadOnlyObservationTimeoutException(operation, connection.DeviceKey, connection.ConnectionKind, VerifiedProfileToken, ex); }
+        catch (RogOledUnexpectedReplyException ex)
+        { throw new RogReadOnlyObservationUnexpectedReplyException(operation, connection.DeviceKey, connection.ConnectionKind, VerifiedProfileToken, ex); }
+    }
 
     private void Renewed() { Renewals++; _lastRenewal = Timestamp(); }
 

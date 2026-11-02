@@ -45,7 +45,7 @@ public sealed partial class RogNativeMenuSourceTests
     public async Task Device_owned_entry_logo_is_not_uploaded_again_by_the_host_and_native_input_keeps_working()
     {
         await using var rig = new PresentationRig(new DeclaredPresentation(KeyboardNativePresentationSupport.Available),
-            mode: 7, animation: false, deviceShowsLogo: true);
+            mode: 7, animation: false, deviceShowsLogo: true, blackout: true);
         await rig.Owner.StartAsync(default);
         await rig.RunningNative(); await rig.Declared();
         var restores = rig.Control.NativeRestores;
@@ -89,12 +89,12 @@ public sealed partial class RogNativeMenuSourceTests
         await rig.Prepared();
         await rig.Declared();
         capability.Scopes.Should().ContainSingle().Which.Should().Be(
-            new KeyboardNativePresentationScope(rig.Control.DeviceKey, rig.Control.FirmwareHeader, "wired"));
+            new KeyboardNativePresentationScope(rig.Control.DeviceKey, RogRuntimeCompatibility.NativeFamilyAnchor("wired")!, "wired"));
 
         // Ordinary mode 7 under installed ownership: unchanged (no image, no frame selection).
         var ordinary = await rig.Owner.GetKeyboardDisplayAnimationAsync();
         ordinary.State.Should().Be(KeyboardDisplayAnimationStates.Ready);
-        ordinary.Detail.Should().Contain("固件已声明原生光域画面支持");
+        ordinary.Detail.Should().Contain("进入原生光域时");
         rig.Control.ImageBegins.Should().Be(0); rig.Timeline.Reads.Should().Be(0);
 
         rig.Timeline.At(1500); // the shared source keeps its own position while the overlay is shown
@@ -119,7 +119,8 @@ public sealed partial class RogNativeMenuSourceTests
         var playing = await rig.Owner.GetKeyboardDisplayAnimationAsync();
         playing.State.Should().Be(KeyboardDisplayAnimationStates.Playing);
         playing.Acknowledged.Should().Be(1);
-        playing.Detail.Should().Contain("拨杆仍由原生菜单控制");
+        playing.Detail.Should().Contain("只有有效的拨杆上下拨或按下操作");
+        rig.Source!.IsPresent.Should().BeTrue("the native control context stays active while the animation plays");
 
         // The same native context keeps sequence/neutral and the lever across replacement artwork.
         rig.Input.Send(ScopedNotice(3, 0, 1, rig.Control.Epoch, Cookie)); rig.Input.Send(ScopedNotice(4, 2, 1, rig.Control.Epoch, Cookie));
@@ -134,10 +135,10 @@ public sealed partial class RogNativeMenuSourceTests
     }
 
     [Fact]
-    public async Task Without_authored_content_the_logo_expires_into_the_existing_status_artwork()
+    public async Task Confirmed_blackout_without_authored_content_expires_the_logo_into_device_idle()
     {
         await using var rig = new PresentationRig(new DeclaredPresentation(KeyboardNativePresentationSupport.Available),
-            mode: RogNativeMenuCodec.NativeMode, animation: false);
+            mode: RogNativeMenuCodec.NativeMode, animation: false, blackout: true);
         await rig.Owner.StartAsync(default);
         await Until(() => rig.Control.ImageBegins == 1 && rig.Shows(rig.Logo));
         await rig.NextTick();
@@ -315,6 +316,8 @@ public sealed partial class RogNativeMenuSourceTests
         rig.Timeline.At(1500);
         await rig.Owner.StartAsync(default);
         await Until(() => rig.Control.ImageBegins >= 1);
+        await Until(() => rig.Shows(rig.Logo));
+        rig.Clock.Advance(TimeSpan.FromMilliseconds(KeyboardNativePresentation.EntryLogoMs));
         await rig.Prepared();
         await Until(() => rig.Shows(KeyboardDisplayServiceTests.Fill(0x22)));
         var status = await rig.Owner.GetKeyboardDisplayAnimationAsync();
@@ -437,6 +440,7 @@ public sealed partial class RogNativeMenuSourceTests
     private sealed class PresentationRig : IAsyncDisposable
     {
         private readonly IDisposable? _registration;
+        private readonly KeyboardDisplayServiceTests.ReadProxy _observation;
         public string Data { get; } = Path.Combine(Path.GetTempPath(), "SolNativePresentation-" + Guid.NewGuid().ToString("N"));
         public string AnimationPreference => Path.Combine(Data, "peripherals", KeyboardDisplayAnimation.FileName);
         public byte[] AnimationBefore { get; }
@@ -456,7 +460,7 @@ public sealed partial class RogNativeMenuSourceTests
         public byte[] Logo => Owner.EntryLogoPixels.ToArray();
 
         public PresentationRig(IKeyboardNativePresentationCapability? capability, byte mode, bool policy = true, bool animation = true,
-            bool deviceShowsLogo = false)
+            bool deviceShowsLogo = false, bool blackout = false)
         {
             Directory.CreateDirectory(Path.Combine(Data, "peripherals"));
             File.WriteAllBytes(Path.Combine(Data, "peripherals", "keyboard-display.json"), Encoding.UTF8.GetBytes("{\"Schema\": 1, \"Enabled\": true}"));
@@ -471,6 +475,8 @@ public sealed partial class RogNativeMenuSourceTests
                 _registration = Source.Connect(Events.Enqueue); Source.RequestEnabled(true);
             }
             var rgb = DispatchProxy.Create<IRgbService, KeyboardDisplayServiceTests.ReadProxy>();
+            _observation = (KeyboardDisplayServiceTests.ReadProxy)rgb;
+            _observation.Blackout = blackout;
             Owner = new(new()
             {
                 DataDirectory = Data,
@@ -482,12 +488,13 @@ public sealed partial class RogNativeMenuSourceTests
         }
 
         public bool Shows(byte[] pixels) => Control.Rebuilt.AsSpan().SequenceEqual(pixels);
+        public void SetBlackout(bool blackout) => _observation.Blackout = blackout;
 
         public Task RunningNative() => Until(() => Bridge.Available
             && Owner.GetKeyboardDisplayStatusAsync().GetAwaiter().GetResult().Detail.Contains("原生光域菜单", StringComparison.Ordinal));
 
         public Task Declared() => Until(() => Owner.GetKeyboardDisplayAnimationAsync().GetAwaiter().GetResult().Detail
-            .Contains("固件已声明原生光域画面支持", StringComparison.Ordinal));
+            .Contains("进入原生光域时", StringComparison.Ordinal));
 
         public Task Prepared() => Until(() => Owner.GetKeyboardDisplayAnimationAsync().GetAwaiter().GetResult().CachedFrames == 3);
 

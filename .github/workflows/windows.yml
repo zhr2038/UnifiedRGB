@@ -31,9 +31,19 @@ jobs:
           Write-Output "Selected SDK: $version"
       - name: Build
         run: dotnet build src/UnifiedRgb.sln -c Release --no-restore -warnaserror
+      - name: Retained firmware source pins (read-only)
+        shell: pwsh
+        run: ./tools/windows/Verify-FirmwareSourcePins.ps1
+      - name: Firmware workflow and protected runtime (fake platform only)
+        shell: pwsh
+        run: |
+          dotnet run --project tests/UnifiedRgb.Firmware.Checks -c Release --no-build
+          if ($LASTEXITCODE -ne 0) { throw 'Firmware workflow checks failed' }
+          dotnet run --project tests/UnifiedRgb.Firmware.ProtectedRuntime.Checks -c Release --no-build
+          if ($LASTEXITCODE -ne 0) { throw 'Protected firmware runtime checks failed' }
       - name: Test
         # Real-clock performance is a separate required quiet step below, not skipped or given a weaker threshold.
-        run: dotnet test src/UnifiedRgb.sln -c Release --no-build -m:1 --filter 'FullyQualifiedName!~UnifiedRgb.Core.Tests.ClockTests' --logger trx --results-directory TestResults
+        run: dotnet test src/UnifiedRgb.sln -c Release --no-build -m:1 --filter 'FullyQualifiedName!~UnifiedRgb.Core.Tests.ClockTests' --blame-hang-timeout 90s --blame-hang-dump-type none --logger trx --results-directory TestResults
       - name: Quiet real-clock benchmark (unchanged 2 ms gate)
         shell: pwsh
         run: |

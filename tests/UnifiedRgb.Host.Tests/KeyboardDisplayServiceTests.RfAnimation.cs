@@ -58,7 +58,7 @@ public sealed partial class KeyboardDisplayServiceTests
         await service.StartAsync(default);
         try
         {
-            await WaitAsync(service, "Running");
+            await rig.CompleteEntryAsync(service);
             await rig.ImagesAsync(1);
             await adapter.OpenAsync(descriptor.Id, default);
             var holding = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -93,7 +93,7 @@ public sealed partial class KeyboardDisplayServiceTests
 
             rig.Timeline.At(2500); rig.Time.Advance(TimeSpan.FromSeconds(30)); await Task.Delay(400);
             rig.Factory.Count.Should().Be(3, "no animation frame is selected or resent after the trip");
-            (rig.Factory.Opens, rig.Factory.Io.BeginPackets, rig.Factory.Io.Data).Should().Be((1, 3, 3 * 113), "no reopen and no resent chunk");
+            (rig.Factory.Opens, rig.Factory.Io.BeginPackets, rig.Factory.Io.Data).Should().Be((1, 3 + rig.Factory.EntryCount, (3 + rig.Factory.EntryCount) * 113), "entry plus three complete frames, no reopen and no resent chunk");
             rig.Factory.Io.NativeWrites.Should().Be(0, "the expired colour is dropped by the owner, never written late");
             var display = await service.GetKeyboardDisplayStatusAsync();
             (display.State, display.LastError).Should().Be(("Running", (string?)null), "the frame itself was acknowledged in full");
@@ -124,7 +124,7 @@ public sealed partial class KeyboardDisplayServiceTests
         await service.StartAsync(default);
         try
         {
-            await WaitAsync(service, "Running");
+            await rig.CompleteEntryAsync(service);
             await rig.ImagesAsync(1);
             await adapter.OpenAsync(descriptor.Id, default);
             // The fifth chunk of the animation frame reaches the fake keyboard, but its ACK never reaches the owner.
@@ -144,7 +144,7 @@ public sealed partial class KeyboardDisplayServiceTests
             var writes = rig.Factory.WriteCount;
             var retained = File.ReadAllBytes(journal);
             await Task.Delay(2300);
-            (rig.Factory.Opens, rig.Factory.Io.BeginPackets, rig.Factory.Io.Data).Should().Be((1, 2, 113 + 5), "no resend and no reopen");
+            (rig.Factory.Opens, rig.Factory.Io.BeginPackets, rig.Factory.Io.Data).Should().Be((1, 2 + rig.Factory.EntryCount, 113 * (1 + rig.Factory.EntryCount) + 5), "entry + status + five failing chunks, no resend and no reopen");
             rig.Factory.WriteCount.Should().Be(writes, "the poisoned connection sends nothing more");
             rig.Factory.Count.Should().Be(1, "no status fallback image follows an uncertain transfer");
             rig.Factory.Io.NativeWrites.Should().Be(0);
@@ -206,7 +206,7 @@ public sealed partial class KeyboardDisplayServiceTests
         await service.StartAsync(default);
         try
         {
-            await WaitAsync(service, "Running");
+            await rig.CompleteEntryAsync(service);
             await rig.ImagesAsync(1);
             expected.Add(service.ArtworkPixels.ToArray());
             (await service.GetKeyboardDisplayStatusAsync()).Detail.Should().Contain("无线通信确认");
@@ -230,7 +230,7 @@ public sealed partial class KeyboardDisplayServiceTests
                 await service.SetKeyboardDisplayAnimationAsync(Enable(AssetA) with { Enabled = false });
                 await rig.ImagesAsync(4);
                 expected.Add(service.ArtworkPixels.ToArray());
-                await UntilAsync(() => service.GetKeyboardDisplayStatusAsync().GetAwaiter().GetResult().FramesAcknowledged == 4, "status ACK");
+                await UntilAsync(() => service.GetKeyboardDisplayStatusAsync().GetAwaiter().GetResult().FramesAcknowledged == 4 + rig.Factory.EntryCount, "status ACK");
                 // Re-enabled, so the page is turned off below while the animation is still wanted.
                 rig.Time.Advance(TimeSpan.FromSeconds(2));
                 await service.SetKeyboardDisplayAnimationAsync(Enable(AssetA));
@@ -274,17 +274,33 @@ public sealed partial class KeyboardDisplayServiceTests
             owner._rgbProxy = (ReadProxy)rgb;
             var screens = KeyboardAnimationScreens.Create(Media);
             Screens = (KeyboardAnimationScreens)(object)screens;
-            return new(new UnifiedRgbOptions { DataDirectory = directory, KeyboardDisplay = options }, rgb, screens, Wired, new ClearGuard(), bridge,
+            var service = new KeyboardDisplayService(new UnifiedRgbOptions { DataDirectory = directory, KeyboardDisplay = options }, rgb, screens, Wired, new ClearGuard(), bridge,
                 Factory, keyboardMedia: Media, sharedTimeline: Timeline, time: Time);
+            Factory.EntryLogo = service.EntryLogoPixels.ToArray();
+            return service;
         }
 
         public Task ImagesAsync(int count) => UntilAsync(() => Factory.Count >= count, count + " uploaded RF images");
+        public async Task CompleteEntryAsync(KeyboardDisplayService service)
+        {
+            await WaitAsync(service, "Running");
+            await UntilAsync(() => Factory.EntryCount == 1
+                && service.GetKeyboardDisplayStatusAsync().GetAwaiter().GetResult().FramesAcknowledged >= 1, "acknowledged RF entry logo");
+            ExpectRf59(Factory.Entry, service.EntryLogoPixels.ToArray());
+            Time.Advance(TimeSpan.FromMilliseconds(KeyboardNativePresentation.EntryLogoMs));
+            await ImagesAsync(1);
+            Factory.EntryCount.Should().Be(1, "one logo per acknowledged entry");
+        }
     }
 
     /// <summary>Opens the real RF connection over the existing fake receiver channel through a tap that records each complete image.</summary>
     private sealed class RfTapFactory : IRogWirelessOledFactory
     {
         private readonly List<RfImage> _images = [];
+        private readonly List<RfImage> _entries = [];
+        public byte[]? EntryLogo { get; set; }
+        public int EntryCount { get { lock (_images) return _entries.Count; } }
+        public RfImage Entry { get { lock (_images) return _entries.Single(); } }
         private readonly List<string> _writes = [];
         public int Opens { get; private set; }
         public List<RfTap> Channels { get; } = [];
@@ -327,7 +343,14 @@ public sealed partial class KeyboardDisplayServiceTests
                 var image = new RfImage(io.DeclaredChunks, _size.Width, _size.Height, [.. io.Pixels], [.. io.CopyLengths]);
                 image.Lengths.Length.Should().Be(io.DeclaredChunks - BinaryPrimitives.ReadUInt16LittleEndian(p.AsSpan(3)));
                 if (owner.LoseAck?.Invoke(image) == true) { _loseAck = true; owner.AckLost.TrySetResult(); }
-                if (BinaryPrimitives.ReadUInt16LittleEndian(p.AsSpan(3)) == 0) lock (owner._images) owner._images.Add(image);
+                if (BinaryPrimitives.ReadUInt16LittleEndian(p.AsSpan(3)) == 0)
+                {
+                    lock (owner._images)
+                    {
+                        if (owner.EntryLogo is { } logo && image.Pixels.AsSpan().SequenceEqual(logo)) owner._entries.Add(image);
+                        else owner._images.Add(image);
+                    }
+                }
             }
 
             public async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct)

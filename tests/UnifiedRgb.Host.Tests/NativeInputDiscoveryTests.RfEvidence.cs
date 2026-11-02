@@ -148,7 +148,10 @@ public sealed partial class NativeInputDiscoveryTests
         }
         switch (change)
         {
-            case "profile": rig.Io.Profile = 1; break;
+            case "profile":
+                rig.Io.Profile = 1;
+                rig.Time.Advance(TimeSpan.FromMilliseconds(101)); // No input notice: expire the actual100ms CAP observation before expecting the change to be seen.
+                break;
             case "cookie":
                 {
                     var notice = Notice(2, 1, 0, 3); notice[11] ^= 1;

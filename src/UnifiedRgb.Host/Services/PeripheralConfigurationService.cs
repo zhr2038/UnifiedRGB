@@ -10,7 +10,7 @@ internal interface IPeripheralConfigurationResources
     Task ResumeAsync(CancellationToken ct);
 }
 
-public sealed class PeripheralConfigurationService : IPeripheralConfigurationService
+public sealed partial class PeripheralConfigurationService : IPeripheralConfigurationService
 {
     private readonly TimeSpan _operationTimeout;
     private readonly PeripheralConfigurationGate _gate;
@@ -40,6 +40,7 @@ public sealed class PeripheralConfigurationService : IPeripheralConfigurationSer
                 : gate.RogAcquisitionAllowed
                     ? new(false, "Active", "ROG peripherals use fresh current settings; no configuration handoff is requested.", false, DateTimeOffset.UtcNow, null)
                     : new(true, "Ready", "Persistent handoff was loaded before any ROG session was opened.", true, DateTimeOffset.UtcNow, null);
+        InitializeFirmwareLease(options.ResolvedDataDirectory);
     }
 
     public Task<PeripheralConfigurationStatusDto> GetPeripheralConfigurationStatusAsync(CancellationToken ct = default)
@@ -52,6 +53,7 @@ public sealed class PeripheralConfigurationService : IPeripheralConfigurationSer
         _gate.RunExclusiveAsync(async _ =>
         {
             ct.ThrowIfCancellationRequested();
+            _firmwareLease?.RejectManualChange();
             if (Volatile.Read(ref _status) is { ConfigurationMode: true, State: "Ready" } ready) return ready;
             var previouslyAllowed = _gate.RogAcquisitionAllowed;
             _gate.BlockRogAcquisition();
@@ -79,6 +81,7 @@ public sealed class PeripheralConfigurationService : IPeripheralConfigurationSer
         _gate.RunExclusiveAsync(async _ =>
         {
             ct.ThrowIfCancellationRequested();
+            _firmwareLease?.RejectManualChange();
             if (Volatile.Read(ref _status) is { ConfigurationMode: false, State: "Active" } active) return active;
             if (File.Exists(_journalPath))
             {
