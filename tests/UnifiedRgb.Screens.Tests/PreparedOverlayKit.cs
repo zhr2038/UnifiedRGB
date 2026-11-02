@@ -153,6 +153,7 @@ internal sealed class OverlayEncoder : IDisposable
     public int Calls => Volatile.Read(ref _calls);
 
     public ConcurrentQueue<(OverlayPreparationRequest Request, string LayerSha)> Seen { get; } = new();
+    public Action<OverlayPreparationRequest, byte[], string>? Encoded { get; set; }
 
     public OverlayPreparationRequest Last => Seen.Last().Request;
 
@@ -162,7 +163,9 @@ internal sealed class OverlayEncoder : IDisposable
         Interlocked.Increment(ref _calls);
         if (Gated && !_release.Wait(TimeSpan.FromSeconds(30))) throw new TimeoutException("the test never released the encoder");
         if (Fail) throw new InvalidOperationException("fake WIC failure");
-        return ScreenWorker.PrepareOverlayPng(request.Layer, request.Assignment, request.InternalRotation, request.SimplePng);
+        var result = ScreenWorker.PrepareOverlayPng(request.Layer, request.Assignment, request.InternalRotation, request.SimplePng);
+        Encoded?.Invoke(request, result.Bytes, result.Note);
+        return result;
     }
 
     public Task WaitCallsAsync(int count) => Wait.UntilAsync(() => Calls >= count, $"{count} encoder call(s)");

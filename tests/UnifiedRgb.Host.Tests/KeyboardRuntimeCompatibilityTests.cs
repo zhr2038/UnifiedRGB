@@ -13,6 +13,7 @@ namespace UnifiedRgb.Host.Tests;
 /// Synthetic in-memory keyboard fixtures only (no Host process, HID, settings or physical claim). A configured anchor runs
 /// same-family devices without repinning; device key, transport, profile, journal and native scope binding stay strict.
 /// </summary>
+[Collection("Host")] // Real owner startup renders status artwork, including the Diagnostics partial.
 public sealed partial class KeyboardRuntimeCompatibilityTests : IDisposable
 {
     private const string Key = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";

@@ -1,5 +1,7 @@
 using System.Diagnostics;
 using System.Globalization;
+using System.Collections.Concurrent;
+using System.Text.Json;
 using UnifiedRgb.Contracts.Dto;
 using UnifiedRgb.Screens.Media;
 using UnifiedRgb.Screens.Protocol;
@@ -18,6 +20,7 @@ namespace UnifiedRgb.Screens.Tests;
 public sealed class PreparedOverlayWorkerTests(ITestOutputHelper output)
 {
     private const int LayerBytes = 1920 * 480 * 4;
+    private static readonly JsonSerializerOptions CaptureJson = new() { WriteIndented = true };
 
     private static async Task PostCompletedAsync(NativeWorkerHarness h, ScreenAssignmentDto assignment)
     {
@@ -114,6 +117,8 @@ public sealed class PreparedOverlayWorkerTests(ITestOutputHelper output)
             var inline = await OverlaysAsync(prepared: false, simple);
             var prepared = await OverlaysAsync(prepared: true, simple);
             inline.Pngs.Should().HaveCount(36);
+            prepared.Cases.Select(c => c.Input).Should().Equal(inline.Cases.Select(c => c.Input), "the compared cases have exactly the same telemetry, timestamps, assignment and clock");
+            prepared.Cases.Select(c => c.PixelSha).Should().Equal(inline.Cases.Select(c => c.PixelSha), "decoded wire pixels must match before comparing PNG compression bytes");
             prepared.Pngs.Select(Sha).Should().Equal(inline.Pngs.Select(Sha), simple ? "NONE" : "WIC");
             prepared.Notes.Should().Equal(inline.Notes);
             prepared.Data.Should().Equal(inline.Data);
@@ -136,13 +141,26 @@ public sealed class PreparedOverlayWorkerTests(ITestOutputHelper output)
     }
 
     private sealed record OverlayRun(List<byte[]> Pngs, List<string?> Notes, string[] Data, List<double> WorkerOverlayEncodeMs,
-        OverlayPreparerSnapshot? Snapshot);
+        OverlayPreparerSnapshot? Snapshot, List<OverlayCase> Cases);
+
+    private sealed record OverlayCase(int Index, string Input, string PixelSha, string WireSha, string? LayerSha,
+        string? EncoderSha, string? EncoderInput, string? EncoderKey, DateTimeOffset? EncodedAt, NativeVideoPreparedOverlayDto? Worker, string? Preparer);
+
+    private sealed record EncodedOverlay(OverlayPreparationRequest Request, byte[] Bytes, string LayerSha, string Input, DateTimeOffset At);
 
     private sealed class TelemetryBox
     {
-        private PcTelemetryDto? _value;
-
-        public PcTelemetryDto? Value { get => Volatile.Read(ref _value); set => Volatile.Write(ref _value, value); }
+        private sealed record Input(int Case, PcTelemetryDto? Telemetry, DateTimeOffset SetAt);
+        private Input _value = new(-1, null, default);
+        public ConcurrentQueue<string> Reads { get; } = new();
+        public string Current => JsonSerializer.Serialize(Volatile.Read(ref _value));
+        public void Set(int index, PcTelemetryDto? value, DateTimeOffset now) => Volatile.Write(ref _value, new(index, value, now));
+        public PcTelemetryDto? Read(TimeProvider time)
+        {
+            var input = Volatile.Read(ref _value);
+            Reads.Enqueue(JsonSerializer.Serialize(new { Input = input, Now = time.GetUtcNow(), Thread = Environment.CurrentManagedThreadId }));
+            return input.Telemetry;
+        }
     }
 
     private static readonly ScreenOverlayLayoutDto ExampleRegion = new(0.5, 0.2, 0.47, 0.66, 2, 0);
@@ -170,29 +188,61 @@ public sealed class PreparedOverlayWorkerTests(ITestOutputHelper output)
     private static async Task<OverlayRun> OverlaysAsync(bool prepared, bool simple)
     {
         var telemetry = new TelemetryBox();
+        var encoded = new ConcurrentQueue<EncodedOverlay>();
+        TimeProvider clock = TimeProvider.System;
         using var encoder = new OverlayEncoder();
+        encoder.Encoded = (request, bytes, _) => encoded.Enqueue(new(request, bytes, Sha(request.Layer.Pixels), telemetry.Current, clock.GetUtcNow()));
         var trial = NativeWorkerHarness.NewTrial("bench-" + simple, t => t with { PreparedOverlay = prepared, SimpleOverlayPng = simple });
         using var h = await StartAsync(trial, prepared ? encoder : null, customize: c =>
         {
-            telemetry.Value = States[0] is { } first ? first with { Timestamp = c.Time.GetUtcNow() } : null;
-            return c with { Telemetry = () => telemetry.Value };
+            clock = c.Time;
+            telemetry.Set(0, States[0] is { } first ? first with { Timestamp = c.Time.GetUtcNow() } : null, c.Time.GetUtcNow());
+            return c with { Telemetry = () => telemetry.Read(c.Time) };
         }, initialAssignment: Layouts[0].Layout);
         await CompletedSubmittedPicturesAsync(h);
         var notes = new List<string?>();
+        var cases = new List<OverlayCase>();
+        using var decoder = new StaThread("representative wire PNG decode");
         var firstCase = true;
-        foreach (var (_, layout) in Layouts)
+        foreach (var (name, layout) in Layouts)
         {
             for (var k = 0; k < States.Length; k++)
             {
                 if (firstCase) firstCase = false; // its exact layout/telemetry were fixed before the worker started
                 else
                 {
-                    telemetry.Value = States[k] is { } t ? t with { Timestamp = h.Time.GetUtcNow() } : null;
+                    telemetry.Set(cases.Count, States[k] is { } t ? t with { Timestamp = h.Time.GetUtcNow() } : null, h.Time.GetUtcNow());
                     if (k == 0) await PostCompletedAsync(h, layout(h.Assignment));
                     else await PictureAsync(h);
                 }
-                if (prepared) await IdleAsync(h);
+                var expected = cases.Count + 1;
+                var input = JsonSerializer.Serialize(new { Layout = name, State = k, Telemetry = telemetry.Current, Assignment = h.Assignment, Now = h.Time.GetUtcNow() });
+                if (prepared) await RepresentativeEncodedAsync(h, expected);
                 await PictureAsync(h);
+                if (prepared)
+                {
+                    await Wait.UntilAsync(() => PreparedFacts(h) is { } f && f.LastSentStamp == expected && !f.Outstanding
+                        && Preparer(h).Snapshot().Handed == expected, "this representative's exact queued stamp to be handed to the wire");
+                }
+                var pngs = WorkerPngs(h.Writes);
+                pngs.Should().HaveCount(expected, "one PNG for each completed representative, before its input can change");
+                var png = pngs[^1];
+                var pixelSha = await decoder.InvokeAsync(() => Sha(WpfCodec.DecodePng(png, 1920L * 1920).Pixels), default);
+                var evidence = prepared ? encoded.ToArray()[expected - 1] : null;
+                var item = new OverlayCase(expected - 1, input, pixelSha, Sha(png), evidence?.LayerSha,
+                    evidence is null ? null : Sha(evidence.Bytes), evidence?.Input,
+                    evidence is null ? null : JsonSerializer.Serialize(new { evidence.Request.Generation, evidence.LayerSha,
+                        evidence.Request.Key.Rotation, evidence.Request.Key.Brightness, evidence.Request.Key.InternalRotation, evidence.Request.Key.SimplePng }), evidence?.At,
+                    prepared ? PreparedFacts(h) : null, prepared ? Preparer(h).Snapshot().ToString() : null);
+                cases.Add(item);
+                CaptureRepresentative(simple, prepared, pngs, cases, telemetry.Reads.ToArray());
+                if (evidence is not null)
+                {
+                    evidence.Input.Should().Be(telemetry.Current, "input is frozen from queue admission through encode and handover");
+                    evidence.Request.Assignment.Should().Be(h.Assignment);
+                    evidence.Request.Generation.Should().Be(PreparedFacts(h).Generation);
+                    png.Should().Equal(evidence.Bytes, "the wire must carry the output of this exact encoder request/stamp");
+                }
                 notes.Add(Facts(h).OverlayEncodingNote);
             }
         }
@@ -201,7 +251,64 @@ public sealed class PreparedOverlayWorkerTests(ITestOutputHelper output)
         var rows = h.Worker.Performance.SourceFrames!; // 72 completed pictures: two per representative input
         return new(WorkerPngs(h.Writes), notes,
             [.. h.Writes.Where(p => NativeWorkerHarness.Command(p) == TurzxVideoProtocol.DataCommand).Select(NativeWorkerHarness.Line)],
-            [.. rows.Select(r => r.OverlayEncodeMs)], prepared ? Preparer(h).Snapshot() : null);
+            [.. rows.Select(r => r.OverlayEncodeMs)], prepared ? Preparer(h).Snapshot() : null, cases);
+    }
+
+    private static async Task RepresentativeEncodedAsync(NativeWorkerHarness h, int expected)
+    {
+        await Wait.UntilAsync(() =>
+        {
+            var s = Preparer(h).Snapshot();
+            return s.Queued >= expected && s.Completed >= expected && !s.InFlight && !s.Pending
+                && (s.ResultHeld || s.Handed >= expected);
+        }, "this representative's request to be queued and its encode to complete");
+        var snapshot = Preparer(h).Snapshot();
+        (snapshot.Queued, snapshot.Completed, snapshot.Failed, snapshot.Poisoned).Should().Be(((long)expected, (long)expected, 0L, 0L));
+        PreparedFacts(h).LastQueuedStamp.Should().Be(expected);
+    }
+
+    private static void CaptureRepresentative(bool simple, bool prepared, List<byte[]> pngs, List<OverlayCase> cases, string[] reads)
+    {
+        if (Environment.GetEnvironmentVariable("S1B_CAPTURE_DIR") is not { Length: > 0 } root) return;
+        var directory = Path.Combine(root, $"representative-{(simple ? "none" : "wic")}-{(prepared ? "prepared" : "inline")}");
+        Directory.CreateDirectory(directory);
+        File.WriteAllText(Path.Combine(directory, "cases.json"), JsonSerializer.Serialize(new { Cases = cases, TelemetryReads = reads }, CaptureJson));
+        File.WriteAllBytes(Path.Combine(directory, $"{cases.Count - 1:D2}.png"), pngs[^1]);
+    }
+
+    [MediaFoundationFact]
+    public async Task Representative_readiness_cannot_mistake_an_old_idle_preparer_for_the_next_unqueued_case()
+    {
+        using var encoder = new OverlayEncoder();
+        using var entered = new ManualResetEventSlim(false);
+        using var release = new ManualResetEventSlim(false);
+        using var h = await StartAsync(Prepared("stamp-barrier"), encoder);
+        await CompletedSubmittedPicturesAsync(h);
+        await RepresentativeEncodedAsync(h, 1);
+        await PictureAsync(h);
+        PreparedFacts(h).LastSentStamp.Should().Be(1);
+        h.SetTelemetry(20);
+        h.Reply = (command, _, _) =>
+        {
+            if (command == TurzxVideoProtocol.DataCommand) { entered.Set(); release.Wait(TimeSpan.FromSeconds(30)); }
+            return null;
+        };
+        var picture = PictureAsync(h);
+        try
+        {
+            await Wait.UntilAsync(() => entered.IsSet, "the new picture is held before overlay request admission");
+            await IdleAsync(h); // deterministic counterexample: idle alone succeeds although request #2 does not exist
+            Preparer(h).Snapshot().Queued.Should().Be(1);
+            var next = RepresentativeEncodedAsync(h, 2);
+            next.IsCompleted.Should().BeFalse("the old idle result is not readiness of the new case");
+            release.Set();
+            await picture;
+            await next;
+            h.Reply = null;
+            await PictureAsync(h);
+            (PreparedFacts(h).LastSentStamp, Preparer(h).Snapshot().Handed).Should().Be((2L, 2L));
+        }
+        finally { release.Set(); }
     }
 
     private static double Median(IEnumerable<double> values)

@@ -198,7 +198,9 @@ internal static class CodexTestData
     }
 }
 
-[CollectionDefinition("Codex")]
+// Presentation tests share this fixture and execute real WPF/STA artwork under its unchanged five-second bound.
+// Keep the entire collection exclusive, including against the separately exclusive Host collection.
+[CollectionDefinition("Codex", DisableParallelization = true)]
 public sealed class CodexTestCollectionDefinition : ICollectionFixture<CodexTestDirectoryFixture> { }
 
 public sealed class CodexTestDirectoryFixture : IDisposable

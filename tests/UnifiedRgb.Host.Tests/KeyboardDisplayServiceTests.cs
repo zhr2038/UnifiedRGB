@@ -11,6 +11,8 @@ using UnifiedRgb.Transports.Hid;
 
 namespace UnifiedRgb.Host.Tests;
 
+// All partials share the real status/entry-logo rendering path; isolate them from parallel font/WPF initialization.
+[Collection("Host")]
 public sealed partial class KeyboardDisplayServiceTests : IDisposable
 {
     private readonly string _directory = Path.Combine(Path.GetTempPath(), "UnifiedRgb-OledTest-" + Guid.NewGuid().ToString("N"));
