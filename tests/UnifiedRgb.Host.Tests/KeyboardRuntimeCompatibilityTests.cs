@@ -177,8 +177,17 @@ public sealed partial class KeyboardRuntimeCompatibilityTests : IDisposable
         try
         {
             await WaitAsync(service, "Error"); await Task.Delay(700);
-            factory.Devices.Should().ContainSingle("a refused recovery is sticky and never reopens in a loop");
-            factory.Devices[0].Mutations.Should().Be(0);
+            if (fault is "profile" or "schema1-mismatch")
+            {
+                factory.Devices.Should().ContainSingle("only the recorded live profile/brightness check requires opening a device");
+                factory.Devices[0].Mutations.Should().Be(0);
+            }
+            else
+            {
+                factory.Anchors.Should().BeEmpty("invalid recorded identity/transport is rejected before opening any HID route");
+                factory.Devices.Should().BeEmpty();
+            }
+            (await service.GetKeyboardDisplayStatusAsync()).LastError.Should().NotBeNullOrEmpty();
         }
         finally { await service.StopAsync(default); }
         File.ReadAllBytes(JournalPath).Should().Equal(bytes);

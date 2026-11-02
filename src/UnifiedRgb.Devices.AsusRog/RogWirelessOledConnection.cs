@@ -68,6 +68,16 @@ public sealed class RogWirelessOledConnection : IRogOledConnection
     public string ConnectionKind => "wireless";
     public int PixelPayloadCapacity => 59;
     public bool SameDevice() => _sameDevice();
+    /// <summary>Optional positive absence probe set by the factory; unknown/custom connections default to false.</summary>
+    public Func<bool>? RouteAbsentProbe { get; init; }
+    public bool PhysicalRouteAbsent
+    {
+        get
+        {
+            try { return RouteAbsentProbe?.Invoke() == true; }
+            catch (Exception ex) when (ex is not OutOfMemoryException) { return false; }
+        }
+    }
 
     /// <summary>First receiver+keyboard identity accepted on this connection (diagnostic); null before the first accepted reply.</summary>
     public string? ObservedFirmwareHeader { get { lock (_state) return _observed is null ? null : Convert.ToHexString(_observed); } }
@@ -549,7 +559,7 @@ public sealed class RogWirelessOledConnection : IRogOledConnection
                  ? new RogOledEnvelopeRefusedException("Wireless OLED negative envelope; " + detail, ex)
              : ex is RogOledUnexpectedReplyException
                  ? new RogOledUnexpectedReplyException("Wireless OLED unexpected protocol reply; " + detail, ex)
-            : ex is RogOledConnectionLostException || ex is IOException && Disappeared()
+            : ex is RogOledConnectionLostException || ex is IOException && PhysicalRouteAbsent
                 ? new RogOledConnectionLostException("Pinned wireless keyboard/receiver interface disappeared or ended; " + detail, ex)
                 : ex is InvalidDataException ? new InvalidDataException("Wireless OLED protocol response invalid; " + detail, ex)
                 : new IOException("Wireless OLED I/O outcome is unknown; " + detail, ex);
@@ -561,12 +571,6 @@ public sealed class RogWirelessOledConnection : IRogOledConnection
     private static void RequireNotEof(int length)
     {
         if (length == 0) throw new RogOledConnectionLostException("Wireless keyboard OLED stream ended.", new EndOfStreamException());
-    }
-
-    private bool Disappeared()
-    {
-        try { return !_sameDevice(); }
-        catch (Exception ex) when (ex is not OutOfMemoryException) { return false; }
     }
 
     private static byte[] ToWireless(byte[] wired)
@@ -620,9 +624,13 @@ public sealed class RogWirelessOledFactory : IRogWirelessOledFactory
                 ?? throw new InvalidDataException("Pinned receiver does not currently name the verified Azoth X route.");
         }
         finally { session.DisposeAsync().AsTask().GetAwaiter().GetResult(); }
-        var channel = WinHidReportDevices.OpenExclusiveWriter(receiver.Channels[keyboard.ReportId]);
+        var capturedControl = receiver.Channels[keyboard.ReportId];
+        var channel = WinHidReportDevices.OpenExclusiveWriter(capturedControl);
         return new(receiver, channel, label, () => RogReceiver.Discover(devices).Any(r => r.ProductId == 0x1ACE
             && string.Equals(r.Key, receiverKey, StringComparison.OrdinalIgnoreCase) && r.Channels.ContainsKey(keyboard.ReportId)))
-        { NativeControlBinding = new(receiver.Channels.Values.ToArray(), keyboard, pairingTimestamp), EvidenceTime = _time };
+        {
+            NativeControlBinding = new(receiver.Channels.Values.ToArray(), keyboard, pairingTimestamp), EvidenceTime = _time,
+            RouteAbsentProbe = () => RogHidRoutePresence.Probe(devices, 0x0B05, 0x1ACE, capturedControl.Path),
+        };
     }
 }

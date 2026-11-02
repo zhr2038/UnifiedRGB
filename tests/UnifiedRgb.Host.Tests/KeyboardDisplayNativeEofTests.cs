@@ -89,7 +89,10 @@ public sealed partial class KeyboardDisplayServiceTests
             Opens++; Headers.Add(firmwareHeader);
             var channel = new NativeCapEofChannel(Opens == 1, removeFirst, () => { journalAtEof(); FirstCapEof.TrySetResult(); });
             Channels.Add(channel);
-            return new(channel, () => channel.Present, () => deviceKey, () => firmwareHeader);
+            return new(channel, () => channel.Present, () => deviceKey, () => firmwareHeader)
+            {
+                RouteAbsentProbe = () => !channel.Present, // The fixture clears Present only for its explicit remove-on-EOF event.
+            };
         }
     }
 

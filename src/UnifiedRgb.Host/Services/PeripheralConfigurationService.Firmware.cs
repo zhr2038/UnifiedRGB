@@ -53,6 +53,7 @@ public sealed partial class PeripheralConfigurationService : IFirmwareMaintenanc
                 {
                     _marker.Save(); // failure NEVER re-enables acquisition
                     await ObserveReleaseAsync().ConfigureAwait(false); // existing release joins both keyboard and mouse owners
+                    if (KeyboardRecoveryJournals.Any(_journalPath)) throw new IOException("Keyboard recovery obligations remain; firmware handoff is not Ready.");
                     Publish(new(true, "Ready", "Owned firmware lease: all ROG sessions released and joined.", true,
                         DateTimeOffset.UtcNow, null, FirmwareIntent(jobId, PeripheralMaintenanceLeaseStates.Active)));
                 }
@@ -89,7 +90,7 @@ public sealed partial class PeripheralConfigurationService : IFirmwareMaintenanc
             ct.ThrowIfCancellationRequested();
             var lease = _firmwareLease ?? throw new InvalidOperationException("Firmware lease not initialized");
             if (!_leaseKnownInThisProcess || Volatile.Read(ref _status) is not { ConfigurationMode: true, InterfacesReleased: true } ||
-                _releaseInFlight is not null || File.Exists(_journalPath))
+                _releaseInFlight is not null || KeyboardRecoveryJournals.Any(_journalPath))
                 throw new InvalidOperationException("Release/session outcome unknown; scoped finish denied");
             await lease.FinishUnderHostGateAsync(jobId, knownWireClosed, freshNormal, async () =>
             {

@@ -43,6 +43,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Protected firmware runtime checks failed' }
       - name: Test
         # Real-clock performance is a separate required quiet step below, not skipped or given a weaker threshold.
+        env:
+          S1B_CAPTURE_DIR: ${{ github.workspace }}/TestResults/NativeTranscript
+          BAKE_CAPTURE_DIR: ${{ github.workspace }}/TestResults/BakeTranscript
         run: dotnet test src/UnifiedRgb.sln -c Release --no-build -m:1 --filter 'FullyQualifiedName!~UnifiedRgb.Core.Tests.ClockTests' --blame-hang-timeout 90s --blame-hang-dump-type none --logger trx --results-directory TestResults
       - name: Quiet real-clock benchmark (unchanged 2 ms gate)
         shell: pwsh

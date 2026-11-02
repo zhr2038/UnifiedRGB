@@ -44,6 +44,7 @@ public sealed class RogNativeMenuSource(KeyboardNativeMenuOptions options, IHidI
         && (capability.Mode == RogNativeMenuCodec.NativeMode ? ControlsRequested : Volatile.Read(ref _codexRequested) != 0);
     internal long RequestRevision => Interlocked.Read(ref _requestRevision);
     internal IReadOnlyList<KeyboardNativeMenuOptions> QualifiedRoutes => _routes;
+    internal bool OwnerDetached => Volatile.Read(ref _actor) is null;
     internal bool AcceptsScope(string key, string header, string kind) => _routes.Any(route => route.MatchesScope(key, header, kind));
 
     public IDisposable Connect(Action<NativeMenuSourceEvent> deliver)
@@ -139,6 +140,7 @@ public sealed class RogNativeMenuSource(KeyboardNativeMenuOptions options, IHidI
         private long _observedRequestRevision = -1;
         internal long ReceivedNotifications => Interlocked.Read(ref _receivedNotifications);
         internal Action<byte>? PageObserved { get; set; }
+        internal Action? BeforeOperation { get; set; }
         internal bool IsCodexContext { get { lock (_sync) return _state.Scope?.Mode == RogNativeMenuCodec.CodexMode; } }
 
         internal Actor(RogNativeMenuSource source, IRogOledConnection connection)
@@ -343,6 +345,9 @@ public sealed class RogNativeMenuSource(KeyboardNativeMenuOptions options, IHidI
                         LatchUnknown(ex, "native renewal failed"); throw;
                     }
                     if (!_source.PageRequested(capability) || _retired) { await LeaveAsync("admission closed after native renewal", ct).ConfigureAwait(false); return false; }
+                    if (_sent is null && capability.Mode == RogNativeMenuCodec.CodexMode)
+                        Serilog.Log.Information("Codex native frame committed: transport={Transport}, pixelBytes={PixelBytes}, chunks={Chunks}; communication confirmation only",
+                            _kind, pixels.Length, (pixels.Length + _capacity - 1) / _capacity);
                     _sent = (byte[])pixels.Clone();
                 }
                 return ArtworkActive;
@@ -583,7 +588,11 @@ public sealed class RogNativeMenuSource(KeyboardNativeMenuOptions options, IHidI
                 {
                     // Pure display selection only. The normal frame provider observes it after Drain on this same step;
                     // no case action, launch, wire transaction or alternate keyboard owner is introduced here.
-                    try { callback(navigation.Direction); }
+                    try
+                    {
+                        callback(navigation.Direction);
+                        Serilog.Log.Information("Codex task navigation accepted: transport={Transport}, direction={Direction}", _kind, navigation.Direction);
+                    }
                     catch (Exception ex) when (ex is not OutOfMemoryException)
                     { Serilog.Log.Warning("Codex task browse callback failed: {ExceptionType}", ex.GetType().Name); }
                 }
@@ -792,7 +801,17 @@ public sealed class RogNativeMenuSource(KeyboardNativeMenuOptions options, IHidI
 
         private void RequireConnection()
         {
-            if (!_connection.SameDevice() || _connection.DeviceKey != _key || _connection.FirmwareHeader != _firmware
+            BeforeOperation?.Invoke();
+            if (!_connection.SameDevice())
+            {
+                PhysicalScopeLost = true;
+                Retire("physical connection scope changed", true);
+                if (_connection.PhysicalRouteAbsent)
+                    throw new RogOledConnectionLostException("Pinned native keyboard transport disappeared; old scope will not be replayed.",
+                        new IOException("The existing owner's exact physical route is absent."));
+                throw new InvalidDataException("Native physical identity changed or its metadata is unavailable; absence was not proven; no automatic route replay.");
+            }
+            if (_connection.DeviceKey != _key || _connection.FirmwareHeader != _firmware
                 || _connection.ConnectionKind != _kind || _connection.PixelPayloadCapacity != _capacity)
             {
                 PhysicalScopeLost = true;

@@ -11,7 +11,7 @@ using UnifiedRgb.Screens.Runtime;
 namespace UnifiedRgb.Host.Services;
 
 /// <summary>Host-owned keyboard display, independent of the case-screen sleep set and UI process lifetime.</summary>
-public sealed class KeyboardDisplayService : BackgroundService, IKeyboardDisplayService
+public sealed partial class KeyboardDisplayService : BackgroundService, IKeyboardDisplayService
 {
     private readonly UnifiedRgbOptions _options;
     private readonly IRgbService _rgb;
@@ -32,6 +32,7 @@ public sealed class KeyboardDisplayService : BackgroundService, IKeyboardDisplay
     private readonly Func<byte[]?>? _idleFrame;
     private readonly Func<KeyboardCodexUsageDto>? _codexStatus;
     private readonly Func<bool, CancellationToken, KeyboardCodexUsageDto>? _setCodexEnabled;
+    private readonly Func<string, bool> _wiredRoutePresent;
     private byte[]? _entryLogo;
     private KeyboardNativePresentation? _presentation; // the running owner session's declared native presentation (volatile)
     private readonly object _gate = new();
@@ -41,6 +42,7 @@ public sealed class KeyboardDisplayService : BackgroundService, IKeyboardDisplay
     private volatile bool _enabled;
     private CancellationTokenSource? _sessionStop;
     private Task? _activeSession;
+    private IRogOledConnection? _routeRecoveryOnly;
     private TaskCompletionSource<KeyboardResumeResult>? _resumeCompletion;
     // Fresh-owner attempts after an RF keyboard was not ready at startup; reset by a successful startup or an explicit request.
     private const int ColdStartRetries = 3;
@@ -75,10 +77,12 @@ public sealed class KeyboardDisplayService : BackgroundService, IKeyboardDisplay
         Func<byte[], byte[]>? nativeFrameOverlay = null, Action<byte[]>? nativeFrameAcknowledged = null,
         Func<long>? nativeFrameOverlayRevision = null, IClock? masterClock = null, Func<string, int?>? sceneLoopDurationMs = null,
         Func<byte[]?>? idleFrame = null, Func<KeyboardCodexUsageDto>? codexStatus = null,
-        Func<bool, CancellationToken, KeyboardCodexUsageDto>? setCodexEnabled = null)
+        Func<bool, CancellationToken, KeyboardCodexUsageDto>? setCodexEnabled = null,
+        Func<string, bool>? wiredRoutePresent = null)
     {
         _options = options; _rgb = rgb; _screens = screens; _factory = factory; _guard = guard;
         _idleFrame = idleFrame; _codexStatus = codexStatus; _setCodexEnabled = setCodexEnabled;
+        _wiredRoutePresent = wiredRoutePresent ?? ExactWiredPresent;
         _wirelessFactory = wirelessFactory;
         _configurationGate = configurationGate;
         _nativeMenu = nativeMenu;
@@ -293,12 +297,18 @@ public sealed class KeyboardDisplayService : BackgroundService, IKeyboardDisplay
             using (sessionStop)
             {
                 var sessionDone = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                IRogOledConnection? acquiredConnection = null;
                 try
                 {
                     if (_configurationGate?.RogAcquisitionAllowed == false && _configurationGate.FreshResumeAllowed == false)
                     {
                         if (Volatile.Read(ref _status).LastError is null) Publish("Stopped", "ROG interfaces are released for peripheral configuration");
                         await Task.Delay(500, sessionStop.Token).ConfigureAwait(false); continue;
+                    }
+                    if (faulted && RetiredRouteChangeProven())
+                    {
+                        faulted = false;
+                        Publish("Connecting", "已确认旧接口移除或新的有线接口就绪；保留恢复记录，正在接入键盘当前连接方式");
                     }
                     if ((!_enabled && !_options.KeyboardDisplay.HasVerifiedLightingRoute && _nativeMenu?.Requested != true) || faulted)
                     {
@@ -310,6 +320,7 @@ public sealed class KeyboardDisplayService : BackgroundService, IKeyboardDisplay
                     if (verdict.State != GuardState.Clear) throw new InvalidOperationException("Keyboard display blocked by an existing lighting writer.");
                     lock (_gate) _activeSession = sessionDone.Task;
                     var connection = await OpenConnectionAsync(sessionStop.Token).ConfigureAwait(false);
+                    acquiredConnection = connection;
                     if (connection is null)
                     {
                         sessionDone.TrySetResult();
@@ -317,9 +328,36 @@ public sealed class KeyboardDisplayService : BackgroundService, IKeyboardDisplay
                         Publish(_enabled ? "Waiting" : "Stopped", _enabled ? "等待已绑定键盘的 USB 或 2.4G 无线连接" : "键盘状态屏已关闭；等待已绑定灯光连接");
                         await Task.Delay(5000, sessionStop.Token).ConfigureAwait(false); continue;
                     }
+                    if (ReferenceEquals(Interlocked.Exchange(ref _routeRecoveryOnly, null), connection))
+                    {
+                        var expectedRecovery = ReadBytes(_journalPath);
+                        var peerUnavailable = false;
+                        using (connection)
+                        {
+                            try { await RunSessionAsync(connection, sessionStop.Token, recoveryOnly: true, expectedJournal: expectedRecovery).ConfigureAwait(false); }
+                            catch (RogKeyboardNotReadyException)
+                            {
+                                // This typed snapshot outcome is raised before settings/output. Receiver presence alone
+                                // does not mean its keyboard is still on RF after a physical switch to USB.
+                                peerUnavailable = true;
+                            }
+                        }
+                        if (peerUnavailable)
+                        {
+                            if (!ReadBytes(_journalPath).AsSpan().SequenceEqual(expectedRecovery)) throw MissingRecoveryScope();
+                            var prior = ReadRecoveryForRoute(_journalPath, deferred: false);
+                            if (prior.Schema != 2 || !SameRecoveryRoute(prior, connection)) throw MissingRecoveryScope();
+                            TransferRecovery(_journalPath, DeferredPath(RecoveryKind(prior)));
+                        }
+                        continue; // restore-only owner is disposed before the selected current route is reacquired
+                    }
                     await RunOwnerWithObservationRecoveryAsync(connection, sessionStop.Token).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) when (sessionStop.IsCancellationRequested) { }
+                catch (KeyboardTransportChangedException)
+                {
+                    Publish("Connecting", "已检测到绑定键盘的 USB 连接；旧无线会话已关闭，正在接入有线并重新协商原生页面");
+                }
                 catch (RogOledConnectionLostException ex)
                 {
                     CompleteResume(new KeyboardResumeResult(true, ex));
@@ -330,6 +368,7 @@ public sealed class KeyboardDisplayService : BackgroundService, IKeyboardDisplay
                 }
                 catch (RogOledTimeoutException ex)
                 {
+                    RememberRetiredRouteFault(acquiredConnection);
                     CompleteResume(new KeyboardResumeResult(true, ex));
                     // Recovery was already bounded by RunSessionAsync. An ambiguous ACK must not start an upload retry loop.
                     faulted = true;
@@ -354,6 +393,7 @@ public sealed class KeyboardDisplayService : BackgroundService, IKeyboardDisplay
                 }
                 catch (Exception ex) when (ex is not OutOfMemoryException)
                 {
+                    RememberRetiredRouteFault(acquiredConnection);
                     CompleteResume(new KeyboardResumeResult(true, ex));
                     faulted = true; Publish("Error", ex is RecoveryScopeException scope ? scope.UserDetail
                         : ex is RogKeyboardNotReadyException ? "2.4G 键盘多次未就绪；未写入任何设置，唤醒键盘后关闭再开启"
@@ -361,6 +401,13 @@ public sealed class KeyboardDisplayService : BackgroundService, IKeyboardDisplay
                 }
                 finally
                 {
+                    // Acquisition can fail before RunOwner enters its using scope; every captured handle must still close.
+                    try { acquiredConnection?.Dispose(); }
+                    catch (Exception ex) when (ex is not OutOfMemoryException)
+                    {
+                        _retiredRouteFault = null;
+                        Publish("Error", "旧键盘会话关闭未完成；保留恢复记录，停止自动接管", error: ex.GetType().Name);
+                    }
                     lock (_gate)
                     {
                         if (ReferenceEquals(_sessionStop, sessionStop)) _sessionStop = null;
@@ -517,6 +564,56 @@ public sealed class KeyboardDisplayService : BackgroundService, IKeyboardDisplay
     /// <summary>The existing OLED owner selects one exact configured transport; native control borrows that same connection.</summary>
     internal IRogOledConnection? SelectConnection()
     {
+        RequireNativeOwnerDetached();
+        ValidateDeferredRecovery();
+        if (File.Exists(_journalPath))
+        {
+            var prior = ReadRecoveryForRoute(_journalPath, deferred: false);
+            var selected = SelectFreshConnection();
+            if (selected is null) return null;
+            if (SameRecoveryRoute(prior, selected)) return selected;
+            if (RecoveryKind(prior) == "wireless" && IsKnownAvailableWiredRoute(selected))
+            {
+                // This is a fresh-owner boundary: the previous RF actor/input/lighting have already joined. The exact
+                // USB keyboard is now present, while a still-present receiver is not proof its keyboard remains on RF.
+                // Preserve that RF obligation without opening/querying it; USB restores only its own scoped record.
+                try
+                {
+                    if (prior.Schema != 2) throw MissingRecoveryScope();
+                    TransferRecovery(_journalPath, DeferredPath("wireless"));
+                    ActivateDeferredRecovery(selected);
+                    return selected;
+                }
+                catch { selected.Dispose(); throw; }
+            }
+            selected.Dispose();
+            // A speculative current-route handle is closed before opening the restoration owner. Never borrow both.
+            var recorded = OpenRecordedConnection(prior);
+            if (recorded is not null)
+            {
+                Volatile.Write(ref _routeRecoveryOnly, recorded);
+                return recorded;
+            }
+            // Only a factory's positive absence result permits deferral. Failed opens/replies never reach this branch.
+            if (prior.Schema != 2) throw MissingRecoveryScope();
+            TransferRecovery(_journalPath, DeferredPath(RecoveryKind(prior)));
+            selected = SelectFreshConnection();
+            if (selected is null) return null;
+            try
+            {
+                ActivateDeferredRecovery(selected);
+                return selected;
+            }
+            catch { selected.Dispose(); throw; }
+        }
+        var fresh = SelectFreshConnection();
+        if (fresh is null) return null;
+        try { ActivateDeferredRecovery(fresh); return fresh; }
+        catch { fresh.Dispose(); throw; }
+    }
+
+    private IRogOledConnection? SelectFreshConnection()
+    {
         if (_nativeMenu?.Requested == true)
         {
             foreach (var native in _nativeMenu.QualifiedRoutes)
@@ -553,17 +650,27 @@ public sealed class KeyboardDisplayService : BackgroundService, IKeyboardDisplay
         }
         stop?.Cancel();
         if (active is not null) await active.WaitAsync(ct).ConfigureAwait(false);
-        if (!File.Exists(_journalPath)) return;
-        if (active is not null) throw new IOException("Keyboard original settings remain unrecovered; journal retained and no restoration retry was made.");
-        var prior = Read<RecoveryRecord>(_journalPath);
-        using (var connection = OpenRecordedConnection(prior)
-            ?? throw new IOException("The exact recorded keyboard transport is absent; original settings remain unrecovered and the journal is retained."))
+        ValidateDeferredRecovery();
+        if (active is not null && File.Exists(_journalPath))
+            throw new IOException("Keyboard original settings remain unrecovered; journal retained and no restoration retry was made.");
+        // Deferred transport records are still recovery obligations. Maintenance cannot claim Ready or erase them
+        // merely because another route was connected more recently.
+        foreach (var path in KeyboardRecoveryJournals.Paths(_journalPath))
+        {
+            ct.ThrowIfCancellationRequested();
+            if (!File.Exists(path)) continue;
+            var prior = ReadRecoveryForRoute(path, deferred: path != _journalPath);
+            using var connection = OpenRecordedConnection(prior)
+                ?? throw new IOException($"The recorded {RecoveryKind(prior)} keyboard transport is absent; recovery is deferred and its exact journal is retained.");
+            if (path != _journalPath) TransferRecovery(path, _journalPath);
             await RunSessionAsync(connection, ct, recoveryOnly: true).ConfigureAwait(false);
-        if (File.Exists(_journalPath)) throw new IOException("Recorded-transport keyboard recovery was not verified; journal retained.");
+            if (File.Exists(_journalPath)) throw new IOException("Recorded-transport keyboard recovery was not verified; journal retained.");
+        }
     }
 
     private IRogOledConnection? OpenRecordedConnection(RecoveryRecord prior)
     {
+        RequireNativeOwnerDetached();
         IRogOledConnection? connection;
         var native = _nativeMenu?.QualifiedRoutes.FirstOrDefault(route => prior.DeviceKey == route.DeviceKey
             && SameProtocol(prior.FirmwareHeader, route.RouteAnchor));
@@ -583,6 +690,12 @@ public sealed class KeyboardDisplayService : BackgroundService, IKeyboardDisplay
             throw new RecoveryScopeException("Recovery journal does not match a verified configured transport; journal retained.",
                 "恢复记录与已验证的有线或无线传输不匹配；已保留，未替换或猜测设备");
         return connection;
+    }
+
+    private void RequireNativeOwnerDetached()
+    {
+        if (_nativeMenu?.OwnerDetached == false)
+            throw new IOException("Previous native keyboard owner has not detached; no control factory or receiver pairing query may run.");
     }
 
     public async Task ResumeAfterPeripheralConfigurationAsync(CancellationToken ct)
@@ -619,8 +732,26 @@ public sealed class KeyboardDisplayService : BackgroundService, IKeyboardDisplay
     private async Task RunSessionAsync(IRogOledConnection connection, CancellationToken ct, bool recoveryOnly = false,
         byte[]? expectedJournal = null, Action? recoveryVerified = null)
     {
-        var session = new RogWiredOledSession(connection);
+        var routeSwitch = connection.ConnectionKind == "wireless" && WiredSwitchKey is { } wiredKey
+            ? new KeyboardTransportSwitch(_time, () => CanSwitchToKnownWired(wiredKey)) : null;
+        long? lastWiredRouteCheck = null;
+        void CheckRoute()
+        {
+            routeSwitch?.Check();
+            if (connection.ConnectionKind != "wired") return;
+            var now = _time.GetTimestamp();
+            if (lastWiredRouteCheck is { } prior && _time.GetElapsedTime(prior, now) < TimeSpan.FromMilliseconds(100)) return;
+            lastWiredRouteCheck = now;
+            if (connection.SameDevice()) return;
+            if (connection.PhysicalRouteAbsent)
+                throw new RogOledConnectionLostException("The original USB route is confirmed absent; retire its actor before selecting RF.",
+                    new IOException("The exact original HID path is no longer enumerated."));
+            throw new InvalidDataException("USB physical identity or metadata changed without positive absence proof; no automatic reacquisition.");
+        }
+        Action checkRoute = CheckRoute;
+        var session = new RogWiredOledSession(connection) { BeforeOperation = checkRoute };
         await using var nativeMenu = _nativeMenu?.Attach(connection);
+        if (nativeMenu is not null) nativeMenu.BeforeOperation = checkRoute;
         if (nativeMenu is not null) nativeMenu.PageObserved = _codexEntry.Observe;
         using var monitorStop = CancellationTokenSource.CreateLinkedTokenSource(ct);
         Task? monitor = null;
@@ -772,7 +903,7 @@ public sealed class KeyboardDisplayService : BackgroundService, IKeyboardDisplay
                             Publish(current.State, InactiveDisplayDetail, session);
                         return artwork;
                     },
-                nativeWake: nativeMenu is null ? null : () => nativeMenu.HasChanges,
+                nativeWake: () => { checkRoute?.Invoke(); return nativeMenu?.HasChanges == true; },
                 // RunSession's finally is the sole native teardown owner: it preserves a typed read fault and can retire
                 // without touching the poisoned wire. A nested Stop here would replace that primary failure first.
                 nativeStopped: null,
@@ -780,7 +911,14 @@ public sealed class KeyboardDisplayService : BackgroundService, IKeyboardDisplay
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
-            failure = ex; failedAt = _time.GetTimestamp();
+            // A different exact configured route is a new acquisition intent, not a retry of this RF command.
+            // Even if USB enumeration followed an in-flight RF failure, no old-route cleanup or packet is replayed.
+            failure = !ct.IsCancellationRequested && routeSwitch?.Observe(force: true) == true
+                ? ex as KeyboardTransportChangedException ?? new KeyboardTransportChangedException(ex) : ex;
+            if (!ct.IsCancellationRequested && failure is not KeyboardTransportChangedException && connection.PhysicalRouteAbsent)
+                failure = ex as RogOledConnectionLostException ?? new RogOledConnectionLostException(
+                    "The original keyboard HID route is confirmed absent; retain its recovery record and acquire a fresh configured route.", ex);
+            failedAt = _time.GetTimestamp();
             if (ex is RogReadOnlyObservationException or RogNativeArtworkUploadRefusedException)
             {
                 // Healthy same-session changes are legitimate. Freeze the LATEST intent at the classified fault; any
@@ -793,6 +931,7 @@ public sealed class KeyboardDisplayService : BackgroundService, IKeyboardDisplay
         {
             // Eligibility is captured BEFORE stopping native input; never reinterpret a native/physical/join fault as a poll failure.
             var classifiedObservation = failure is RogReadOnlyObservationException or RogNativeArtworkUploadRefusedException;
+            var transportChanged = failure is KeyboardTransportChangedException;
             var samePhysical = false;
             if (classifiedObservation)
             {
@@ -806,11 +945,15 @@ public sealed class KeyboardDisplayService : BackgroundService, IKeyboardDisplay
             {
                 try
                 {
-                    if (observation) await nativeMenu.RetireAfterRecoverableFaultAsync(CancellationToken.None).ConfigureAwait(false);
+                    if (observation || transportChanged) await nativeMenu.RetireAfterRecoverableFaultAsync(CancellationToken.None).ConfigureAwait(false);
                     else await nativeMenu.StopAsync(CancellationToken.None).ConfigureAwait(false);
                 }
                 catch (Exception ex) when (ex is not OutOfMemoryException)
-                { failure = observation ? new AggregateException("Classified owner retirement failed; automatic replacement refused.", failure!, ex) : failure ?? ex; }
+                {
+                    failure = failure is null
+                        ? new AggregateException("Owner retirement failed; automatic replacement refused.", ex)
+                        : new AggregateException("Owner retirement failed; automatic replacement refused.", failure, ex);
+                }
             }
             observationRetired = observation && failure is RogReadOnlyObservationException or RogNativeArtworkUploadRefusedException
                 && nativeMenu?.RecoveryBlocked != true;
@@ -818,9 +961,9 @@ public sealed class KeyboardDisplayService : BackgroundService, IKeyboardDisplay
             if (monitor is not null) await monitor.ConfigureAwait(false);
             if (lighting is not null) _lighting.Detach(lighting);
             var errors = new List<Exception>();
-            confirmedRemoval = failure is RogOledConnectionLostException && !connection.SameDevice();
+            confirmedRemoval = failure is RogOledConnectionLostException && connection.PhysicalRouteAbsent;
             // Native faults suppress unsafe cleanup; they do not prove removal or authorize an automatic new owner.
-            var recoveryBlocked = confirmedRemoval || nativeMenu?.RecoveryBlocked == true || classifiedObservation;
+            var recoveryBlocked = transportChanged || confirmedRemoval || nativeMenu?.RecoveryBlocked == true || classifiedObservation;
             if (!recoveryComplete && !recoveryBlocked && session.LightingTouched && session.OriginalLighting is { } native && session.OriginalStaticBank is { } bank)
             {
                 try { using var recovery = new CancellationTokenSource(TimeSpan.FromSeconds(5)); await session.RestoreLightingAsync(native, bank, recovery.Token).ConfigureAwait(false); }

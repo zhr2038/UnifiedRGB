@@ -1,5 +1,4 @@
 using System.Globalization;
-using System.Security.Cryptography;
 using System.Text.Json;
 using UnifiedRgb.Contracts;
 using UnifiedRgb.Contracts.Dto;
@@ -24,7 +23,6 @@ namespace UnifiedRgb.Screens.Tests;
 public sealed class BakeTelemetryTests
 {
     private static readonly JsonSerializerOptions Web = ContractsJson.Configure(new JsonSerializerOptions());
-    private const string PinnedDefaultTranscriptSha = "4C8C54D3E0275152AE763FFC3AE099DF56AE10BF30DD1B37EF72178379313AE3"; // NativeVideoDefaultOffTests
     internal const string BakedNote = "telemetry composited before encoding (BakeTelemetry trial; 2 s telemetry sample; no PNG overlay)";
 
     private static int _pictures;
@@ -133,16 +131,18 @@ public sealed class BakeTelemetryTests
     [InlineData(true)]
     public async Task A_false_flag_is_inert_and_a_baked_transcript_has_no_worker_png(bool bake)
     {
+        // Keep every encoded byte/header/selection/counter equal on this OS. A desktop's WIC/font/MF output hash
+        // is not a portable reference for a different Windows build or the encoder's chosen slice implementation.
+        var omitted = await NativeVideoDefaultOffTests.TranscriptAsync(null);
         var text = await NativeVideoDefaultOffTests.TranscriptAsync(t => t with { BakeTelemetry = bake });
         Capture($"transcript-bake-{bake}.txt", text);
-        var sha = Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(text)));
         if (!bake)
         {
-            sha.Should().Be(PinnedDefaultTranscriptSha, "an explicit false flag is the pre-S1b default byte for byte");
+            text.Should().Be(omitted, "an explicit false flag preserves this platform's complete default wire transcript byte for byte");
             return;
         }
 
-        sha.Should().NotBe(PinnedDefaultTranscriptSha);
+        text.Should().NotBe(omitted);
         var lines = text.Split('\n');
         var start = Array.FindIndex(lines, l => l.StartsWith("15 ", StringComparison.Ordinal)); // Begin's cadence control
         var end = Array.IndexOf(lines, "# trial ended");

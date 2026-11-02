@@ -407,7 +407,8 @@ public sealed partial class KeyboardDisplayServiceTests : IDisposable
         await service.StartAsync(default);
         try
         {
-            await WaitAsync(service, "Error"); wireless.Channels.Single().Inner.Mutations.Should().Be(0);
+            await WaitAsync(service, "Error"); wireless.Opens.Should().Be(0);
+            wireless.Channels.Should().BeEmpty("an unknown recovery identity is rejected before opening any alternate route");
             File.ReadAllBytes(path).Should().Equal(bytes);
         }
         finally { await service.StopAsync(default); }
@@ -867,7 +868,7 @@ public sealed partial class KeyboardDisplayServiceTests : IDisposable
             if (OpenFailure is not null) throw OpenFailure;
             if (!Available) return null;
             if (Opens > 1) Io = Io.Reopen();
-            return new(Io, () => true, () => key, () => "001200000024000100");
+            return new(Io, () => Available, () => key, () => "001200000024000100") { RouteAbsentProbe = () => !Available };
         }
     }
 
@@ -889,7 +890,12 @@ public sealed partial class KeyboardDisplayServiceTests : IDisposable
             io.Inner.ProfileToken = Opens > 1 ? ReconnectProfile : (byte)6;
             io.Inner.StallFirstBegin = TimeoutFirstBegin && Opens == 1;
             io.Inner.EofFirstBegin = EofFirstBegin && Opens == 1; Prepare?.Invoke(Opens, io.Inner); Channels.Add(io);
-            return new(new RogReceiver(receiverKey, 0x1ACE, new Dictionary<byte, HidCollectionInfo>()), io, firmwareHeader, () => io.Present);
+            return new(new RogReceiver(receiverKey, 0x1ACE, new Dictionary<byte, HidCollectionInfo>()), io, firmwareHeader, () => io.Present)
+            {
+                // Present is cleared only by this fixture's explicit physical-removal event. Identity disagreement or
+                // an EOF with a still-present route must retain the production default of no positive absence proof.
+                RouteAbsentProbe = () => !io.Present,
+            };
         }
     }
 
@@ -949,6 +955,7 @@ public sealed partial class KeyboardDisplayServiceTests : IDisposable
         public bool StallFirstBegin { get; set; }
         public bool EofFirstBegin { get; set; }
         public bool FailRestoreBrightness { get; set; }
+        public bool Removed { get; set; }
         private bool _eofNextRead;
         public int BeginPackets { get; private set; }
         public int Data { get; private set; }
@@ -972,6 +979,7 @@ public sealed partial class KeyboardDisplayServiceTests : IDisposable
         };
         public ValueTask WriteAsync(ReadOnlyMemory<byte> request, CancellationToken ct)
         {
+            if (Removed) throw new IOException("Test USB interface positively removed.");
             ct.ThrowIfCancellationRequested(); var p = request.ToArray(); var b = new byte[65]; p.AsSpan(0, 5).CopyTo(b);
             switch (p[1], p[2])
             {

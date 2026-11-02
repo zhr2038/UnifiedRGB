@@ -23,6 +23,8 @@ public sealed class RogWiredOledSession(IRogOledConnection connection)
     private bool _identityAccepted;
     private byte? _softwareControl;
     private bool _keyOutputActive;
+    /// <summary>Optional owner route guard; called only at joined actor boundaries before admitting the next operation.</summary>
+    public Action? BeforeOperation { get; init; }
 
     // Retain the actor's fake-only delay seam; spacing belongs to the real RF connection, wired remains strict/unpaced.
     internal Func<TimeSpan, CancellationToken, Task> KeyReportDelay
@@ -33,8 +35,11 @@ public sealed class RogWiredOledSession(IRogOledConnection connection)
     // Fake-only clock seam for the renewal/observation pacing decisions (Stopwatch timestamps).
     internal Func<long> Timestamp { get; init; } = Stopwatch.GetTimestamp;
 
-    public Task<byte[]> ExchangeAsync(byte[] request, bool zeroAck, CancellationToken ct) =>
-        connection.ExchangeAsync(request, zeroAck, ct);
+    public Task<byte[]> ExchangeAsync(byte[] request, bool zeroAck, CancellationToken ct)
+    {
+        BeforeOperation?.Invoke();
+        return connection.ExchangeAsync(request, zeroAck, ct);
+    }
 
     public async Task<byte> SnapshotAsync(string firmwareHeader, CancellationToken ct)
     {
@@ -236,6 +241,7 @@ public sealed class RogWiredOledSession(IRogOledConnection connection)
         {
         while (!ct.IsCancellationRequested)
         {
+            BeforeOperation?.Invoke();
             // This boundary follows the completed prior lease/read/upload. Native code borrows THIS actor only.
             var imageAborted = false; var nativeActive = false;
             try { nativeActive = nativeTick is not null && await nativeTick(ct).ConfigureAwait(false); }
@@ -289,6 +295,7 @@ public sealed class RogWiredOledSession(IRogOledConnection connection)
                         _keyOutputActive = true;
                         await SetSoftwareControlAsync(1, ct).ConfigureAwait(false);
                         LightingTouched = true; // An unknown reply must still trigger the original-lighting restore.
+                        BeforeOperation?.Invoke();
                         await connection.WriteLightingFrameAsync(keys.Keys, ct).ConfigureAwait(false);
                         keys.Completion.TrySetResult();
                     }

@@ -31,7 +31,7 @@ public sealed partial class PeripheralConfigurationService : IPeripheralConfigur
         _journalPath = Path.Combine(options.ResolvedDataDirectory, "peripherals", "keyboard-display-session.json");
         _operationTimeout = operationTimeout ?? TimeSpan.FromSeconds(30);
         if (_operationTimeout <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(operationTimeout));
-        var recoveryPending = !gate.RogAcquisitionAllowed && File.Exists(_journalPath);
+        var recoveryPending = !gate.RogAcquisitionAllowed && KeyboardRecoveryJournals.Any(_journalPath);
         const string recoveryError = "A keyboard recovery journal remains after restart; matching recorded-transport restoration requires an explicit Enter reattempt.";
         _status = gate.InitialError is { } error
             ? new(true, "Error", error, false, DateTimeOffset.UtcNow, error)
@@ -54,7 +54,7 @@ public sealed partial class PeripheralConfigurationService : IPeripheralConfigur
         {
             ct.ThrowIfCancellationRequested();
             _firmwareLease?.RejectManualChange();
-            if (Volatile.Read(ref _status) is { ConfigurationMode: true, State: "Ready" } ready) return ready;
+            if (Volatile.Read(ref _status) is { ConfigurationMode: true, State: "Ready" } ready && !KeyboardRecoveryJournals.Any(_journalPath)) return ready;
             var previouslyAllowed = _gate.RogAcquisitionAllowed;
             _gate.BlockRogAcquisition();
             _resumeReadyToCommit = false;
@@ -69,6 +69,7 @@ public sealed partial class PeripheralConfigurationService : IPeripheralConfigur
             try
             {
                 await ObserveReleaseAsync().ConfigureAwait(false);
+                if (KeyboardRecoveryJournals.Any(_journalPath)) throw new IOException("Keyboard recovery obligations remain; handoff is not Ready.");
                 return Publish(new(true, "Ready", "ROG keyboard OLED/lighting, mouse and receiver sessions are disposed; further reports and reacquisition are stopped.", true, DateTimeOffset.UtcNow, null));
             }
             catch (Exception ex) when (ex is not OutOfMemoryException)
@@ -83,7 +84,7 @@ public sealed partial class PeripheralConfigurationService : IPeripheralConfigur
             ct.ThrowIfCancellationRequested();
             _firmwareLease?.RejectManualChange();
             if (Volatile.Read(ref _status) is { ConfigurationMode: false, State: "Active" } active) return active;
-            if (File.Exists(_journalPath))
+            if (KeyboardRecoveryJournals.Any(_journalPath))
             {
                 if (Volatile.Read(ref _status) is { State: "Error", ConfigurationMode: true } pending) return pending;
                 const string error = "A keyboard recovery journal requires verified matching restoration before normal resume.";
