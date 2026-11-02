@@ -1,0 +1,29 @@
+<Project>
+  <!-- Build/publish inputs only. Never starts a worker or performs deployment/device work. -->
+  <Target Name="CopyPrivateFirmwareWorker" AfterTargets="Build">
+    <ItemGroup><_FirmwareProject Include="@(ProjectReference)" Condition="'%(Filename)' == 'UnifiedRgb.Firmware.Worker'" /></ItemGroup>
+    <MSBuild Projects="@(_FirmwareProject)" Targets="GetTargetPath" BuildInParallel="false" Properties="Configuration=$(Configuration);ArtifactsPath=$(ArtifactsPath);UseArtifactsOutput=$(UseArtifactsOutput)">
+      <Output TaskParameter="TargetOutputs" ItemName="_FirmwareAssembly" />
+    </MSBuild>
+    <PropertyGroup><_FirmwareOutput>@(_FirmwareAssembly->'%(RootDir)%(Directory)')</_FirmwareOutput></PropertyGroup>
+    <Message Text="Private firmware packaging: @(_FirmwareProject) -> $(_FirmwareOutput)" Importance="High" />
+    <Error Condition="!Exists('$(_FirmwareOutput)/UnifiedRgb.Firmware.Worker.exe')" Text="Missing real private firmware worker apphost input." />
+    <Error Condition="!Exists('$(_FirmwareOutput)/core-manifest.json')" Text="Missing firmware source manifest packaging input." />
+    <ItemGroup>
+      <_FirmwareRuntime Include="$(_FirmwareOutput)/**/*.dll;$(_FirmwareOutput)/**/*.exe;$(_FirmwareOutput)/*.deps.json;$(_FirmwareOutput)/*.runtimeconfig.json;$(_FirmwareOutput)/core-manifest.json" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_FirmwareRuntime)" DestinationFiles="@(_FirmwareRuntime->'$(TargetDir)FirmwareWorker/%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="$(MSBuildThisFileDirectory)../firmware-installed.defaults.json" DestinationFiles="$(TargetDir)FirmwareWorker/firmware-installed.json"
+          Condition="!Exists('$(TargetDir)FirmwareWorker/firmware-installed.json')" />
+  </Target>
+  <Target Name="PublishPrivateFirmwareWorker" BeforeTargets="ComputeFilesToPublish" DependsOnTargets="CopyPrivateFirmwareWorker">
+    <ItemGroup>
+      <_PrivateFirmwarePublish Include="$(TargetDir)FirmwareWorker/**/*" />
+      <!-- Qualify the source item metadata: the SDK already has ResolvedFileToPublish
+           items here, and unqualified Filename batches these files against every
+           existing publish item, producing duplicate and incorrectly named outputs. -->
+      <ResolvedFileToPublish Include="@(_PrivateFirmwarePublish)">
+      <RelativePath>FirmwareWorker/%(_PrivateFirmwarePublish.RecursiveDir)%(_PrivateFirmwarePublish.Filename)%(_PrivateFirmwarePublish.Extension)</RelativePath><CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </ResolvedFileToPublish></ItemGroup>
+  </Target>
+</Project>

@@ -214,14 +214,5 @@ internal static class Fixture
         actual.Should().Equal(File.ReadAllLines(path));
     }
 
-    public static string RepoRoot()
-    {
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "src", "UnifiedRgb.sln")))
-        {
-            dir = dir.Parent;
-        }
-
-        return dir?.FullName ?? throw new InvalidOperationException("repo root not found");
-    }
+    public static string RepoRoot() => RepositoryPaths.Root();
 }

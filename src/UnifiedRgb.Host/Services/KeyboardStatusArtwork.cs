@@ -25,12 +25,12 @@ internal static class KeyboardStatusArtwork
         Text(dc, "光域", 32, 108, 8, 80);
     });
 
-    private static void Text(DrawingContext dc, string value, double size, double x, double y, double width) => dc.DrawText(new FormattedText(value,
+    internal static void Text(DrawingContext dc, string value, double size, double x, double y, double width) => dc.DrawText(new FormattedText(value,
         CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
         new Typeface(new FontFamily("Microsoft YaHei UI"), FontStyles.Normal, FontWeights.SemiBold, FontStretches.Normal),
         size, Brushes.White, 1) { MaxTextWidth = width, MaxLineCount = 1, Trimming = TextTrimming.CharacterEllipsis }, new Point(x, y));
 
-    private static byte[] Rasterize(Action<DrawingContext, Drawing> draw)
+    internal static byte[] Rasterize(Action<DrawingContext, Drawing> draw)
     {
         byte[]? result = null; Exception? failure = null;
         var thread = new Thread(() =>
@@ -52,8 +52,7 @@ internal static class KeyboardStatusArtwork
                 }
                 var bitmap = new RenderTargetBitmap(208, 64, 96, 96, PixelFormats.Pbgra32); bitmap.Render(visual);
                 var bgra = new byte[208 * 64 * 4]; bitmap.CopyPixels(bgra, 208 * 4, 0);
-                result = new byte[6656];
-                for (var p = 0; p < result.Length; p++) result[p] = (byte)(bgra[p * 8] / 17 | (bgra[p * 8 + 4] / 17) << 4);
+                result = PackBgra(bgra);
             }
             catch (Exception ex) { failure = ex; }
         }) { IsBackground = true, Name = "Keyboard artwork" };
@@ -61,6 +60,14 @@ internal static class KeyboardStatusArtwork
         if (!thread.Join(TimeSpan.FromSeconds(5))) throw new TimeoutException("Keyboard artwork exceeded its rendering bound.");
         if (failure is not null) throw new InvalidOperationException("Keyboard artwork failed before output.", failure);
         return result!;
+    }
+
+    internal static byte[] PackBgra(ReadOnlySpan<byte> bgra)
+    {
+        if (bgra.Length != 208 * 64 * 4) throw new ArgumentException("Expected one keyboard BGRA frame.", nameof(bgra));
+        var result = new byte[6656];
+        for (var p = 0; p < result.Length; p++) result[p] = (byte)(bgra[p * 8] / 17 | (bgra[p * 8 + 4] / 17) << 4);
+        return result;
     }
 
     private static void White(Drawing drawing)

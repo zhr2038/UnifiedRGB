@@ -8,6 +8,21 @@ namespace UnifiedRgb.Screens.Tests;
 public sealed class SegmentedVideoTests
 {
     [MediaFoundationFact]
+    public async Task Preview_releases_sequence_decoders_so_an_unused_asset_can_be_deleted_immediately()
+    {
+        await using var rig = new Rig();
+        var bytes = Fixture();
+        var id = await rig.Manager.InstallPackageSequenceAsync("preview only", [new(bytes, 2000), new(bytes, 2000)]);
+
+        var preview = await rig.Manager.PreviewScreenAsync(new(Devices.H2.Id, id));
+        preview.PngBase64.Should().NotBeNullOrEmpty();
+        await rig.Manager.DeleteScreenAssetAsync(id);
+
+        (await rig.Manager.ListScreenAssetsAsync()).Should().BeEmpty();
+        Directory.Exists(Path.Combine(rig.DataDirectory, "screens", "assets", id)).Should().BeFalse();
+    }
+
+    [MediaFoundationFact]
     public async Task Null_clip_metadata_is_ignored_without_breaking_other_stored_assets()
     {
         var root = Root();

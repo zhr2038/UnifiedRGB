@@ -40,7 +40,16 @@ public sealed class RogWiredOledConnection : IRogOledConnection
     public string ConnectionKind => "wired";
     public int PixelPayloadCapacity => 60;
     public bool SameDevice() => _sameDevice();
-
+    /// <summary>Optional positive absence probe set by the factory; unknown/custom connections default to false.</summary>
+    public Func<bool>? RouteAbsentProbe { get; init; }
+    public bool PhysicalRouteAbsent
+    {
+        get
+        {
+            try { return RouteAbsentProbe?.Invoke() == true; }
+            catch (Exception ex) when (ex is not OutOfMemoryException) { return false; }
+        }
+    }
     /// <summary>First identity accepted on this connection (diagnostic); null before the first accepted reply.</summary>
     public string? ObservedFirmwareHeader { get { lock (_state) return _observed is null ? null : Convert.ToHexString(_observed); } }
 
@@ -176,7 +185,7 @@ public sealed class RogWiredOledConnection : IRogOledConnection
         var detail = $"stage={stage}; request={Convert.ToHexString(request.AsSpan(0, 5))}; reply={header}; length={length}; read={ordinal}; zeroAck={zeroAck}; nonzeroAckBody={nonzero}; connection poisoned; no retry.";
         Exception fault = ex is OperationCanceledException && expired
             ? new RogOledTimeoutException("Wired keyboard OLED command timed out; " + detail, ex)
-            : ex is RogOledConnectionLostException || ex is IOException && Disappeared()
+            : ex is RogOledConnectionLostException || ex is IOException && PhysicalRouteAbsent
                 ? new RogOledConnectionLostException("Pinned wired keyboard interface disappeared or ended; " + detail, ex)
                 : ex is InvalidDataException ? new InvalidDataException("Wired OLED protocol response invalid; " + detail, ex)
                 : new IOException("Wired OLED I/O outcome is unknown; " + detail, ex);
@@ -187,12 +196,6 @@ public sealed class RogWiredOledConnection : IRogOledConnection
     private static void RequireNotEof(int length)
     {
         if (length == 0) throw new RogOledConnectionLostException("Wired keyboard OLED stream ended.", new EndOfStreamException());
-    }
-
-    private bool Disappeared()
-    {
-        try { return !_sameDevice(); }
-        catch (Exception ex) when (ex is not OutOfMemoryException) { return false; }
     }
 
     public void Dispose() { lock (_state) { if (_disposed) return; _disposed = true; _channel.Dispose(); } }
@@ -232,6 +235,10 @@ public sealed class RogWiredOledFactory : IRogWiredOledFactory
         {
             var fresh = devices.Enumerate(0x0B05, 0x1C24).SingleOrDefault(x => x.Path == c.Path && RogWiredOledProtocol.Matches(x));
             return fresh is not null && resolver.Resolve(fresh).Container is { } current && current.SameContainer(container);
-        }, () => deviceKey, () => label) { NativeControlBinding = new([c], null, 0) };
+        }, () => deviceKey, () => label)
+        {
+            NativeControlBinding = new([c], null, 0),
+            RouteAbsentProbe = () => RogHidRoutePresence.Probe(devices, 0x0B05, 0x1C24, c.Path),
+        };
     }
 }

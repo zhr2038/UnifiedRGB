@@ -28,8 +28,10 @@ public sealed class CaseControlPanelViewModel : ObservableObject
     private PeripheralConfigurationViewModel? _peripherals;
     private NativeMenuViewModel? _nativeMenu;
     private KeyboardAnimationViewModel? _keyboardAnimation;
+    private FirmwareUpdateViewModel? _firmwareUpdate;
     private KeyboardDisplayStatusDto? _keyboardStatus;
     private string _keyboardMessage = TransportNote;
+    private string _keyboardCommunicationMessage = "键盘未响应时，可按当前显示开关恢复一次通信。";
     private long _epoch;
     private long _readVersion;
     private long _requestVersion;
@@ -56,7 +58,7 @@ public sealed class CaseControlPanelViewModel : ObservableObject
         OnCommand = new AsyncCommand(_ => EnsureOnAsync(), error, _ => CanControl);
         ToggleKeyboardDisplayCommand = new AsyncCommand(_ => ToggleKeyboardAsync(), error, _ => _connected && _keyboardDisplay is not null && !KeyboardHeld);
         // Like the toggle, CanExecute follows only the connection and handoff; the status-dependent rest is CanReconnectKeyboardLighting.
-        ReconnectKeyboardLightingCommand = new AsyncCommand(_ => ReconnectKeyboardLightingAsync(), error, _ => _connected && _keyboardDisplay is not null && !KeyboardHeld);
+        ReconnectKeyboardLightingCommand = new AsyncCommand(_ => RecoverKeyboardCommunicationAsync(), error, _ => CanRecoverKeyboardCommunication);
     }
 
     /// <summary>Adds the optional keyboard/mouse handoff section; the keyboard toggle then waits for its confirmation on each connection.</summary>
@@ -94,11 +96,23 @@ public sealed class CaseControlPanelViewModel : ObservableObject
         OnPropertyChanged(nameof(KeyboardAnimation)); OnPropertyChanged(nameof(HasKeyboardAnimation));
     }
 
+    public FirmwareUpdateViewModel? FirmwareUpdate => _firmwareUpdate;
+
+    public void AttachFirmwareUpdate(FirmwareUpdateViewModel firmwareUpdate)
+    {
+        ArgumentNullException.ThrowIfNull(firmwareUpdate);
+        if (_firmwareUpdate is not null) throw new InvalidOperationException("Firmware updater is already attached.");
+        _firmwareUpdate = firmwareUpdate;
+        OnPropertyChanged(nameof(FirmwareUpdate));
+    }
+
     public AsyncCommand ReadCommand { get; }
     public AsyncCommand OffCommand { get; }
     public AsyncCommand OnCommand { get; }
     public AsyncCommand ToggleKeyboardDisplayCommand { get; }
     public AsyncCommand ReconnectKeyboardLightingCommand { get; }
+    public bool CanRecoverKeyboardCommunication => _connected && _keyboardDisplay is not null && _peripherals is not null && !KeyboardRequestInFlight;
+    public string KeyboardCommunicationRecoveryNote => _keyboardCommunicationMessage;
     public bool CanControl => _connected && _requests == 0;
     public CaseControlDisplayState Display { get => _display; private set => SetProperty(ref _display, value); }
     public string ObservationNote => _observedAt is { } at ? $"{at.ToLocalTime():HH:mm:ss} 后台回读 · 非光学确认" : "尚无有效回读";
@@ -162,21 +176,36 @@ public sealed class CaseControlPanelViewModel : ObservableObject
         // Disabling our page requests the keyboard's own visible animation, never a panel-off; no answer proves it plays.
         ? new(true, "开启光域状态屏", "开启", "是否已切换") : new(false, "恢复键盘原动画", "恢复原动画", "原动画是否已恢复"), "切换指令", static () => true);
 
-    /// <summary>
-    /// Explicit way out of a sticky keyboard Error: reasserts exactly the page preference of a fresh read, never its inverse, so a
-    /// disabled page stays disabled. No answer proves the keyboard lighting recovered; the readback shows what the Host reports.
-    /// </summary>
-    private Task ReconnectKeyboardLightingAsync() => SendKeyboardIntentAsync(current => ReconnectRefusalFor(current) is null
-        ? new(current.Enabled, $"重连键盘灯光（光域状态屏保持{PageState(current.Enabled)}）", "重连键盘灯光", "是否已重新接入") : null,
-        "重连请求", () => CanReconnectKeyboardLighting);
+    private Task RecoverKeyboardCommunicationAsync() => SendKeyboardIntentAsync(current =>
+        current.State is "Error" or "Stopped" or "Waiting" or "Running" && current.LastError != UnreadableSettings
+            ? new(current.Enabled, $"恢复键盘通信（显示开关保持{PageState(current.Enabled)}）", "恢复键盘通信", "通信是否恢复") : null,
+        "恢复通信请求", () => CanRecoverKeyboardCommunication, recoverCommunication: true);
+
+    // Refresh is read-only. Its queued UI publication must complete before inspecting the current handoff snapshot.
+    private async Task<bool> ReadNormalIntegrationForRecoveryAsync()
+    {
+        if (_peripherals is not { } peripherals) return false;
+        await peripherals.RefreshAsync().ConfigureAwait(true);
+        var completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _ui.Post(() => completion.TrySetResult(peripherals.KeyboardIntegrationConfirmed && peripherals.Status is
+            { ConfigurationMode: false, InterfacesReleased: false, State: "Active", LastError: null, Intent: null }));
+        return await completion.Task.WaitAsync(_keyboardReadTimeout).ConfigureAwait(true);
+    }
+
+    private void RecoveryMessage(long epoch, long version, string message) => _ui.Post(() =>
+    {
+        if (!CurrentKeyboard(epoch, version)) return;
+        _keyboardCommunicationMessage = message;
+        OnPropertyChanged(nameof(KeyboardCommunicationRecoveryNote));
+    });
 
     /// <summary>One user intent sends at most one write, chosen from a fresh read on the same connection; a lost answer is read back, never resent.</summary>
-    private async Task SendKeyboardIntentAsync(Func<KeyboardDisplayStatusDto, KeyboardIntent?> choose, string unsent, Func<bool> offered)
+    private async Task SendKeyboardIntentAsync(Func<KeyboardDisplayStatusDto, KeyboardIntent?> choose, string unsent, Func<bool> offered, bool recoverCommunication = false)
     {
         var epoch = Volatile.Read(ref _epoch);
         var keyboard = _keyboardDisplay;
         _peripherals?.ExpireObservation(); // An expired handoff confirmation holds the toggle at the click, not only at the next poll.
-        if (keyboard is null || !_connected || KeyboardHeld || KeyboardRequestInFlight || !offered()) return;
+        if (keyboard is null || !_connected || KeyboardHeld && !recoverCommunication || KeyboardRequestInFlight || !offered()) return;
         IKeyboardDisplayService? proxy = null;
         // One proxy per intent: a reconnect not yet seen here can never receive a write chosen on the old connection.
         IKeyboardDisplayService Service() => proxy ??= keyboard();
@@ -186,9 +215,19 @@ public sealed class CaseControlPanelViewModel : ObservableObject
         {
             // The preflight retires every earlier keyboard read.
             var version = Interlocked.Increment(ref _keyboardVersion);
+            if (recoverCommunication)
+            {
+                RecoveryMessage(epoch, version, "正在读取键鼠维护状态…");
+                bool normal;
+                try { normal = await ReadNormalIntegrationForRecoveryAsync().ConfigureAwait(true); }
+                catch (TimeoutException) { normal = false; }
+                if (!CurrentKeyboard(epoch, version)) return;
+                if (!normal) { RecoveryMessage(epoch, version, "键鼠正在维护或状态未确认，未发送恢复请求；请先完成维护。"); return; }
+            }
             var (current, readError) = await ReadKeyboardAsync(Service).ConfigureAwait(true);
             if (current is null)
             {
+                if (recoverCommunication) RecoveryMessage(epoch, version, "未读到键盘状态，未发送恢复请求。");
                 PostKeyboard(epoch, version, null, readError is null ? TransportNote : $"键盘状态未读到，未发送{unsent}；请稍后重试。");
                 ReportHostError(epoch, readError);
                 return;
@@ -198,24 +237,41 @@ public sealed class CaseControlPanelViewModel : ObservableObject
             // Nor once a keyboard/mouse handoff began, or its confirmation expired, meanwhile, or once the fresh read no longer
             // calls for this intent: publish the read, send nothing.
             _peripherals?.ExpireObservation();
-            if (KeyboardHeld || choose(current) is not { } intent) { PostKeyboard(epoch, version, current, TransportNote); return; }
+            if (KeyboardHeld && !recoverCommunication || choose(current) is not { } intent)
+            {
+                if (recoverCommunication) RecoveryMessage(epoch, version, "键盘正在连接、状态未知或显示开关不可读，未发送恢复请求。");
+                PostKeyboard(epoch, version, current, TransportNote); return;
+            }
+            if (recoverCommunication)
+            {
+                bool normal;
+                try { normal = await ReadNormalIntegrationForRecoveryAsync().ConfigureAwait(true); }
+                catch (TimeoutException) { normal = false; }
+                if (!CurrentKeyboard(epoch, version)) return;
+                if (!normal) { RecoveryMessage(epoch, version, "键鼠维护状态已改变或未确认，未发送恢复请求。"); return; }
+            }
             var (enable, request, action, outcome) = intent;
             version = Interlocked.Increment(ref _keyboardVersion);
             PostKeyboard(epoch, version, null, $"正在请求{request}，等待后台答复…");
             string unread;
+            var requestUncertain = false;
             try
             {
                 await BoundAsync(ct => Service().SetKeyboardDisplayEnabledAsync(enable, ct), _keyboardWriteTimeout).ConfigureAwait(true);
+                if (recoverCommunication) RecoveryMessage(epoch, version, "恢复通信请求已提交，正在回读后台状态…");
                 PostKeyboard(epoch, version, null, $"后台已接受{action}指令，正在回读键盘状态…");
                 unread = $"后台已接受{action}指令，但键盘状态未读到，不能确认{outcome}。";
             }
             catch (StreamJsonRpc.RemoteMethodNotFoundException)
             {
+                if (recoverCommunication) RecoveryMessage(epoch, version, "当前后台不支持恢复通信，未启动恢复。");
                 PostKeyboard(epoch, version, null, TransportNote); // Old Host: nothing was sent to the keyboard.
                 return;
             }
             catch (StreamJsonRpc.RemoteInvocationException ex)
             {
+                requestUncertain = true;
+                if (recoverCommunication) RecoveryMessage(epoch, version, "后台返回错误，正在回读；不会自动重复恢复请求。");
                 // The Host answered with an error; read back instead of assuming nothing changed.
                 PostKeyboard(epoch, version, null, $"后台对{action}指令返回错误，正在回读键盘状态…");
                 unread = $"后台对{action}指令返回错误，键盘状态也未读到，不能确认{outcome}。";
@@ -225,12 +281,21 @@ public sealed class CaseControlPanelViewModel : ObservableObject
             catch (Exception ex) when (ex is not OutOfMemoryException)
 #pragma warning restore CA1031
             {
+                requestUncertain = true;
+                if (recoverCommunication) RecoveryMessage(epoch, version, "恢复请求结果未确认，正在回读；不会自动重发。");
                 PostKeyboard(epoch, version, null, $"{action}结果未确认：未收到后台答复，指令可能已生效；未自动重发，正在回读…");
                 unread = $"{action}结果未知：未收到后台答复，键盘状态也未读到；未自动重发，请待回读后再操作。";
             }
             if (!CurrentKeyboard(epoch, version)) return; // The readback must use the same connection epoch.
             var (observed, error) = await ReadKeyboardAsync(Service).ConfigureAwait(true);
             PostKeyboard(epoch, version, observed, error is null ? TransportNote : unread);
+            if (recoverCommunication) RecoveryMessage(epoch, version, requestUncertain
+                ? "恢复请求结果未确认；已回读当前状态，未自动重发。"
+                : error is not null || observed is null
+                ? "恢复结果未确认，未自动重发；请等待后台状态。"
+                : observed.LastError is not null ? "后台仍报告键盘错误，请查看状态说明。"
+                : observed.State is "Connecting" or "Stopping" ? "后台正在重建键盘连接，请稍候。"
+                : "已回读后台状态，未报告键盘错误；请检查实际连接。");
         }
         finally
         {
@@ -407,6 +472,7 @@ public sealed class CaseControlPanelViewModel : ObservableObject
         OnPropertyChanged(nameof(KeyboardTransportNote)); OnPropertyChanged(nameof(KeyboardToggleLabel));
         OnPropertyChanged(nameof(HasKeyboardDisplayService)); OnPropertyChanged(nameof(CanToggleKeyboardDisplay));
         OnPropertyChanged(nameof(CanReconnectKeyboardLighting)); OnPropertyChanged(nameof(KeyboardReconnectNote));
+        OnPropertyChanged(nameof(CanRecoverKeyboardCommunication)); OnPropertyChanged(nameof(KeyboardCommunicationRecoveryNote));
     }
 
     internal static CaseControlDisplayState Describe(SceneDto scene, IReadOnlyList<ControllerDto> controllers,

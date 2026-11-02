@@ -17,6 +17,8 @@ public sealed record KeyboardDisplayOptions
     /// <summary>The installed keyboard already draws the native entry Logo. Do not upload a second Host Logo;
     /// ordinary, non-native display output keeps its existing entry presentation. Local presentation preference only.</summary>
     public bool DeviceShowsNativeEntryLogo { get; init; }
+    /// <summary>Local emergency output policy. False sends no Host OLED artwork while retaining native control, RGB and preferences.</summary>
+    public bool HostArtworkEnabled { get; init; } = true;
 
     /// <summary>
     /// Host admission of the local keyboard OLED animation (stock/legacy owner only; suppressed under installed native-menu

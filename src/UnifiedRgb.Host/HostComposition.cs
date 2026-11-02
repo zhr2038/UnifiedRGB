@@ -105,8 +105,7 @@ public static class HostComposition
         services.AddSingleton<FrameBus>();
         services.AddSingleton(sp =>
         {
-            var marker = PeripheralConfigurationMarker.For(options);
-            return new PeripheralConfigurationGate(marker.Load());
+            return PeripheralConfigurationService.CreateFirmwareAwareGate(options);
         });
         services.AddSingleton(sp => new AdapterHost(
             sp.GetServices<IDeviceAdapterFactory>(),
@@ -176,6 +175,17 @@ public static class HostComposition
         services.AddSingleton<IKeyboardNativePresentationCapability>(_ => new RogNative49PresentationCapability(options.KeyboardNativeMenu, options.KeyboardDisplay));
         // Scene-cycle caption: a pure overlay over an immutable snapshot; the keyboard display applies it to native frames only.
         services.AddSingleton<KeyboardSceneCycleOverlay>();
+        services.AddSingleton(sp => new KeyboardCodexUsageProvider(options.ResolvedDataDirectory, time: sp.GetRequiredService<TimeProvider>(),
+            requestPage: sp.GetRequiredService<RogNativeMenuSource>().RequestCodexEnabled));
+        services.AddHostedService(sp => sp.GetRequiredService<KeyboardCodexUsageProvider>());
+        services.AddSingleton(sp => new CodexTaskDisplay(sp.GetRequiredService<TimeProvider>()));
+        services.AddSingleton<ICodexTaskReader, NativeCodexTaskReader>();
+        services.AddSingleton(sp => new CodexTaskViewProvider(
+            sp.GetRequiredService<ICodexTaskReader>(), sp.GetRequiredService<CodexTaskDisplay>(),
+            () => sp.GetRequiredService<KeyboardCodexUsageProvider>().Pixels,
+            () => !options.UseVirtualAdapter && sp.GetRequiredService<KeyboardCodexUsageProvider>().Status.Enabled,
+            sp.GetRequiredService<TimeProvider>(), sp.GetService<ILogger<CodexTaskViewProvider>>()));
+        services.AddHostedService(sp => sp.GetRequiredService<CodexTaskViewProvider>());
         // Same arguments the former type registration resolved; nativeFrameOverlay is the Logo provider's optional final parameter.
         services.AddSingleton(sp => new KeyboardDisplayService(
             sp.GetRequiredService<UnifiedRgbOptions>(), sp.GetRequiredService<IRgbService>(), sp.GetRequiredService<IScreenService>(),
@@ -193,18 +203,39 @@ public static class HostComposition
             nativeFrameOverlayRevision: () => sp.GetRequiredService<KeyboardSceneCycleOverlay>().Revision,
             masterClock: sp.GetRequiredService<IClock>(),
             sceneLoopDurationMs: id => sp.GetRequiredService<ScenePackageFrameSource>()
-                .TryResolve(id, out var package, out _, out _) ? (int?)package.Manifest.DurationMs : null));
+                .TryResolve(id, out var package, out _, out _) ? (int?)package.Manifest.DurationMs : null,
+            idleFrame: () => sp.GetRequiredService<CodexTaskViewProvider>().Pixels,
+            codexStatus: () => sp.GetRequiredService<KeyboardCodexUsageProvider>().Status,
+            setCodexEnabled: sp.GetRequiredService<KeyboardCodexUsageProvider>().SetEnabled));
         services.AddSingleton<IKeyboardDisplayService>(sp => sp.GetRequiredService<KeyboardDisplayService>());
         services.AddHostedService(sp => sp.GetRequiredService<KeyboardDisplayService>());
         services.AddSingleton<IPeripheralConfigurationResources, RogPeripheralConfigurationResources>();
         services.AddSingleton(sp => new PeripheralConfigurationService(options,
             sp.GetRequiredService<PeripheralConfigurationGate>(), sp.GetRequiredService<IPeripheralConfigurationResources>()));
         services.AddSingleton<IPeripheralConfigurationService>(sp => sp.GetRequiredService<PeripheralConfigurationService>());
+        services.AddSingleton<UnifiedRgb.Firmware.IFirmwareMaintenance>(sp => sp.GetRequiredService<PeripheralConfigurationService>());
+        services.AddSingleton(_ => UnifiedRgb.Firmware.ProtectedRuntime.FirmwareRuntimeResolver.Resolve(Path.Combine(AppContext.BaseDirectory, "FirmwareWorker"), options.UseVirtualAdapter, installed => UnifiedRgb.Firmware.FirmwareStartupLeaseGuard.Apply(installed, UnifiedRgb.Firmware.FirmwareStartupLeaseGuard.Read(options.ResolvedDataDirectory))));
+        services.AddSingleton<UnifiedRgb.Firmware.IPhysicalObservationSource>(_ => new UnifiedRgb.Firmware.Worker.NativeFirmwarePhysicalSource(Path.Combine(options.ResolvedDataDirectory, "firmware", "observations")));
+        services.AddSingleton<UnifiedRgb.Firmware.PhysicalWorkflow>();
+        services.AddSingleton<UnifiedRgb.Firmware.IFirmwareWorkerRunner, UnifiedRgb.Firmware.FirmwareWorkerProcess>();
+        services.AddSingleton<IFirmwareUpdateService>(sp => new UnifiedRgb.Firmware.FirmwareJobBroker(
+            sp.GetRequiredService<UnifiedRgb.Firmware.FirmwareInstalledOptions>(), sp.GetRequiredService<UnifiedRgb.Firmware.IFirmwareMaintenance>(),
+            sp.GetRequiredService<UnifiedRgb.Firmware.PhysicalWorkflow>(), sp.GetRequiredService<UnifiedRgb.Firmware.IFirmwareWorkerRunner>(),
+            Path.Combine(options.ResolvedDataDirectory, "firmware", "jobs")));
         // One default-off source. Exact local installation/route policy never replaces its fresh actual CAP/input admission.
         services.AddSingleton(TimeProvider.System);
-        services.AddSingleton<RogNativeMenuSource>(sp => new(options.KeyboardNativeMenu,
-            sp.GetService<IHidInputReportDevices>(), sp.GetService<IHidContainerResolver>(), sp.GetRequiredService<TimeProvider>(),
-            displayOptions: options.KeyboardDisplay));
+        services.AddSingleton<ICodexWindowActivator>(_ => new WindowsCodexWindowActivator());
+        services.AddSingleton(sp => new CodexLaunchCoordinator(sp.GetRequiredService<ICodexWindowActivator>(),
+            sp.GetRequiredService<TimeProvider>(), sp.GetRequiredService<PeripheralConfigurationGate>()));
+        services.AddSingleton<RogNativeMenuSource>(sp =>
+        {
+            var source = new RogNativeMenuSource(options.KeyboardNativeMenu,
+                sp.GetService<IHidInputReportDevices>(), sp.GetService<IHidContainerResolver>(), sp.GetRequiredService<TimeProvider>(),
+                displayOptions: options.KeyboardDisplay,
+                codexTaskBrowse: direction => sp.GetRequiredService<CodexTaskViewProvider>().Browse(direction));
+            source.SetLaunchCoordinator(sp.GetRequiredService<CodexLaunchCoordinator>());
+            return source;
+        });
         services.AddSingleton<INativeMenuSource>(sp => sp.GetRequiredService<RogNativeMenuSource>());
         // Up/Down scene browsing: Host-local, fed only by NativeMenuService's validated steps; it reads nothing before the first
         // step and resolves its RGB/package services lazily. Center stays the existing case Toggle.
@@ -219,6 +250,7 @@ public static class HostComposition
         services.AddHostedService(sp => sp.GetRequiredService<NativeMenuService>());
         // Registered after the menu owner, so it stops first: no scene apply starts once the Host is stopping.
         services.AddHostedService(sp => sp.GetRequiredService<KeyboardSceneCycleBridge>());
+        services.AddHostedService(sp => sp.GetRequiredService<CodexLaunchCoordinator>());
         if (enableIpc)
         {
             services.AddSingleton<PipeServer>();

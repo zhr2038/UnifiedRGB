@@ -150,11 +150,13 @@ public sealed partial class ScenePackagesViewModel
         }
         catch (Exception ex) when (ex is NotSupportedException or StreamJsonRpc.RemoteMethodNotFoundException)
         {
+            if (request != _selectionRequest || Selected?.Id != id || revision != _draftVersion) return;
             EditorAvailable = false; PreviewNote = "请更新后台以使用外部效果调参和动态预览。";
         }
         catch (OperationCanceledException) { }
         catch (Exception ex) when (ex is System.IO.IOException or System.IO.InvalidDataException)
         {
+            if (request != _selectionRequest || Selected?.Id != id || revision != _draftVersion) return;
             PreviewNote = "动态预览未能加载：" + ex.Message;
         }
     }

@@ -52,6 +52,11 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         Studio = new StudioViewModel(client, ui, ReportError, confirm, client.RequireScreens, client.RequireKeyboardDisplay);
         Studio.ControlPanel.AttachPeripheralConfiguration(new(client.RequirePeripheralConfiguration, ui, ReportError, openLink ?? PeripheralConfigurationViewModel.OpenInBrowser));
         Studio.ControlPanel.AttachNativeMenu(new(client.RequireNativeMenu, ui, ReportError));
+        FirmwareUpdate = new FirmwareUpdateViewModel(client.RequireFirmware, ui,
+            UnifiedRgb.App.Views.FirmwareUpdateView.PickPackage, confirm ?? UnifiedRgb.App.Views.FirmwareUpdateView.Confirm,
+            UnifiedRgb.App.Views.FirmwareUpdateView.Export);
+        FirmwareUpdate.SetConnected(client.State == ConnectionState.Connected);
+        Studio.ControlPanel.AttachFirmwareUpdate(FirmwareUpdate);
         Studio.ControlPanel.AttachKeyboardAnimation(new(client.RequireKeyboardDisplay, ui, ReportError,
             screens: client.RequireScreens, chooseFile: chooseMediaFile));
         Screens = new ScreensViewModel(client.RequireScreens, ui, ReportError, chooseMediaFile ?? (() => null), confirm, deviceSettings: client.RequireScreenSettings);
@@ -91,6 +96,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     public EffectsViewModel Effects { get; }
     public StudioViewModel Studio { get; }
+    public FirmwareUpdateViewModel FirmwareUpdate { get; }
     public ScreensViewModel Screens { get; }
 
     public SceneViewModel Scene { get; }
@@ -189,6 +195,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         await Studio.RefreshAsync().ConfigureAwait(true);
         await Screens.RefreshOptionalAsync().ConfigureAwait(true);
         await Packages.RefreshOptionalAsync().ConfigureAwait(true);
+        await FirmwareUpdate.RefreshAsync().ConfigureAwait(true);
         Packages.SelectCurrent(Studio.ActivePackageContentId);
         if (!_initialSourceSelected)
         {
@@ -225,6 +232,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
             UpdateTray();
             Studio.SetConnected(state == ConnectionState.Connected);
+            FirmwareUpdate.SetConnected(state == ConnectionState.Connected);
             if (state != ConnectionState.Connected) { Screens.MarkDisconnected(); Packages.MarkDisconnected(); }
             if (state == ConnectionState.Connected && !IsUiFaulted)
             {
@@ -243,7 +251,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         });
     }
 
-    public void Dispose() { HostStart.Dispose(); Studio.Dispose(); Packages.Dispose(); Bringup.Dispose(); }
+    public void Dispose() { FirmwareUpdate.SetConnected(false); HostStart.Dispose(); Studio.Dispose(); Packages.Dispose(); Bringup.Dispose(); }
 
     private void UpdateTray() => TrayState = TrayStateOf(_client.State == ConnectionState.Connected, Devices.Snapshot);
 }
@@ -353,7 +361,7 @@ public sealed class HostStartViewModel : ObservableObject, IDisposable
 
     private async Task RunAsync()
     {
-        if (!IsOffered) return; // connected, blocked or nothing to start with; ExecuteAsync does not consult CanExecute
+        if (!IsOffered) return; // Direct method callers must also refuse connected or blocked sessions.
         var run = Interlocked.Increment(ref _run);
         var since = _connection.Connections;
         var token = _stop.Token;

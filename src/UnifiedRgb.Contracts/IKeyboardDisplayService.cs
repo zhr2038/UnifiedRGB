@@ -5,6 +5,11 @@ namespace UnifiedRgb.Contracts;
 /// <summary>Separate optional local control display. Never part of case blackout or scene packages.</summary>
 public interface IKeyboardDisplayService
 {
+    Task<KeyboardCodexUsageDto> GetKeyboardCodexUsageAsync(CancellationToken ct = default)
+        => throw new NotSupportedException("Codex usage is not supported by this Host.");
+    Task<KeyboardCodexUsageDto> SetKeyboardCodexUsageEnabledAsync(bool enabled, CancellationToken ct = default)
+        => throw new NotSupportedException("Codex usage is not supported by this Host.");
+
     Task<KeyboardDisplayStatusDto> GetKeyboardDisplayStatusAsync(CancellationToken ct = default);
     Task SetKeyboardDisplayEnabledAsync(bool enabled, CancellationToken ct = default);
 

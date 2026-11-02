@@ -35,12 +35,14 @@ public sealed class ConfiguredKeyboardFirmwareTests
     [Theory]
     [InlineData(null)] [InlineData("")] [InlineData("0012000000250001")] [InlineData("001300000025000100")]
     [InlineData("001200000000000000")] [InlineData("00120000002G000100")] [InlineData("0800070025000100")]
-    public async Task Invalid_or_nonwired_configured_header_cannot_reach_either_factory_entry(string? header)
+    public async Task Diagnostic_header_text_does_not_veto_a_verified_device_or_change_its_transport(string? header)
     {
-        var options = Verified with { FirmwareHeader = header! }; options.HasVerifiedWiredIdentity.Should().BeFalse();
+        var options = Verified with { FirmwareHeader = header! }; options.HasVerifiedWiredIdentity.Should().BeTrue();
         using var factory = new ConfiguredFactory(); using var service = Service(options, factory, DirectoryForFixture());
-        using var connection = await Open(service); connection.Should().BeNull();
-        factory.ConfiguredOpens.Should().Be(0); factory.LegacyOpens.Should().Be(0);
+        using var connection = await Open(service); connection.Should().NotBeNull();
+        connection!.DeviceKey.Should().Be(Verified.DeviceKey);
+        factory.Header.Should().Be(RogRuntimeCompatibility.RouteLabel("wired", header));
+        factory.ConfiguredOpens.Should().Be(1); factory.LegacyOpens.Should().Be(0); factory.Io.Commands.Should().Be(0);
     }
 
     [Fact]

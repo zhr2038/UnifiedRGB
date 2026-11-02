@@ -1,3 +1,5 @@
+using UnifiedRgb.Devices.AsusRog;
+
 namespace UnifiedRgb.Host.Services;
 
 /// <summary>A connected firmware's answer to <see cref="IKeyboardNativePresentationCapability"/>. Any other value is Unavailable.</summary>
@@ -39,6 +41,7 @@ internal enum KeyboardNativeArtwork
     CustomAnimation = 4,
     /// <summary>The transient status/scene-name popup of a valid lever action.</summary>
     InteractionStatus = 5,
+    CodexQuota = 6,
 }
 
 /// <summary>
@@ -52,6 +55,7 @@ internal enum KeyboardNativeArtwork
 /// preference is on and its prepared frames play on the shared timeline) or, otherwise, no Host artwork at all: the keyboard's
 /// stored original animation. Only a valid lever action (<see cref="InteractionBegan"/>) overlays the status page with the scene
 /// caption, while the action is pending plus <see cref="InteractionHoldMs"/>, bounded by <see cref="InteractionMaximumMs"/>;
+/// with a case-power observation the original is requested only at confirmed blackout, and unavailable ON content uses a status card;
 /// afterwards custom idle resumes at the current shared-timeline position. Background status pixels, ARM/CAP, RGB frames and
 /// ordinary rendering never open or prolong it. The case status-page preference does not choose native idle.
 /// </para>
@@ -60,7 +64,8 @@ internal enum KeyboardNativeArtwork
 /// wake are its clock, so there is no timer or sender here.
 /// </summary>
 internal sealed class KeyboardNativePresentation(KeyboardDisplayAnimation animation, byte[]? logo, TimeProvider time,
-    Func<byte[], byte[]>? overlay = null, Action<byte[]>? frameAcknowledged = null, Func<long>? overlayRevision = null)
+    Func<byte[], byte[]>? overlay = null, Action<byte[]>? frameAcknowledged = null, Func<long>? overlayRevision = null,
+    Func<bool>? caseBlackout = null, Func<byte[]?>? idleFrame = null, CodexEntryHold? codexEntry = null)
 {
     /// <summary>Nominal entry overlay; it ends at this bound after the logo's acknowledged upload, never later.</summary>
     internal const int EntryLogoMs = 1200;
@@ -83,6 +88,28 @@ internal sealed class KeyboardNativePresentation(KeyboardDisplayAnimation animat
     private long _overlaidRevision;
     private int _shownKind, _idle, _reported;
     private string? _overlayProblem;
+    private byte _page;
+    private readonly CodexEntryHold _codexEntry = codexEntry ?? new(time);
+
+    /// <summary>Only the actor's immutable, verified capability selects the independent physical page.</summary>
+    public byte[]? NativePage(RogNativeCapability capability, byte[] status, bool newEntry = false)
+    {
+        if (!RogNativeMenuCodec.IsAdmittedPage(capability)) return null;
+        _codexEntry.Observe(capability.Mode);
+        if (_page != capability.Mode)
+        {
+            Stepped(false);
+            animation.EndSession(); // returning to Guangyu samples the current shared phase, never a held pre-Codex frame
+            _page = capability.Mode;
+        }
+        if (capability.Mode == RogNativeMenuCodec.NativeMode) return Native(status, newEntry);
+        if (newEntry) Stepped(false);
+        _entered = true;
+        if (_codexEntry.Holding) return DeviceIdle();
+        if (CachedIdle() is not { } quota) return DeviceIdle();
+        Volatile.Write(ref _idle, (int)KeyboardNativeArtwork.CodexQuota);
+        return Choose(quota, quota, KeyboardNativeArtwork.CodexQuota);
+    }
 
     /// <summary>Inside one native-mode entry: the legacy selector must not touch the animation's held frame meanwhile.</summary>
     public bool Entered => _entered;
@@ -93,7 +120,7 @@ internal sealed class KeyboardNativePresentation(KeyboardDisplayAnimation animat
     public KeyboardNativeArtwork Shown => (KeyboardNativeArtwork)Volatile.Read(ref _shownKind);
 
     /// <summary>The latest native idle selection: None before one, <see cref="KeyboardNativeArtwork.CustomAnimation"/>, or
-    /// <see cref="KeyboardNativeArtwork.DeviceAnimation"/> (custom animation off or not playable now). Any thread.</summary>
+    /// <see cref="KeyboardNativeArtwork.DeviceAnimation"/>, or StatusPage while ON content is unavailable. Any thread.</summary>
     public KeyboardNativeArtwork IdleChoice => (KeyboardNativeArtwork)Volatile.Read(ref _idle);
 
     /// <summary>Why the scene overlay was last unavailable (the ordinary frame was presented instead), or null. Any thread.</summary>
@@ -105,7 +132,8 @@ internal sealed class KeyboardNativePresentation(KeyboardDisplayAnimation animat
     /// is the status page through the scene overlay; it neither selects nor acknowledges an animation frame, and the shared
     /// timeline keeps its own position meanwhile. After the logo or a popup the custom animation restarts its selection at the
     /// current shared-timeline position (never a held or zero frame). A custom animation that is not playable now (off, not
-    /// admitted, preparing, unbound, blocked timeline, tripped breaker) yields null, never the status page or a held frame.
+    /// admitted, preparing, unbound, blocked timeline, tripped breaker) yields the status card under a case-power policy.
+    /// Without that optional policy the previous custom-or-device idle contract is preserved.
     /// </summary>
     public byte[]? Native(byte[] status, bool newEntry = false)
     {
@@ -120,6 +148,14 @@ internal sealed class KeyboardNativePresentation(KeyboardDisplayAnimation animat
             _resumeIdle = true;
             return Choose(Overlay(status), status, KeyboardNativeArtwork.InteractionStatus);
         }
+        // Only a confirmed case blackout requests stock idle. Unknown/preparing ON content stays on a Host status card.
+        // This is a cached observation, never an RGB/device read on the single owner actor.
+        if (caseBlackout?.Invoke() == true)
+        {
+            if (IdleChoice != KeyboardNativeArtwork.DeviceAnimation) animation.EndSession();
+            _resumeIdle = true;
+            return DeviceIdle();
+        }
         if (_resumeIdle)
         {
             animation.EndSession(); // the next selection is the current shared position; no frame held from before
@@ -132,6 +168,16 @@ internal sealed class KeyboardNativePresentation(KeyboardDisplayAnimation animat
             Volatile.Write(ref _idle, (int)KeyboardNativeArtwork.CustomAnimation);
             return Choose(selected, selected, KeyboardNativeArtwork.CustomAnimation);
         }
+        if (caseBlackout is not null)
+        {
+            Volatile.Write(ref _idle, (int)KeyboardNativeArtwork.StatusPage);
+            return Choose(status, status, KeyboardNativeArtwork.StatusPage);
+        }
+        return DeviceIdle();
+    }
+
+    private byte[]? DeviceIdle()
+    {
         Volatile.Write(ref _idle, (int)KeyboardNativeArtwork.DeviceAnimation);
         _chosen = _chosenBase = null;
         _chosenKind = KeyboardNativeArtwork.DeviceAnimation;
@@ -207,6 +253,7 @@ internal sealed class KeyboardNativePresentation(KeyboardDisplayAnimation animat
         if (!_entered) { _entered = true; _logoUntil = null; }
         if (logo is not null && (_logoUntil is not { } until || time.GetTimestamp() < until))
             return Choose(logo, logo, KeyboardNativeArtwork.Logo);
+        if (_resumeIdle) { animation.EndSession(); _resumeIdle = false; }
         var selected = animation.Select(status, pageEnabled, nativeOwnsDisplay: false); // OFF: drops a held frame, reads no timeline
         return Choose(Overlay(selected), selected, KeyboardNativeArtwork.StatusPage);
     }
@@ -238,7 +285,7 @@ internal sealed class KeyboardNativePresentation(KeyboardDisplayAnimation animat
         if (_shown is null || !chosen.AsSpan().SequenceEqual(_shown))
         {
             if (ReferenceEquals(_chosenBase, logo)) _logoUntil ??= time.GetTimestamp() + EntryLogoMs * time.TimestampFrequency / 1000;
-            else if (_chosenKind != KeyboardNativeArtwork.InteractionStatus && !ReferenceEquals(_chosenBase, _shownBase))
+            else if (_chosenKind is not (KeyboardNativeArtwork.InteractionStatus or KeyboardNativeArtwork.CodexQuota) && !ReferenceEquals(_chosenBase, _shownBase))
                 animated = animation.Uploaded();
         }
         _shown = chosen; _shownBase = _chosenBase;
@@ -260,6 +307,12 @@ internal sealed class KeyboardNativePresentation(KeyboardDisplayAnimation animat
     {
         _chosenBase = source; _chosenKind = kind;
         return _chosen = chosen;
+    }
+
+    private byte[]? CachedIdle()
+    {
+        try { return idleFrame?.Invoke() is { Length: 6656 } pixels ? pixels : null; }
+        catch (Exception ex) when (ex is not OutOfMemoryException) { return null; }
     }
 
     /// <summary>The scene overlay over the selected post-logo frame, never the logo. It sees a copy, so it cannot alter the shared

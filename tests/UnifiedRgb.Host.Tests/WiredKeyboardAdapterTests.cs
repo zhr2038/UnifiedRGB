@@ -30,12 +30,9 @@ public sealed class WiredKeyboardAdapterTests
     {
         var options = Options with { ControlVerified = false, LightingVerified = false, WirelessControlVerified = true,
             WirelessLightingVerified = true, WirelessReceiverKey = new string('B', 64), WirelessFirmwareHeader = badHeader ? "" : "0800070024000100" };
-        if (badHeader) ((Action)(() => { using var adapter = new WiredKeyboardAdapter(new(), options); })).Should().Throw<InvalidOperationException>();
-        else
-        {
-            using var adapter = new WiredKeyboardAdapter(new(), options);
-            (await adapter.DiscoverAsync(default)).Single().Id.Value.Should().Be("asusr:wired:" + new string('B', 64));
-        }
+        using var adapter = new WiredKeyboardAdapter(new(), options);
+        (await adapter.DiscoverAsync(default)).Single().Id.Value.Should().Be("asusr:wired:" + new string('B', 64),
+            "a blank diagnostic header does not change the manually verified receiver key or grant any extra permission");
     }
 
     [Theory]

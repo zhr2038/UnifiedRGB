@@ -25,6 +25,8 @@ Windows x64 自包含安装包通过 [GitHub Releases](https://github.com/zhr203
 - **全机灯效**：颜色、呼吸、流动、堆积与波浪回退；串行路径、并行设备组、方向、安装映射和冷头灯环校准。
 - **机箱总览与开关**：查看灯光、屏幕和外设状态，执行全机熄灯或恢复；重复熄灯保留恢复点，已运行的场景不会因重复开启意图而重新开始。
 - **ROG 外设**：键盘及鼠标 RGB、键盘 OLED 状态与动画接口，以及原生“光域”菜单控制。本机已启用 85 个独立键盘灯位，包含空格五颗；USB / 2.4G 各一轮 3 分钟彩虹实测通过。
+- **Codex 独立页**：支持本机额度、运行任务名称与本轮时长、长名称滚动和固定目标启动。需要相应原生固件能力；USB 与 2.4G 的连接、图像与输入链分别验证，软件测试不能代替实机显示验收。
+- **固件维护入口**：加载包、检查信任、备份、安装和恢复采用独立事务与维护交接。默认硬件禁用，不随程序分发镜像、信任目录或本机安装授权；开发规范随界面提供。
 - **统一时序**：无线设备播放上传的动画循环；原生直驱设备按共享时间模型跟随，支持接收状态核对与有界重传。
 - **原生五屏**：三块 TL 风扇 LCD、H2 冷头屏和受支持的 TURZX 长条屏；图片/GIF/受支持的 MP4 背景、电脑数据叠加、逐屏内容和编码结果预览。
 - **本机屏幕设置**：按 ScreenId 保存 0°/90°/180°/270° 安装方向，切换场景包时保留；PNG 编码质量策略可单独保存。
@@ -106,7 +108,9 @@ cd UnifiedRGB
 
 dotnet restore .\src\UnifiedRgb.sln
 dotnet build .\src\UnifiedRgb.sln -c Release --no-restore -warnaserror
-dotnet test .\src\UnifiedRgb.sln -c Release --no-build -m:1
+dotnet test .\src\UnifiedRgb.sln -c Release --no-build -m:1 --filter 'FullyQualifiedName!~UnifiedRgb.Core.Tests.ClockTests'
+dotnet build-server shutdown
+dotnet test .\tests\UnifiedRgb.Core.Tests -c Release --no-build --filter 'FullyQualifiedName~UnifiedRgb.Core.Tests.ClockTests'
 ```
 
 源码默认启用虚拟适配器，关闭真实设备后端和屏幕输出；无线设备列表与 ROG 设备绑定为空。构建不会复制作者机器的配置，也不会自动停止厂商程序。
@@ -127,7 +131,7 @@ Start-Process .\src\UnifiedRgb.App\bin\Release\net10.0-windows\UnifiedRgb.App.ex
 
 测试覆盖效果数学、上传预算、传输规则、设备状态机、场景包安全与事务、屏幕编码和方向持久化、界面草稿及恢复行为。
 
-当前完整回归仍有已知基线失败，不能据本页或定向测试结果宣称全套通过。CI 的实际结果以对应提交的 [Actions](https://github.com/zhr2038/UnifiedRGB/actions) 为准。
+完整功能回归、单独的真实时钟性能门槛和安装生命周期由 CI 验证；缺少私有 codec 或抓包前提的用例会明确跳过，不分发这些私有材料。定向测试通过不能代替全部硬件验收，实际结果以对应提交的 [Actions](https://github.com/zhr2038/UnifiedRGB/actions) 为准。[本轮逐功能审核与修复记录](design/FUNCTIONAL-AUDIT-20261102.zh-CN.md)。
 
 - 通用回归使用仓库内的合成样例和 fake 设备，无需机箱硬件。
 - 建议按上述命令串行运行测试程序集，避免调度计时测试与其他进程的 WPF 编码测试争用资源；计时测试仍保留原有2ms阈值。
@@ -202,6 +206,7 @@ flowchart LR
 | `src/UnifiedRgb.Transports.Win` | WinUSB / HID / NVIDIA / SMBus 与传输限制 |
 | `src/UnifiedRgb.Screens` | 素材、合成、编码、电脑数据与原生屏幕输出 |
 | `src/UnifiedRgb.Contracts`、`src/UnifiedRgb.Cli` | IPC 契约与命令行 |
+| `src/UnifiedRgb.Firmware*` | 发行包校验、维护事务、独立执行器与受保护运行时 |
 | `tests` | 通用回归、合成协议样例和条件本机验证 |
 | `tools/scene-packages` | 通用场景包生成与检查 |
 | `tools/codegen` | 34 个通用特效的生成器与只读一致性检查 |

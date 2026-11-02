@@ -13,6 +13,7 @@ namespace UnifiedRgb.Host.Tests;
 /// Synthetic in-memory keyboard fixtures only (no Host process, HID, settings or physical claim). A configured anchor runs
 /// same-family devices without repinning; device key, transport, profile, journal and native scope binding stay strict.
 /// </summary>
+[Collection("Host")] // Real owner startup renders status artwork, including the Diagnostics partial.
 public sealed partial class KeyboardRuntimeCompatibilityTests : IDisposable
 {
     private const string Key = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
@@ -56,7 +57,7 @@ public sealed partial class KeyboardRuntimeCompatibilityTests : IDisposable
     }
 
     [Theory]
-    [InlineData("device")] [InlineData("kind")] [InlineData("cross-kind")] [InlineData("scope-family")] [InlineData("scope-transport-format")]
+    [InlineData("device")] [InlineData("kind")] [InlineData("cross-kind")] [InlineData("scope-label")] [InlineData("scope-transport-format")]
     public void Native_route_scope_stays_an_exact_device_transport_and_identity_family(string fault)
     {
         // Expectation change: the former header-equality rows (scope 24 vs policy 25, policy 26) encoded a declared header as scope.
@@ -68,7 +69,7 @@ public sealed partial class KeyboardRuntimeCompatibilityTests : IDisposable
             case "device": key = new string('B', 64); break;
             case "kind": kind = "bluetooth"; break;
             case "cross-kind": kind = "wireless"; break;
-            case "scope-family": header = "001200000024000200"; break;
+            case "scope-label": header = "001300000024000200"; break;
             default: header = Wireless24; break;
         }
         policy.MatchesScope(key, header, kind).Should().BeFalse();
@@ -156,7 +157,7 @@ public sealed partial class KeyboardRuntimeCompatibilityTests : IDisposable
     }
 
     [Theory]
-    [InlineData("device")] [InlineData("transport")] [InlineData("profile")] [InlineData("family")] [InlineData("malformed")]
+    [InlineData("device")] [InlineData("transport")] [InlineData("profile")] [InlineData("label")] [InlineData("malformed")]
     [InlineData("missing")] [InlineData("schema1-mismatch")]
     public async Task Journal_for_another_device_transport_profile_or_family_is_retained_without_any_write(string fault)
     {
@@ -165,7 +166,7 @@ public sealed partial class KeyboardRuntimeCompatibilityTests : IDisposable
             "device" => new { Schema = 2, DeviceKey = new string('B', 64), FirmwareHeader = Wired24, Brightness = (byte)25, ProfileToken = (byte)6 },
             "transport" => new { Schema = 2, DeviceKey = Key, FirmwareHeader = Wireless24, Brightness = (byte)25, ProfileToken = (byte)6 },
             "profile" => new { Schema = 2, DeviceKey = Key, FirmwareHeader = Wired24, Brightness = (byte)25, ProfileToken = (byte)5 },
-            "family" => new { Schema = 2, DeviceKey = Key, FirmwareHeader = "001200000024000200", Brightness = (byte)25, ProfileToken = (byte)6 },
+            "label" => new { Schema = 2, DeviceKey = Key, FirmwareHeader = "001300000024000200", Brightness = (byte)25, ProfileToken = (byte)6 },
             "malformed" => new { Schema = 2, DeviceKey = Key, FirmwareHeader = "00120000002G000100", Brightness = (byte)25, ProfileToken = (byte)6 },
             "missing" => new { Schema = 2, DeviceKey = Key, Brightness = (byte)25, ProfileToken = (byte)6 },
             _ => new { Schema = 1, DeviceKey = Key, FirmwareHeader = Wired25, Brightness = (byte)40 },
@@ -177,8 +178,17 @@ public sealed partial class KeyboardRuntimeCompatibilityTests : IDisposable
         try
         {
             await WaitAsync(service, "Error"); await Task.Delay(700);
-            factory.Devices.Should().ContainSingle("a refused recovery is sticky and never reopens in a loop");
-            factory.Devices[0].Mutations.Should().Be(0);
+            if (fault is "profile" or "schema1-mismatch")
+            {
+                factory.Devices.Should().ContainSingle("only the recorded live profile/brightness check requires opening a device");
+                factory.Devices[0].Mutations.Should().Be(0);
+            }
+            else
+            {
+                factory.Anchors.Should().BeEmpty("invalid recorded identity/transport is rejected before opening any HID route");
+                factory.Devices.Should().BeEmpty();
+            }
+            (await service.GetKeyboardDisplayStatusAsync()).LastError.Should().NotBeNullOrEmpty();
         }
         finally { await service.StopAsync(default); }
         File.ReadAllBytes(JournalPath).Should().Equal(bytes);
@@ -205,13 +215,13 @@ public sealed partial class KeyboardRuntimeCompatibilityTests : IDisposable
     }
 
     [Theory]
-    [InlineData("cross-transport")] [InlineData("family")] [InlineData("device")]
+    [InlineData("cross-transport")] [InlineData("label")] [InlineData("device")]
     public async Task Peripheral_release_never_replays_a_journal_across_transport_family_or_device(string fault)
     {
         var bytes = WriteJournal(new
         {
             Schema = 2, DeviceKey = fault == "device" ? new string('B', 64) : Key,
-            FirmwareHeader = fault switch { "cross-transport" => Wireless24, "family" => "001200000024000200", _ => Wired24 },
+            FirmwareHeader = fault switch { "cross-transport" => Wireless24, "label" => "001300000024000200", _ => Wired24 },
             Brightness = (byte)25, ProfileToken = (byte)6,
         });
         var wired = new WiredFactory(_ => new Io { Patch = 0x24 });
@@ -221,16 +231,28 @@ public sealed partial class KeyboardRuntimeCompatibilityTests : IDisposable
     }
 
     [Fact]
-    public async Task Genuinely_incompatible_firmware_family_is_a_sticky_error_without_mutation_or_reopen()
+    public async Task Initial_OEM_family_bytes_are_diagnostic_while_the_live_owner_still_restores_its_original_state()
     {
-        var factory = new WiredFactory(_ => new Io { Patch = 0x25, Major = 2 });
+        var factory = new WiredFactory(_ => new Io { Patch = 0x51, Major = 2 });
+        using var service = Make(Pinned(Wired24), factory);
+        await service.StartAsync(default);
+        try { await WaitAsync(service, "Running"); }
+        finally { await service.StopAsync(default); }
+        factory.Devices.Should().ContainSingle().Which.Brightness.Should().Be(25);
+        File.Exists(JournalPath).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Malformed_identity_envelope_is_a_sticky_error_without_mutation_or_reopen()
+    {
+        var factory = new WiredFactory(_ => new Io { Patch = 0x25, MalformedEnvelope = true });
         using var service = Make(Pinned(Wired24), factory);
         await service.StartAsync(default);
         try
         {
             await WaitAsync(service, "Error"); await Task.Delay(700);
             factory.Devices.Should().ContainSingle(); factory.Devices[0].Mutations.Should().Be(0);
-            (await service.GetKeyboardDisplayStatusAsync()).LastError.Should().Contain("firmware differs");
+            (await service.GetKeyboardDisplayStatusAsync()).LastError.Should().NotBeNullOrEmpty();
         }
         finally { await service.StopAsync(default); }
         File.Exists(JournalPath).Should().BeFalse();
@@ -384,6 +406,7 @@ public sealed partial class KeyboardRuntimeCompatibilityTests : IDisposable
         private readonly Channel<byte[]> _queue = Channel.CreateBounded<byte[]>(8);
         public byte Patch { get; set; } = 0x24;
         public byte Major { get; init; } = 1;
+        public bool MalformedEnvelope { get; init; }
         public byte Brightness { get; set; } = 25;
         public int Mutations { get; private set; }
         public int NativeQueries { get; private set; }
@@ -396,7 +419,7 @@ public sealed partial class KeyboardRuntimeCompatibilityTests : IDisposable
             ct.ThrowIfCancellationRequested(); var p = request.ToArray(); var b = new byte[65]; p.AsSpan(0, 5).CopyTo(b);
             switch (p[1], p[2])
             {
-                case (0x12, 0): b[5] = Patch; b[7] = Major; b[9] = 6; b[11] = 6; break;
+                case (0x12, 0): if (MalformedEnvelope) b[0] = 1; b[5] = Patch; b[7] = Major; b[9] = 6; b[11] = 6; break;
                 case (0x21, 0): b[5] = 3; break;
                 case (0x23, 2): b[5] = 1; break;
                 case (0x23, 3): b[5] = Brightness; break;

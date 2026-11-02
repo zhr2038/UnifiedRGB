@@ -1,0 +1,31 @@
+<UserControl x:Class="UnifiedRgb.App.Views.FirmwareUpdateView" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+ <UserControl.Resources><ResourceDictionary>
+  <ResourceDictionary.MergedDictionaries><ResourceDictionary Source="/UnifiedRgb.App;component/Themes/StudioTheme.xaml"/></ResourceDictionary.MergedDictionaries>
+  <Style x:Key="FirmwareButton" TargetType="Button" BasedOn="{StaticResource QuietButton}"><Setter Property="Margin" Value="0,0,8,8"/></Style>
+ </ResourceDictionary></UserControl.Resources>
+ <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Margin="0,18,0,0">
+  <StackPanel Margin="0,0,12,16" MaxWidth="760" HorizontalAlignment="Stretch">
+   <DockPanel Margin="0,0,0,12"><Button DockPanel.Dock="Right" Content="开发规范" Click="OpenGuideClick" Style="{StaticResource FirmwareButton}"/><TextBlock Text="固件更新" FontSize="22" FontWeight="SemiBold" VerticalAlignment="Center"/></DockPanel>
+   <TextBlock Text="选择固件包，自动进入升级模式，再安装并校验。" Style="{StaticResource Caption}" TextWrapping="Wrap"/>
+   <WrapPanel Margin="0,14,0,12"><Button Content="选择固件包" Command="{Binding LoadCommand}" Style="{StaticResource FirmwareButton}"/><Button Content="刷新状态" Command="{Binding ReadCommand}" Style="{StaticResource FirmwareButton}"/></WrapPanel>
+   <Border Background="{StaticResource SurfaceBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="8" Padding="18"><StackPanel>
+    <TextBlock Text="{Binding Title}" FontSize="17" FontWeight="SemiBold" TextWrapping="Wrap"/><TextBlock Text="{Binding Notes}" Style="{StaticResource Caption}" TextWrapping="Wrap" Margin="0,8,0,12"/>
+    <TextBlock Text="{Binding Trust}" Foreground="{StaticResource AccentBrush}" TextWrapping="Wrap"/><TextBlock Text="{Binding Device}" Style="{StaticResource Caption}" TextWrapping="Wrap" Margin="0,6,0,0"/>
+   </StackPanel></Border>
+   <TextBlock Text="准备键盘" FontSize="16" FontWeight="SemiBold" Margin="0,20,0,10"/>
+   <WrapPanel><Button Content="沿用已确认的开发版" Command="{Binding ReuseRetainedCommand}" Style="{StaticResource FirmwareButton}"/><Button Content="自动进入升级模式" Command="{Binding PrepareCommand}" Style="{StaticResource FirmwareButton}"/></WrapPanel>
+   <TextBlock Text="{Binding AdmissionReferenceText}" Style="{StaticResource Caption}" TextWrapping="Wrap"/>
+   <Border BorderBrush="{StaticResource LineBrush}" BorderThickness="0,1,0,0" Padding="0,18,0,0" Margin="0,18,0,0"><StackPanel>
+    <TextBlock Text="{Binding PhaseTitle}" FontSize="17" Foreground="{StaticResource AccentBrush}" TextWrapping="Wrap"/><TextBlock Text="{Binding Detail}" Style="{StaticResource Caption}" TextWrapping="Wrap" Margin="0,8,0,10"/>
+    <ProgressBar Minimum="0" Maximum="55" Value="{Binding VerifiedPages, Mode=OneWay}" IsIndeterminate="{Binding Indeterminate, Mode=OneWay}" Height="8" Foreground="{StaticResource AccentBrush}" Background="{StaticResource RaisedBrush}"/><TextBlock Text="{Binding ProgressText}" Style="{StaticResource Caption}" Margin="0,8,0,12"/>
+    <WrapPanel><Button Content="安装固件" Command="{Binding InstallCommand}" Margin="0,0,8,8"/><Button Content="取消" Command="{Binding CancelCommand}" Style="{StaticResource FirmwareButton}"/><Button Content="恢复程序连接" Command="{Binding FinishCommand}" Style="{StaticResource FirmwareButton}"/></WrapPanel>
+    <TextBlock Text="请保持 USB 连接。擦写开始后不能取消，关闭页面不会停止升级。" Style="{StaticResource Caption}" TextWrapping="Wrap"/><TextBlock Text="{Binding Message}" Foreground="{StaticResource AccentBrush}" TextWrapping="Wrap" Margin="0,10,0,0"/>
+   </StackPanel></Border>
+   <Expander Header="备份与手动恢复" Margin="0,20,0,0" Foreground="{StaticResource TextBrush}"><StackPanel Margin="0,12,0,0">
+    <WrapPanel><Button Content="备份当前固件" Command="{Binding BackupCommand}" Style="{StaticResource FirmwareButton}"/><Button Content="手动进入升级模式" Command="{Binding ManualPrepareCommand}" Style="{StaticResource FirmwareButton}"/><Button Content="恢复刷机前固件" Command="{Binding RestoreCommand}" Style="{StaticResource FirmwareButton}"/></WrapPanel>
+    <TextBlock Text="安装时会自动保存刷机前固件；恢复使用本次安装前的备份。" Style="{StaticResource Caption}" TextWrapping="Wrap"/><TextBox Text="{Binding BackupPath, Mode=OneWay}" IsReadOnly="True" Margin="0,8,0,0"/>
+   </StackPanel></Expander>
+   <Expander Header="诊断与导出" Margin="0,16,0,0" Foreground="{StaticResource TextBrush}"><StackPanel Margin="0,12,0,0"><TextBox Text="{Binding Diagnostics, Mode=OneWay}" IsReadOnly="True" TextWrapping="Wrap"/><Button Content="导出诊断与备份" Command="{Binding ExportCommand}" HorizontalAlignment="Left" Margin="0,12,0,0" Style="{StaticResource FirmwareButton}"/></StackPanel></Expander>
+  </StackPanel>
+ </ScrollViewer>
+</UserControl>

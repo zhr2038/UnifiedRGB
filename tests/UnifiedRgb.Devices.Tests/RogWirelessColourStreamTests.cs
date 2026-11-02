@@ -33,7 +33,7 @@ public sealed class RogWirelessColourStreamTests
         Keys.Select(k => k.Color).Distinct().Should().HaveCount(85);
         io.Reads.Should().Be(0); connection.PairingEvidence.Should().Be(before);
         (await connection.ExchangeAsync(RogWiredOledProtocol.Query(0x23, 3), false, default))[5].Should().Be(37);
-        io.Reads.Should().Be(1); connection.PairingEvidence.Should().Be(before);
+        io.RepliesRead.Should().Be(1, "RF quiet-window reads do not invent a control reply"); connection.PairingEvidence.Should().Be(before);
     }
 
     [Theory]
@@ -45,11 +45,12 @@ public sealed class RogWirelessColourStreamTests
         var before = connection.PairingEvidence;
         foreach (var p in io.Writes.ToArray()) io.Enqueue(ColourReply(p[3]));
         for (var i = 0; i < 12; i++) io.Enqueue(ColourReply(14));
-        var drained = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        io.OnRead = n => { if (n == 20) drained.TrySetResult(); };
+        var written = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        io.WriteGate = (_, _) => { written.TrySetResult(); return Task.CompletedTask; };
         var request = Request(command);
         var exchange = connection.ExchangeAsync(request, false, default);
-        await drained.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await written.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        io.RepliesRead.Should().Be(19, "the old RGB replies are drained before the strict request is written");
         exchange.IsCompleted.Should().BeFalse("RGB replies cannot acknowledge a strict control request");
         connection.PairingEvidence.Should().Be(before, "discarded RGB replies are not keyboard pairing evidence");
         var ownReply = ControlReply(request); io.Enqueue(ownReply);
@@ -82,8 +83,9 @@ public sealed class RogWirelessColourStreamTests
         using var io = new Fake(); using var connection = Open(io);
         if (kind != "unwritten-owner") await connection.WriteLightingFrameAsync(Keys, default);
         io.Enqueue(BadReply(kind));
-        await ((Func<Task>)(() => connection.ExchangeAsync(Request("settings"), false, default)))
-            .Should().ThrowAsync<InvalidDataException>();
+        var failure = await ((Func<Task>)(() => connection.ExchangeAsync(Request("settings"), false, default)))
+            .Should().ThrowAsync<Exception>();
+        failure.Which.Should().BeOfType(kind == "unwritten-owner" ? typeof(RogOledUnexpectedReplyException) : typeof(InvalidDataException));
         await RequirePoisoned(connection, io);
     }
 
@@ -281,6 +283,7 @@ public sealed class RogWirelessColourStreamTests
         private readonly RogWiredOledTests.OledFake _inner = new() { Brightness = 37 };
         public List<byte[]> Writes { get; } = [];
         public int Reads { get; private set; }
+        public int RepliesRead { get; private set; }
         public int PendingReads { get; private set; }
         public int PendingWrites { get; private set; }
         public int MaximumReaders { get; private set; }
@@ -314,7 +317,7 @@ public sealed class RogWirelessColourStreamTests
         public async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct)
         {
             Reads++; PendingReads++; MaximumReaders = Math.Max(MaximumReaders, PendingReads);
-            try { OnRead?.Invoke(Reads); var reply = await _queue.Reader.ReadAsync(ct); reply.CopyTo(buffer); return reply.Length; }
+            try { OnRead?.Invoke(Reads); var reply = await _queue.Reader.ReadAsync(ct); RepliesRead++; reply.CopyTo(buffer); return reply.Length; }
             finally { PendingReads--; }
         }
 

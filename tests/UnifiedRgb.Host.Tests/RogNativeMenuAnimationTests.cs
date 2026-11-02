@@ -51,6 +51,8 @@ public sealed partial class RogNativeMenuSourceTests
         rig.Timeline.At(1500);
         await rig.Owner.StartAsync(default);
         await Until(() => rig.Control.ImageBegins >= 1);
+        await Until(() => rig.Control.Rebuilt.AsSpan().SequenceEqual(rig.Owner.EntryLogoPixels.Span));
+        rig.Clock.Advance(TimeSpan.FromMilliseconds(KeyboardNativePresentation.EntryLogoMs));
         await Until(() => rig.Control.Rebuilt.AsSpan().SequenceEqual(KeyboardDisplayServiceTests.Fill(0x22)));
         await rig.Bridge.WriteAsync(new(11, 22, 33), default).WaitAsync(Patience);
         (await rig.Owner.GetKeyboardDisplayAnimationAsync()).State.Should().Be(KeyboardDisplayAnimationStates.Playing);
@@ -72,6 +74,7 @@ public sealed partial class RogNativeMenuSourceTests
             Scene = new([new("screen:h2:test", KeyboardDisplayServiceTests.AssetA, TimelineId: KeyboardDisplayServiceTests.SharedTimelineId)]),
         };
         public FakeSharedTimeline Timeline { get; } = new();
+        public ManualTimeProvider Clock { get; } = new();
         public KeyboardDisplayService Owner { get; }
 
         public AnimatedOwnerRig(KeyboardNativeMenuOptions? policy, byte mode, bool nativeFirmware = true)
@@ -93,7 +96,7 @@ public sealed partial class RogNativeMenuSourceTests
                 KeyboardDisplay = new() { Enabled = false, ControlVerified = true, LightingVerified = true,
                     DeviceKey = Control.DeviceKey, FirmwareHeader = Control.FirmwareHeader, AnimationAdmitted = true },
             }, rgb, KeyboardAnimationScreens.Create(Media), new LegacyPageFactory(Control, false), new MutationClearGuard(), Bridge,
-                nativeMenu: source, keyboardMedia: Media, sharedTimeline: Timeline, time: new ManualTimeProvider());
+                nativeMenu: source, keyboardMedia: Media, sharedTimeline: Timeline, time: Clock);
         }
 
         public async ValueTask DisposeAsync()

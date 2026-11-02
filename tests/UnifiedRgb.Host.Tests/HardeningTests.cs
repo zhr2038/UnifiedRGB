@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.IO.Pipes;
 using System.Security.Principal;
 using UnifiedRgb.App.Ipc;
@@ -222,18 +223,35 @@ public sealed class SoakTests(Xunit.Abstractions.ITestOutputHelper output)
         }
 
         var (heap0, handles0, threads0) = Measure();
-        var deadline = DateTime.UtcNow.AddSeconds(seconds);
+        var duration = TimeSpan.FromSeconds(seconds);
+        var elapsed = Stopwatch.StartNew();
+        var churnTime = TimeSpan.Zero;
+        var paceWait = TimeSpan.Zero;
         var rounds = 0;
-        while (DateTime.UtcNow < deadline)
+        // Pace starts, not completions: slow RPC/durable writes consume a slot rather than paying an extra
+        // 50 ms after every session. PeriodicTimer coalesces missed ticks, so there is no queued catch-up burst.
+        // The original duration and >5 completed sessions/second workload gate remain unchanged.
+        using (var pace = new PeriodicTimer(TimeSpan.FromMilliseconds(50)))
         {
-            await ChurnAsync(rounds++);
-            await Task.Delay(50);
+            while (elapsed.Elapsed < duration)
+            {
+                var waitStarted = Stopwatch.GetTimestamp();
+                if (!await pace.WaitForNextTickAsync()) break;
+                paceWait += Stopwatch.GetElapsedTime(waitStarted);
+                if (elapsed.Elapsed >= duration) break;
+                var churnStarted = Stopwatch.GetTimestamp();
+                await ChurnAsync(rounds);
+                churnTime += Stopwatch.GetElapsedTime(churnStarted);
+                rounds++;
+            }
         }
+        elapsed.Stop();
 
         await Task.Delay(500); // let closed sessions finish
         var (heap1, handles1, threads1) = Measure();
 
         output.WriteLine($"SOAK {seconds}s: {rounds} sessions; heap {heap0 / 1024} KiB -> {heap1 / 1024} KiB; handles {handles0} -> {handles1}; threads {threads0} -> {threads1}");
+        output.WriteLine($"SOAK pacing: elapsed {elapsed.Elapsed.TotalSeconds:F3}s; RPC/session work {churnTime.TotalSeconds:F3}s; cadence wait {paceWait.TotalSeconds:F3}s");
         rounds.Should().BeGreaterThan(seconds * 5);
         (heap1 - heap0).Should().BeLessThan(8 * 1024 * 1024, $"managed heap {heap0} → {heap1} after {rounds} sessions");
         (handles1 - handles0).Should().BeLessThan(100, $"handles {handles0} → {handles1}");

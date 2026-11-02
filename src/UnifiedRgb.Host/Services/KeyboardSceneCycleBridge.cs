@@ -45,6 +45,7 @@ public sealed partial class KeyboardSceneCycleBridge : IHostedService, IAsyncDis
     private readonly Func<IScenePackageService> _packages;
     private readonly KeyboardSceneCycleOverlay _overlay;
     private readonly TimeProvider _time;
+    private readonly bool _hostArtworkEnabled;
     private readonly SceneCycleOptions _cycleOptions;
     private readonly ILogger _log;
     private readonly string _listPath;
@@ -81,6 +82,7 @@ public sealed partial class KeyboardSceneCycleBridge : IHostedService, IAsyncDis
         _packages = packages ?? throw new ArgumentNullException(nameof(packages));
         _overlay = overlay ?? throw new ArgumentNullException(nameof(overlay));
         _time = time ?? TimeProvider.System;
+        _hostArtworkEnabled = options.KeyboardDisplay.HostArtworkEnabled;
         _log = log ?? NullLogger.Instance;
         _cycleOptions = cycleOptions ?? new SceneCycleOptions();
         ArgumentOutOfRangeException.ThrowIfLessThan(_cycleOptions.SettleDelay, TimeSpan.Zero, nameof(cycleOptions));
@@ -101,7 +103,9 @@ public sealed partial class KeyboardSceneCycleBridge : IHostedService, IAsyncDis
     }
 
     /// <summary>Queues one admitted Up/Down step; false when the bounded queue is full or the bridge stopped. Never blocks or throws.</summary>
-    public bool Browse(SceneCycleMove move)
+    public bool Browse(SceneCycleMove move) => Browse(move, null);
+
+    internal bool Browse(SceneCycleMove move, Func<bool>? admission)
     {
         if (!Enum.IsDefined(move))
         {
@@ -115,7 +119,7 @@ public sealed partial class KeyboardSceneCycleBridge : IHostedService, IAsyncDis
             return false;
         }
 
-        if (Post(new BrowseCommand(move)))
+        if (Post(new BrowseCommand(move, admission)))
         {
             return true;
         }
@@ -274,7 +278,8 @@ public sealed partial class KeyboardSceneCycleBridge : IHostedService, IAsyncDis
         {
             case BrowseCommand browse:
                 Interlocked.Decrement(ref _queuedBrowses);
-                await BrowseAsync(browse.Move, stop).ConfigureAwait(false);
+                if (browse.Admission?.Invoke() != false)
+                    await BrowseAsync(browse.Move, stop, browse.Admission).ConfigureAwait(false);
                 break;
             case CenterAcceptedCommand accepted:
                 if (accepted.Held)
@@ -310,7 +315,7 @@ public sealed partial class KeyboardSceneCycleBridge : IHostedService, IAsyncDis
         }
     }
 
-    private async Task BrowseAsync(SceneCycleMove move, CancellationToken stop)
+    private async Task BrowseAsync(SceneCycleMove move, CancellationToken stop, Func<bool>? admission = null)
     {
         var cycle = EnsureCycle();
         _engaged = true;
@@ -320,7 +325,7 @@ public sealed partial class KeyboardSceneCycleBridge : IHostedService, IAsyncDis
         }
 
         // Publish the selected name/index on this worker before any new scene apply starts. A queued Current read can miss Selecting.
-        var status = await cycle.MoveAsync(move, Show, stop).ConfigureAwait(false);
+        var status = await cycle.MoveAsync(move, Show, admission, stop).ConfigureAwait(false);
         Record($"browse {move}: {Describe(status)}");
         RequestStatus(); // also when Move changed nothing (no list), so the caption tells why
     }
@@ -658,6 +663,12 @@ public sealed partial class KeyboardSceneCycleBridge : IHostedService, IAsyncDis
     // not optical proof. The existing 10s read bound exceeds its 8s upload bound; unavailable feedback never disables scene control.
     private async Task TransmitSelectionAsync(SceneCycleStatus status, CancellationToken stop)
     {
+        stop.ThrowIfCancellationRequested();
+        if (!_hostArtworkEnabled)
+        {
+            Record("Host OLED output is paused; scene control continues without waiting for caption transmission.");
+            return;
+        }
         var ready = new TaskCompletionSource<KeyboardSceneCycleCaption?>(TaskCreationOptions.RunContinuationsAsynchronously);
         if (!Post(new TransmitCaptionCommand(status, ready))) return;
         using var deadline = new CancellationTokenSource(ReadTimeout, _time);
@@ -867,7 +878,7 @@ public sealed partial class KeyboardSceneCycleBridge : IHostedService, IAsyncDis
 
     private abstract record Command;
 
-    private sealed record BrowseCommand(SceneCycleMove Move) : Command;
+    private sealed record BrowseCommand(SceneCycleMove Move, Func<bool>? Admission) : Command;
 
     private sealed record CenterAcceptedCommand(long Ticket, bool Held) : Command;
 

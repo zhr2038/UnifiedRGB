@@ -54,10 +54,15 @@ public sealed partial class KeyboardDisplayServiceTests
         var keyboardScreens = KeyboardAnimationScreens.Create(media);
         using var service = new KeyboardDisplayService(new UnifiedRgbOptions { DataDirectory = _directory, KeyboardDisplay = Admitted() }, rgb,
             keyboardScreens, factory, new ClearGuard(), keyboardMedia: media, sharedTimeline: timeline, time: time);
+        factory.EntryLogo = service.EntryLogoPixels.ToArray();
         await service.StartAsync(default);
         try
         {
             await WaitAsync(service, "Running");
+            factory.EntryCount.Should().Be(1);
+            factory.LastEntry.Should().Equal(service.EntryLogoPixels.ToArray());
+            time.Advance(TimeSpan.FromMilliseconds(KeyboardNativePresentation.EntryLogoMs));
+            await UntilAsync(() => factory.Count == 1, "post-entry status frame");
             var status = service.ArtworkPixels.ToArray();
             factory.Image(0).Should().Equal(status);
 

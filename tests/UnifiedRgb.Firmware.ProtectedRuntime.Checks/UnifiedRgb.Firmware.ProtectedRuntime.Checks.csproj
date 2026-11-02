@@ -1,0 +1,4 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType><GenerateProgramFile>false</GenerateProgramFile><IsTestProject>false</IsTestProject></PropertyGroup>
+  <ItemGroup><ProjectReference Include="../../src/UnifiedRgb.Firmware.ProtectedRuntime/UnifiedRgb.Firmware.ProtectedRuntime.csproj" /></ItemGroup>
+</Project>

@@ -14,7 +14,7 @@ public sealed partial class KeyboardDisplayServiceTests
     [InlineData(true)]
     public async Task Native_CAP_EOF_only_verified_physical_removal_allows_ExecuteAsync_to_open_a_new_owner(bool physicallyRemoved)
     {
-        const string header = "001200000025000100";
+        var header = RogRuntimeCompatibility.NativeFamilyAnchor("wired")!;
         var journal = Path.Combine(_directory, "peripherals", "keyboard-display-session.json");
         byte[]? originalJournal = null;
         var factory = new NativeCapEofFactory(physicallyRemoved, () => originalJournal = File.ReadAllBytes(journal));
@@ -85,11 +85,14 @@ public sealed partial class KeyboardDisplayServiceTests
         public RogWiredOledConnection? TryOpen(string deviceKey) => throw new InvalidOperationException("The exact actual25 firmware overload is required.");
         public RogWiredOledConnection? TryOpen(string deviceKey, string firmwareHeader)
         {
-            deviceKey.Should().Be(Key); firmwareHeader.Should().Be("001200000025000100");
+            deviceKey.Should().Be(Key); firmwareHeader.Should().Be(RogRuntimeCompatibility.NativeFamilyAnchor("wired"));
             Opens++; Headers.Add(firmwareHeader);
             var channel = new NativeCapEofChannel(Opens == 1, removeFirst, () => { journalAtEof(); FirstCapEof.TrySetResult(); });
             Channels.Add(channel);
-            return new(channel, () => channel.Present, () => deviceKey, () => firmwareHeader);
+            return new(channel, () => channel.Present, () => deviceKey, () => firmwareHeader)
+            {
+                RouteAbsentProbe = () => !channel.Present, // The fixture clears Present only for its explicit remove-on-EOF event.
+            };
         }
     }
 

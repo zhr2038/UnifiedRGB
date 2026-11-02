@@ -176,7 +176,7 @@ public sealed class PeripheralConfigurationViewModel : ObservableObject
     {
         var epoch = Volatile.Read(ref _epoch);
         ExpireObservation(); // An expired status never authorises a request; the click retires it for the bindings.
-        if (!(enter ? CanEnter : CanExit)) return; // ExecuteAsync does not consult CanExecute.
+        if (!(enter ? CanEnter : CanExit)) return; // Direct method callers must obey the same admission as the command.
         var action = enter ? FirmwareMaintenance ? "重试释放" : "交接键鼠" : "恢复联动";
         IPeripheralConfigurationService proxy;
         // One proxy per intent: neither the request nor its readback can move to a connection this intent never saw.
