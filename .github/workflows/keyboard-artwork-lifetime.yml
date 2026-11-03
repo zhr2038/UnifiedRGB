@@ -31,16 +31,17 @@ jobs:
         run: |
           Add-Type -AssemblyName PresentationCore,PresentationFramework,WindowsBase
           try {
-            $visual = New-Object System.Windows.Media.DrawingVisual
+            $visual = [System.Windows.Media.DrawingVisual]::new()
             $context = $visual.RenderOpen()
             try {
-              $font = New-Object System.Windows.Media.Typeface 'Microsoft YaHei UI'
-              $text = New-Object System.Windows.Media.FormattedText('光域任务窗口资源回归检查场景已应用', [Globalization.CultureInfo]::InvariantCulture, [Windows.FlowDirection]::LeftToRight, $font, 17, [Windows.Media.Brushes]::White, 1.0)
-              $context.DrawText($text, (New-Object Windows.Point(0, 0)))
+              $font = [System.Windows.Media.Typeface]::new('Microsoft YaHei UI')
+              $label = -join (@(0x5149,0x57df,0x4efb,0x52a1,0x7a97,0x53e3,0x8d44,0x6e90,0x56de,0x5f52,0x68c0,0x67e5,0x573a,0x666f,0x5df2,0x5e94,0x7528) | ForEach-Object { [char]$_ })
+              $text = [System.Windows.Media.FormattedText]::new($label, [Globalization.CultureInfo]::InvariantCulture, [System.Windows.FlowDirection]::LeftToRight, $font, 17, [System.Windows.Media.Brushes]::White, 1.0)
+              $context.DrawText($text, [System.Windows.Point]::new(0, 0))
             } finally { $context.Close() }
-            $bitmap = New-Object Windows.Media.Imaging.RenderTargetBitmap(208, 64, 96, 96, [Windows.Media.PixelFormats]::Pbgra32)
+            $bitmap = [System.Windows.Media.Imaging.RenderTargetBitmap]::new(208, 64, 96, 96, [System.Windows.Media.PixelFormats]::Pbgra32)
             $bitmap.Render($visual)
-          } finally { [Windows.Threading.Dispatcher]::CurrentDispatcher.InvokeShutdown() }
+          } finally { [System.Windows.Threading.Dispatcher]::CurrentDispatcher.InvokeShutdown() }
       - name: Fixed real render, failure cleanup and native resource soak
         id: lifetime
         shell: pwsh
