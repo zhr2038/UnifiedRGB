@@ -25,6 +25,14 @@ public sealed partial class RogNativeMenuSourceTests
             DeviceShowsNativeEntryLogo = true } };
         ulong cookie = Cookie; var source = new RogNativeMenuSource(Policy(2), input, input, time, () => cookie++);
         var overlay = new KeyboardSceneCycleOverlay(); var bridge = new RogWiredLightingBridge();
+        // Change the caption while the first image is in flight, then inject its fault.
+        // The scene selection must have been admitted before the fake changes epoch;
+        // a not-yet-admitted queued action must correctly be rejected on scope change.
+        factory.BeforeRefusal = async ct =>
+        {
+            list.Release.TrySetResult();
+            await Until(() => overlay.Current?.Name.Length > 0).WaitAsync(ct);
+        };
         var screens = DispatchProxy.Create<IScreenService, KeyboardDisplayServiceTests.ReadProxy>();
         using var gate = new PeripheralConfigurationGate(new(false, null));
         await using var cycle = new KeyboardSceneCycleBridge(options, () => rgb, () => packages, overlay, cycleOptions: new(TimeSpan.Zero));
@@ -40,7 +48,6 @@ public sealed partial class RogNativeMenuSourceTests
             var presentation = typeof(KeyboardDisplayService).GetField("_presentation", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(owner)!;
             failedPixels = ((byte[])presentation.GetType().GetField("_chosen", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(presentation)!).ToArray();
             control.Epoch += 2; typeof(Connection).GetField("_cookie", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(control, 0UL);
-            list.Release.TrySetResult();
         };
         await menu.StartAsync(default); await menu.SetNativeMenuEnabledAsync(true); await owner.StartAsync(default);
         try
@@ -49,10 +56,22 @@ public sealed partial class RogNativeMenuSourceTests
             (await owner.GetKeyboardDisplayStatusAsync()).Detail.Should().Contain("机箱已熄灯"); control.ImageBegins.Should().Be(0);
             input.Send(Notice(1, 0, 3, 2)); input.Send(Notice(2, 1, 1, 2));
             await Until(() => menu.Trace.Contains("browse #2 Previous accepted"));
-            await Until(() => control.ImageCommits == 1 && overlay.Current?.Name.Length > 0);
-            control.Rebuilt.Should().Equal(overlay.Apply(owner.ArtworkPixels.ToArray())).And.NotEqual(failedPixels!);
+            // Caption preparation and the retry run independently. A valid status frame can
+            // commit first; wait for the exact committed caption, never a transient counter
+            // value or the mutable bytes of another upload still in progress.
+            try
+            {
+                await Until(() => control.ImageCommits >= 1 && overlay.Current?.Name.Length > 0
+                    && control.LastCommittedImage.AsSpan().SequenceEqual(overlay.Apply(owner.ArtworkPixels.ToArray())));
+            }
+            catch (TimeoutException ex)
+            {
+                var failedStatus = await owner.GetKeyboardDisplayStatusAsync();
+                throw new TimeoutException($"Caption commit missing: commits={control.ImageCommits}, begins={control.ImageBegins}, arms={control.Arms}, caption={overlay.Current?.Name}, owner={failedStatus.State}/{failedStatus.LastError}", ex);
+            }
+            control.LastCommittedImage.Should().Equal(overlay.Apply(owner.ArtworkPixels.ToArray())).And.NotEqual(failedPixels!);
             factory.Channels.Should().ContainSingle(); factory.Channels[0].Disposed.Should().BeFalse();
-            control.Arms.Should().Be(2); control.Disarms.Should().Be(0); control.ImageBegins.Should().Be(2);
+            control.Arms.Should().Be(2); control.Disarms.Should().Be(0); control.ImageBegins.Should().BeGreaterThanOrEqualTo(2);
             var status = await owner.GetKeyboardDisplayStatusAsync();
             var raw = (UnifiedRgb.Contracts.Dto.KeyboardDisplayStatusDto)typeof(KeyboardDisplayService)
                 .GetField("_status", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(owner)!;
