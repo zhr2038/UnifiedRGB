@@ -505,6 +505,8 @@ public sealed partial class RogNativeMenuSourceTests
         public int RejectedImages { get; private set; }
         public int ImageBegins { get; private set; }
         public int ImageCommits { get; private set; }
+        private byte[] _lastCommittedImage = [];
+        public byte[] LastCommittedImage => Volatile.Read(ref _lastCommittedImage);
         public Action? ReplacementChunk { get; set; }
         public Action? FinalChunk { get; set; }
         private bool _frameAwaitingRenewal;
@@ -596,7 +598,11 @@ public sealed partial class RogNativeMenuSourceTests
                             throw new InvalidDataException("Codex renewal before same-scope full6656B READY");
                         if (FailStage == "renew") throw new IOException("Injected unknown renewal outcome.");
                         if (FailStage == "renew-ack") { b[5] = 1; break; }
-                        if (_frameAwaitingRenewal && _image.Count == 6656) { ImageCommits++; _frameAwaitingRenewal = false; }
+                        if (_frameAwaitingRenewal && _image.Count == 6656)
+                        {
+                            Volatile.Write(ref _lastCommittedImage, _image.ToArray());
+                            ImageCommits++; _frameAwaitingRenewal = false;
+                        }
                         break;
                     case (0x67, 0):
                         ImageBegins++; if (FailStage == "begin") throw new IOException("Injected unknown BEGIN outcome.");

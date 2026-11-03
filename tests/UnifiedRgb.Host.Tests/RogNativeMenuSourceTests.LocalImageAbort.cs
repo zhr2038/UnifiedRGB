@@ -49,10 +49,22 @@ public sealed partial class RogNativeMenuSourceTests
             (await owner.GetKeyboardDisplayStatusAsync()).Detail.Should().Contain("机箱已熄灯"); control.ImageBegins.Should().Be(0);
             input.Send(Notice(1, 0, 3, 2)); input.Send(Notice(2, 1, 1, 2));
             await Until(() => menu.Trace.Contains("browse #2 Previous accepted"));
-            await Until(() => control.ImageCommits == 1 && overlay.Current?.Name.Length > 0);
-            control.Rebuilt.Should().Equal(overlay.Apply(owner.ArtworkPixels.ToArray())).And.NotEqual(failedPixels!);
+            // Caption preparation and the retry run independently. A valid status frame can
+            // commit first; wait for the exact committed caption, never a transient counter
+            // value or the mutable bytes of another upload still in progress.
+            try
+            {
+                await Until(() => control.ImageCommits >= 1 && overlay.Current?.Name.Length > 0
+                    && control.LastCommittedImage.AsSpan().SequenceEqual(overlay.Apply(owner.ArtworkPixels.ToArray())));
+            }
+            catch (TimeoutException ex)
+            {
+                var failedStatus = await owner.GetKeyboardDisplayStatusAsync();
+                throw new TimeoutException($"Caption commit missing: commits={control.ImageCommits}, begins={control.ImageBegins}, arms={control.Arms}, caption={overlay.Current?.Name}, owner={failedStatus.State}/{failedStatus.LastError}", ex);
+            }
+            control.LastCommittedImage.Should().Equal(overlay.Apply(owner.ArtworkPixels.ToArray())).And.NotEqual(failedPixels!);
             factory.Channels.Should().ContainSingle(); factory.Channels[0].Disposed.Should().BeFalse();
-            control.Arms.Should().Be(2); control.Disarms.Should().Be(0); control.ImageBegins.Should().Be(2);
+            control.Arms.Should().Be(2); control.Disarms.Should().Be(0); control.ImageBegins.Should().BeGreaterThanOrEqualTo(2);
             var status = await owner.GetKeyboardDisplayStatusAsync();
             var raw = (UnifiedRgb.Contracts.Dto.KeyboardDisplayStatusDto)typeof(KeyboardDisplayService)
                 .GetField("_status", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(owner)!;
