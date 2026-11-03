@@ -3,6 +3,7 @@ using System.Runtime.CompilerServices;
 using System.Windows;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using System.Windows.Threading;
 
 namespace UnifiedRgb.Host.Services;
 
@@ -162,6 +163,12 @@ public sealed class KeyboardSceneCycleOverlay
             catch (Exception ex)
             {
                 failure = ex;
+            }
+            finally
+            {
+                // A short-lived WPF STA must retire its hidden window before the thread exits.
+                try { Dispatcher.FromThread(Thread.CurrentThread)?.InvokeShutdown(); }
+                catch (Exception ex) { failure ??= ex; }
             }
 #pragma warning restore CA1031
         })

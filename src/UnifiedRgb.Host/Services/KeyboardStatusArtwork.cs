@@ -3,6 +3,7 @@ using System.Windows;
 using System.Windows.Markup;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using System.Windows.Threading;
 using UnifiedRgb.Contracts;
 
 namespace UnifiedRgb.Host.Services;
@@ -55,6 +56,13 @@ internal static class KeyboardStatusArtwork
                 result = PackBgra(bgra);
             }
             catch (Exception ex) { failure = ex; }
+            finally
+            {
+                // Rendering creates a hidden dispatcher window even without Dispatcher.Run().
+                // Letting this STA exit alone leaks its HWND class, USER atom and handles.
+                try { Dispatcher.FromThread(Thread.CurrentThread)?.InvokeShutdown(); }
+                catch (Exception ex) { failure ??= ex; }
+            }
         }) { IsBackground = true, Name = "Keyboard artwork" };
         thread.SetApartmentState(ApartmentState.STA); thread.Start();
         if (!thread.Join(TimeSpan.FromSeconds(5))) throw new TimeoutException("Keyboard artwork exceeded its rendering bound.");
