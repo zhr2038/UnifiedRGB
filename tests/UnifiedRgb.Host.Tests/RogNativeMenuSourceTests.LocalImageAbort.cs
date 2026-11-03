@@ -20,15 +20,19 @@ public sealed partial class RogNativeMenuSourceTests
         state.Profiles.Add("A red", new("A red", new([new([new("live", 0)], "StaticColor", ["#FF0000"])])));
         state.Profiles.Add("B blue", new("B blue", new([new([new("live", 0)], "StaticColor", ["#0000FF"])])));
         var packages = DispatchProxy.Create<IScenePackageService, LocalImagePackages>(); var list = (LocalImagePackages)packages;
-        // This case exercises an already admitted browse whose list is still loading.
-        // Do not let an unrealistically immediate fake image fault invalidate the input
-        // scope before the independent scene worker has even admitted that browse.
-        factory.BeforeRefusal = ct => list.Entered.Task.WaitAsync(ct);
         var options = new UnifiedRgbOptions { DataDirectory = data, KeyboardDisplay = new() { WirelessControlVerified = true,
             WirelessLightingVerified = true, WirelessReceiverKey = control.DeviceKey, WirelessFirmwareHeader = control.FirmwareHeader,
             DeviceShowsNativeEntryLogo = true } };
         ulong cookie = Cookie; var source = new RogNativeMenuSource(Policy(2), input, input, time, () => cookie++);
         var overlay = new KeyboardSceneCycleOverlay(); var bridge = new RogWiredLightingBridge();
+        // Change the caption while the first image is in flight, then inject its fault.
+        // The scene selection must have been admitted before the fake changes epoch;
+        // a not-yet-admitted queued action must correctly be rejected on scope change.
+        factory.BeforeRefusal = async ct =>
+        {
+            list.Release.TrySetResult();
+            await Until(() => overlay.Current?.Name.Length > 0).WaitAsync(ct);
+        };
         var screens = DispatchProxy.Create<IScreenService, KeyboardDisplayServiceTests.ReadProxy>();
         using var gate = new PeripheralConfigurationGate(new(false, null));
         await using var cycle = new KeyboardSceneCycleBridge(options, () => rgb, () => packages, overlay, cycleOptions: new(TimeSpan.Zero));
@@ -44,7 +48,6 @@ public sealed partial class RogNativeMenuSourceTests
             var presentation = typeof(KeyboardDisplayService).GetField("_presentation", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(owner)!;
             failedPixels = ((byte[])presentation.GetType().GetField("_chosen", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(presentation)!).ToArray();
             control.Epoch += 2; typeof(Connection).GetField("_cookie", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(control, 0UL);
-            list.Release.TrySetResult();
         };
         await menu.StartAsync(default); await menu.SetNativeMenuEnabledAsync(true); await owner.StartAsync(default);
         try
@@ -122,11 +125,10 @@ public sealed partial class RogNativeMenuSourceTests
 
 public class LocalImagePackages : DispatchProxy
 {
-    public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
     public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
     protected override object? Invoke(MethodInfo? targetMethod, object?[]? args) =>
         targetMethod?.Name == nameof(IScenePackageService.ListScenePackagesAsync) && args is [CancellationToken ct]
             ? List(ct) : throw new InvalidOperationException("Unexpected local-image fake package request.");
     private async Task<IReadOnlyList<UnifiedRgb.Contracts.Dto.ScenePackageInfoDto>> List(CancellationToken ct)
-    { Entered.TrySetResult(); await Release.Task.WaitAsync(ct); return []; }
+    { await Release.Task.WaitAsync(ct); return []; }
 }
