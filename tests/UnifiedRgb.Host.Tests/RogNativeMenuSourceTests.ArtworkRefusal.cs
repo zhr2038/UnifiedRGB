@@ -139,19 +139,21 @@ public sealed partial class RogNativeMenuSourceTests
         public bool OpenWhilePreviousLive { get; private set; }
         public bool OpenWhileInputLive { get; private set; }
         public Action? OnRefusal { get; set; }
+        public Func<CancellationToken, Task>? BeforeRefusal { get; set; }
         public bool SoftwareOn { get; init; }
         public bool DelayNativeReplies { get; set; }
         public RogWirelessOledConnection? TryOpen(string receiverKey, string firmwareHeader)
         {
             OpenWhilePreviousLive |= Channels.Count > 0 && !Channels[^1].Disposed; OpenWhileInputLive |= input.LiveHandles != 0;
             var channel = new ArtworkRefusalChannel(control, Channels.Count == 0 ? operation : operation == "replacement-cap" ? "cap" : "none", () => OnRefusal?.Invoke(),
-                operation == "profile" && Channels.Count > 0, Channels.Count > 0, SoftwareOn, DelayNativeReplies); Channels.Add(channel);
+                operation == "profile" && Channels.Count > 0, Channels.Count > 0, SoftwareOn, DelayNativeReplies, BeforeRefusal); Channels.Add(channel);
             return new(new(receiverKey, 0x1ACE, new Dictionary<byte, HidCollectionInfo>()), channel, firmwareHeader, () => true)
             { NativeControlBinding = control.NativeControlBinding, EvidenceTime = time };
         }
     }
 
-    private sealed class ArtworkRefusalChannel(Connection control, string operation, Action refused, bool changedProfile, bool replacement, bool softwareOn, bool delayed) : IHidReportChannel
+    private sealed class ArtworkRefusalChannel(Connection control, string operation, Action refused, bool changedProfile, bool replacement, bool softwareOn, bool delayed,
+        Func<CancellationToken, Task>? beforeRefusal = null) : IHidReportChannel
     {
         private readonly Channel<byte[]> _replies = Channel.CreateUnbounded<byte[]>();
         private bool _fault;
@@ -176,6 +178,7 @@ public sealed partial class RogNativeMenuSourceTests
             byte[] reply;
             if (fail)
             {
+                if (beforeRefusal is not null) await beforeRefusal(ct);
                 _fault = true; PartialBytes = control.Rebuilt.Length; refused(); reply = new byte[65]; reply[1] = 0xFF; reply[2] = 0xAA;
                 if (operation == "malformed") reply[5] = 1;
             }

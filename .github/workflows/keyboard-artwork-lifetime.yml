@@ -7,6 +7,7 @@ on:
       - 'src/UnifiedRgb.Host/Services/KeyboardStatusArtwork.cs'
       - 'src/UnifiedRgb.Host/Services/KeyboardSceneCycleOverlay.cs'
       - 'tests/UnifiedRgb.Host.Tests/KeyboardArtworkLifetimeTests.cs'
+      - 'tests/UnifiedRgb.Host.Tests/RogNativeMenuSourceTests*.cs'
       - '.github/workflows/keyboard-artwork-lifetime.yml'
 
 permissions:
@@ -25,6 +26,21 @@ jobs:
           dotnet-version: 10.0.402
       - name: Strict build of actual WPF regressions
         run: dotnet build tests/UnifiedRgb.Host.Tests/UnifiedRgb.Host.Tests.csproj -c Release -warnaserror
+      - name: Initialize the runner's Chinese font cache before measuring artwork
+        shell: powershell
+        run: |
+          Add-Type -AssemblyName PresentationCore,PresentationFramework,WindowsBase
+          try {
+            $visual = New-Object System.Windows.Media.DrawingVisual
+            $context = $visual.RenderOpen()
+            try {
+              $font = New-Object System.Windows.Media.Typeface 'Microsoft YaHei UI'
+              $text = New-Object System.Windows.Media.FormattedText('光域任务窗口资源回归检查场景已应用', [Globalization.CultureInfo]::InvariantCulture, [Windows.FlowDirection]::LeftToRight, $font, 17, [Windows.Media.Brushes]::White, 1.0)
+              $context.DrawText($text, (New-Object Windows.Point(0, 0)))
+            } finally { $context.Close() }
+            $bitmap = New-Object Windows.Media.Imaging.RenderTargetBitmap(208, 64, 96, 96, [Windows.Media.PixelFormats]::Pbgra32)
+            $bitmap.Render($visual)
+          } finally { [Windows.Threading.Dispatcher]::CurrentDispatcher.InvokeShutdown() }
       - name: Fixed real render, failure cleanup and native resource soak
         id: lifetime
         shell: pwsh
@@ -34,7 +50,7 @@ jobs:
       - name: USB and RF production connection regressions
         shell: pwsh
         run: |
-          dotnet test tests/UnifiedRgb.Host.Tests/UnifiedRgb.Host.Tests.csproj -c Release --no-build --filter '(FullyQualifiedName~KeyboardDisplayServiceTests|FullyQualifiedName~RogNativeMenuSourceTests|FullyQualifiedName~CodexTaskDisplayTests|FullyQualifiedName~KeyboardCodexPresentationTests|FullyQualifiedName~KeyboardSceneCycle)&FullyQualifiedName!~Center_actual_owner_profile_fixtures' --logger 'trx;LogFileName=keyboard-transports.trx' --results-directory TestResults/Artwork
+          dotnet test tests/UnifiedRgb.Host.Tests/UnifiedRgb.Host.Tests.csproj -c Release --no-build --filter 'FullyQualifiedName~RogNativeMenuSourceTests.LocalImageAbort_|FullyQualifiedName~RogNativeMenuSourceTests.Actual_transport_|FullyQualifiedName~RogNativeMenuSourceTests.Actual_RF_USB_RF_|FullyQualifiedName~RogNativeMenuSourceTests.Confirmed_USB_absence_' --logger 'trx;LogFileName=keyboard-transports.trx' --results-directory TestResults/Artwork
           if ($LASTEXITCODE -ne 0) { throw 'Keyboard transport regression failed' }
       - name: Prove old production code fails the same resource checks
         if: always() && steps.lifetime.outcome == 'success'

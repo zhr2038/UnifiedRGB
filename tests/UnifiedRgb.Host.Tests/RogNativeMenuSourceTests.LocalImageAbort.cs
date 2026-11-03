@@ -20,6 +20,10 @@ public sealed partial class RogNativeMenuSourceTests
         state.Profiles.Add("A red", new("A red", new([new([new("live", 0)], "StaticColor", ["#FF0000"])])));
         state.Profiles.Add("B blue", new("B blue", new([new([new("live", 0)], "StaticColor", ["#0000FF"])])));
         var packages = DispatchProxy.Create<IScenePackageService, LocalImagePackages>(); var list = (LocalImagePackages)packages;
+        // This case exercises an already admitted browse whose list is still loading.
+        // Do not let an unrealistically immediate fake image fault invalidate the input
+        // scope before the independent scene worker has even admitted that browse.
+        factory.BeforeRefusal = ct => list.Entered.Task.WaitAsync(ct);
         var options = new UnifiedRgbOptions { DataDirectory = data, KeyboardDisplay = new() { WirelessControlVerified = true,
             WirelessLightingVerified = true, WirelessReceiverKey = control.DeviceKey, WirelessFirmwareHeader = control.FirmwareHeader,
             DeviceShowsNativeEntryLogo = true } };
@@ -118,10 +122,11 @@ public sealed partial class RogNativeMenuSourceTests
 
 public class LocalImagePackages : DispatchProxy
 {
+    public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
     public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
     protected override object? Invoke(MethodInfo? targetMethod, object?[]? args) =>
         targetMethod?.Name == nameof(IScenePackageService.ListScenePackagesAsync) && args is [CancellationToken ct]
             ? List(ct) : throw new InvalidOperationException("Unexpected local-image fake package request.");
     private async Task<IReadOnlyList<UnifiedRgb.Contracts.Dto.ScenePackageInfoDto>> List(CancellationToken ct)
-    { await Release.Task.WaitAsync(ct); return []; }
+    { Entered.TrySetResult(); await Release.Task.WaitAsync(ct); return []; }
 }
