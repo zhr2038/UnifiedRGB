@@ -95,9 +95,8 @@ public sealed class RogPerKeyLightingTests
     {
         using var io = new HeaderEchoFake(rf) { RefuseAt = 1 }; using var connection = Open(io, rf);
 
-        var failure = await ((Func<Task>)(() => RogPerKeyLighting.WriteAsync(connection.ExchangeAsync, Keys(40), default)))
-            .Should().ThrowAsync<Exception>().WithMessage("*connection poisoned; no retry*");
-        failure.Which.Should().BeOfType(rf ? typeof(RogOledEnvelopeRefusedException) : typeof(InvalidDataException));
+        await ((Func<Task>)(() => RogPerKeyLighting.WriteAsync(connection.ExchangeAsync, Keys(40), default)))
+            .Should().ThrowAsync<RogOledEnvelopeRefusedException>().WithMessage("*connection poisoned; no retry*");
 
         io.Written.Should().HaveCount(2, "the third report is never sent and the refused one is not repeated");
         await ((Func<Task>)(() => connection.ExchangeAsync(RogWiredOledProtocol.Query(0x12, 0), false, default)))
@@ -124,9 +123,13 @@ public sealed class RogPerKeyLightingTests
     public async Task Only_the_stock_C082_count_and_zero_tail_are_accepted_for_a_pending_C081(bool rf, string defect)
     {
         using var io = new HeaderEchoFake(rf) { ReplyDefect = defect }; using var connection = Open(io, rf);
-        var failure = await ((Func<Task>)(() => RogPerKeyLighting.WriteAsync(connection.ExchangeAsync, Keys(1), default)))
-            .Should().ThrowAsync<Exception>().WithMessage("*connection poisoned; no retry*");
-        failure.Which.Should().BeOfType(rf && defect != "tail" ? typeof(RogOledUnexpectedReplyException) : typeof(InvalidDataException));
+        Func<Task> write = () => RogPerKeyLighting.WriteAsync(connection.ExchangeAsync, Keys(1), default);
+        if (rf && defect is "count" or "echo81")
+            await write.Should().ThrowAsync<RogOledUnexpectedReplyException>().WithMessage("*connection poisoned; no retry*");
+        else await write.Should().ThrowAsync<InvalidDataException>().WithMessage("*connection poisoned; no retry*");
+        io.Written.Should().HaveCount(1);
+        await ((Func<Task>)(() => connection.ExchangeAsync(RogWiredOledProtocol.Query(0x12, 0), false, default)))
+            .Should().ThrowAsync<IOException>().WithMessage("*poisoned*");
         io.Written.Should().HaveCount(1);
     }
 

@@ -18,9 +18,12 @@ public sealed class RogWiredOledSession(IRogOledConnection connection)
     public byte VerifiedProfileToken { get; private set; }
     public bool Touched { get; private set; }
     public bool LightingTouched { get; private set; }
+    /// <summary>Tracks any session-admitted mutation independently of legacy OLED cleanup bookkeeping.</summary>
+    public bool MutationAdmitted { get; private set; }
     public RogKeyboardNativeState? OriginalLighting { get; private set; }
     public RogKeyboardNativeState? OriginalStaticBank { get; private set; }
     private bool _identityAccepted;
+    private bool _lightingSnapshotAccepted, _nativeRecoveryBaselineAdopted;
     private byte? _softwareControl;
     private bool _keyOutputActive;
     /// <summary>Optional owner route guard; called only at joined actor boundaries before admitting the next operation.</summary>
@@ -37,42 +40,98 @@ public sealed class RogWiredOledSession(IRogOledConnection connection)
 
     public Task<byte[]> ExchangeAsync(byte[] request, bool zeroAck, CancellationToken ct)
     {
+        ArgumentNullException.ThrowIfNull(request);
         BeforeOperation?.Invoke();
+        if (request.Length != 65 || request[0] != 0 || (request[1], request[2]) is not
+            ((0x12, 0) or (0x21, 0) or (0x23, 2) or (0x23, 3) or (0x25, 0x0E) or (0x27, 0)))
+            MutationAdmitted = true;
         return connection.ExchangeAsync(request, zeroAck, ct);
     }
 
     public async Task<byte> SnapshotAsync(string firmwareHeader, CancellationToken ct)
     {
-        var identity = await ExchangeAsync(RogWiredOledProtocol.Query(0x12, 0), false, ct).ConfigureAwait(false);
+        var identity = await ReadInitialSnapshotAsync(0x12, 0, "identity", ct).ConfigureAwait(false);
         // A new RF owner's first identity can precede its keyboard link: receiver envelope, empty keyboard bytes. Nothing was
         // written and the reply is not accepted; this owner closes and a caller may acquire a fresh one.
-        if (!_identityAccepted && connection.ConnectionKind == "wireless" && RogRuntimeCompatibility.HasWirelessIdentityEnvelope(identity)
+        if (InitialRfSnapshot && RogRuntimeCompatibility.HasWirelessIdentityEnvelope(identity)
             && !RogRuntimeCompatibility.WirelessKeyboardIdentityAvailable(identity))
             throw new RogKeyboardNotReadyException("Wireless keyboard identity is unavailable (possibly asleep, switching or disconnected): receiver replied without keyboard firmware before any write; this owner is closed.");
         connection.RequireFirmwareIdentity(identity, firmwareHeader);
         if (identity[9] is < 1 or > 6 || identity[11] < 1 || identity[11] > identity[9])
-            throw new InvalidDataException("Keyboard active profile unavailable; no output.");
+            throw InitialSnapshotNotReady("profile", "Keyboard active profile unavailable; no output.");
         VerifiedProfileToken = identity[11];
-        if ((await ExchangeAsync(RogWiredOledProtocol.Query(0x21, 0), false, ct).ConfigureAwait(false))[5] != 3)
-            throw new InvalidDataException("Stored animation selector changed; no output.");
-        if ((await ExchangeAsync(RogWiredOledProtocol.Query(0x23, 2), false, ct).ConfigureAwait(false))[5] != 1)
-            throw new InvalidDataException("Keyboard OLED content disabled; preserve user setting.");
-        OriginalBrightness = (await ExchangeAsync(RogWiredOledProtocol.Query(0x23, 3), false, ct).ConfigureAwait(false))[5];
+        if ((await ReadInitialSnapshotAsync(0x21, 0, "stored-selector", ct).ConfigureAwait(false))[5] != 3)
+            throw InitialSnapshotNotReady("stored-selector", "Stored animation selector changed; no output.");
+        if ((await ReadInitialSnapshotAsync(0x23, 2, "content-enabled", ct).ConfigureAwait(false))[5] != 1)
+            throw InitialSnapshotNotReady("content-enabled", "Keyboard OLED content disabled; preserve user setting.");
+        OriginalBrightness = (await ReadInitialSnapshotAsync(0x23, 3, "brightness", ct).ConfigureAwait(false))[5];
         if (OriginalBrightness > 100) throw new InvalidDataException("Unknown original OLED brightness.");
         CurrentNativeBrightness = OriginalBrightness;
         _identityAccepted = true;
         return OriginalBrightness;
     }
 
+    private bool InitialRfSnapshot => connection.ConnectionKind == "wireless" && !_identityAccepted && !MutationAdmitted;
+
+    private Exception InitialSnapshotNotReady(string operation, string reason) => InitialRfSnapshot
+        ? new RogKeyboardStartupNotReadyException(operation, new InvalidDataException(reason)) : new InvalidDataException(reason);
+
+    private async Task<byte[]> ReadInitialSnapshotAsync(byte command, byte subcommand, string operation, CancellationToken ct)
+    {
+        try { return await ExchangeAsync(RogWiredOledProtocol.Query(command, subcommand), false, ct).ConfigureAwait(false); }
+        catch (Exception ex) when (InitialRfSnapshot && ex is RogOledTimeoutException or RogOledEnvelopeRefusedException or RogOledUnexpectedReplyException)
+        { throw new RogKeyboardStartupNotReadyException(operation, ex); }
+    }
+
     public async Task SnapshotLightingAsync(CancellationToken ct)
     {
         if (!_identityAccepted) throw new InvalidOperationException("Verify the wired device first.");
+        _lightingSnapshotAccepted = false;
         var basic = await RequireCurrentScopeAsync(ct).ConfigureAwait(false);
         var softwareControl = await ReadSoftwareControlAsync(ct).ConfigureAwait(false);
         OriginalLighting = (await ReadBankAsync(basic[10], ct).ConfigureAwait(false)) with { SoftwareControl = softwareControl };
         OriginalStaticBank = OriginalLighting.EffectType == 0 ? OriginalLighting : await ReadBankAsync(0, ct).ConfigureAwait(false);
         await RequireCurrentScopeAsync(ct).ConfigureAwait(false);
         LightingTouched = false;
+        _lightingSnapshotAccepted = true;
+    }
+
+    /// <summary>
+    /// Carries an exact recorded cleanup obligation into a freshly observed native owner without wire I/O.
+    /// The Host separately proves the current native capability, physical scope, journal and consumer intent.
+    /// Current device state remains distinct from the original state that must be restored on release.
+    /// </summary>
+    public bool TryAdoptNativeRecoveryBaseline(byte recordedBrightness, byte nativeBrightnessGoal,
+        RogKeyboardNativeState? recordedLighting, RogKeyboardNativeState? recordedStaticBank, bool allowActiveSoftwareControl)
+    {
+        if (!_identityAccepted || MutationAdmitted || _nativeRecoveryBaselineAdopted)
+            throw new InvalidOperationException("Native recovery adoption requires a fresh verified read-only session.");
+        if (recordedBrightness > 100 || nativeBrightnessGoal > 100)
+            throw new ArgumentOutOfRangeException(recordedBrightness > 100 ? nameof(recordedBrightness) : nameof(nativeBrightnessGoal));
+        if (CurrentNativeBrightness != nativeBrightnessGoal || (recordedLighting is null) != (recordedStaticBank is null)) return false;
+        if (recordedLighting is not null && recordedStaticBank is not null)
+        {
+            if (!_lightingSnapshotAccepted || OriginalLighting is null || OriginalStaticBank is null
+                || recordedStaticBank.EffectType != 0 || !OriginalLighting.SameContent(recordedLighting)
+                || !OriginalStaticBank.SameContent(recordedStaticBank)
+                || recordedLighting.SoftwareControl is not (0 or 1) || OriginalLighting.SoftwareControl is not (0 or 1)
+                || _softwareControl != OriginalLighting.SoftwareControl) return false;
+            if (_softwareControl != recordedLighting.SoftwareControl
+                && !(allowActiveSoftwareControl && _softwareControl == 1 && recordedLighting.SoftwareControl == 0)) return false;
+        }
+        else if (OriginalLighting is not null || OriginalStaticBank is not null) return false;
+
+        static RogKeyboardNativeState? Clone(RogKeyboardNativeState? state) => state is null ? null
+            : state with { Payloads = Array.AsReadOnly(state.Payloads.ToArray()) };
+        OriginalBrightness = recordedBrightness;
+        OriginalLighting = Clone(recordedLighting);
+        OriginalStaticBank = Clone(recordedStaticBank);
+        // These are carried cleanup obligations, not evidence of a mutation by this new owner.
+        Touched = true;
+        LightingTouched = recordedLighting is not null;
+        _keyOutputActive = recordedLighting is not null && _softwareControl == 1;
+        _nativeRecoveryBaselineAdopted = true;
+        return true;
     }
 
     // Stock GET27/SET74 software control is independent of native lever 71 state. The original nullable flag travels in
@@ -116,10 +175,13 @@ public sealed class RogWiredOledSession(IRogOledConnection connection)
     // The stock protocol has no compare-and-set. These checks reject a known
     // changed firmware/profile; they cannot make a subsequent write atomic
     // against a physical profile change between the reply and that write.
-    private async Task<byte[]> RequireCurrentScopeAsync(CancellationToken ct)
+    private async Task<byte[]> RequireCurrentScopeAsync(CancellationToken ct, RogReadOnlyOperation? observation = null)
     {
         if (!_identityAccepted) throw new InvalidOperationException("Verify the wired device first.");
         var basic = await ExchangeAsync(RogWiredOledProtocol.Query(0x12, 0), false, ct).ConfigureAwait(false);
+        if (observation is { } operation && connection.ConnectionKind == "wireless"
+            && RogRuntimeCompatibility.HasWirelessIdentityEnvelope(basic) && !RogRuntimeCompatibility.WirelessKeyboardIdentityAvailable(basic))
+            throw new RogReadOnlyObservationPeerUnavailableException(operation, connection.DeviceKey, VerifiedProfileToken);
         connection.RequireFirmwareIdentity(basic, connection.FirmwareHeader);
         if (basic[9] is < 1 or > 6 || basic[11] != VerifiedProfileToken || basic[11] > basic[9])
             throw new InvalidDataException("Keyboard firmware/profile scope changed; no setting or lighting write.");
@@ -296,7 +358,15 @@ public sealed class RogWiredOledSession(IRogOledConnection connection)
                         await SetSoftwareControlAsync(1, ct).ConfigureAwait(false);
                         LightingTouched = true; // An unknown reply must still trigger the original-lighting restore.
                         BeforeOperation?.Invoke();
-                        await connection.WriteLightingFrameAsync(keys.Keys, ct).ConfigureAwait(false);
+                        MutationAdmitted = true;
+                        try { await connection.WriteLightingFrameAsync(keys.Keys, ct).ConfigureAwait(false); }
+                        catch (Exception ex) when (VerifiedProfileToken is >= 1 and <= 6
+                            && connection.ConnectionKind is "wired" or "wireless"
+                            && ex is RogOledEnvelopeRefusedException or RogOledTimeoutException or RogOledUnexpectedReplyException)
+                        {
+                            throw new RogNativePresentationUnavailableException(connection.DeviceKey, connection.ConnectionKind,
+                                VerifiedProfileToken, "per-key-frame", ex);
+                        }
                         keys.Completion.TrySetResult();
                     }
                     catch (Exception ex) { keys.Completion.TrySetException(ex); throw; }
@@ -316,6 +386,9 @@ public sealed class RogWiredOledSession(IRogOledConnection connection)
                 catch (RogOledUnexpectedReplyException ex)
                 { throw new RogReadOnlyObservationUnexpectedReplyException(RogReadOnlyOperation.IdleBrightnessObservation,
                     connection.DeviceKey, connection.ConnectionKind, VerifiedProfileToken, ex); }
+                catch (RogOledEnvelopeRefusedException ex)
+                { throw new RogReadOnlyObservationEnvelopeRefusedException(RogReadOnlyOperation.IdleBrightnessObservation,
+                    connection.DeviceKey, connection.ConnectionKind, VerifiedProfileToken, ex); }
                 if (current > 100) throw new InvalidDataException("Native brightness observation is invalid.");
                 if (current != CurrentNativeBrightness)
                 {
@@ -330,8 +403,16 @@ public sealed class RogWiredOledSession(IRogOledConnection connection)
                 Func<bool> changed = () => lighting?.HasWork == true || nativeWake?.Invoke() == true
                     || (!nativeActive && (displayEnabled?.Invoke() ?? display) != display)
                     || (!nativeActive && !latest().AsSpan().SequenceEqual(sent));
-                if (!responsive || !_keyOutputActive || lighting is null) await LeaseAsync(changed, ct).ConfigureAwait(false);
-                else if (!await PerKeyLeaseAsync(lighting, changed, ct).ConfigureAwait(false)) return;
+                try
+                {
+                    if (!responsive || !_keyOutputActive || lighting is null) await LeaseAsync(changed, ct).ConfigureAwait(false);
+                    else if (!await PerKeyLeaseAsync(lighting, changed, ct).ConfigureAwait(false)) return;
+                }
+                catch (Exception ex) when (nativeActive && !display && connection.ConnectionKind is "wired" or "wireless"
+                    && VerifiedProfileToken is >= 1 and <= 6
+                    && ex is RogOledEnvelopeRefusedException or RogOledTimeoutException or RogOledUnexpectedReplyException)
+                { throw new RogNativePresentationUnavailableException(connection.DeviceKey, connection.ConnectionKind,
+                    VerifiedProfileToken, "native-lease", ex); }
             }
             else if (lighting is not null)
             {
@@ -350,11 +431,13 @@ public sealed class RogWiredOledSession(IRogOledConnection connection)
 
     private async Task RequireReadOnlyScopeAsync(RogReadOnlyOperation operation, CancellationToken ct)
     {
-        try { await RequireCurrentScopeAsync(ct).ConfigureAwait(false); }
+        try { await RequireCurrentScopeAsync(ct, operation).ConfigureAwait(false); }
         catch (RogOledTimeoutException ex)
         { throw new RogReadOnlyObservationTimeoutException(operation, connection.DeviceKey, connection.ConnectionKind, VerifiedProfileToken, ex); }
         catch (RogOledUnexpectedReplyException ex)
         { throw new RogReadOnlyObservationUnexpectedReplyException(operation, connection.DeviceKey, connection.ConnectionKind, VerifiedProfileToken, ex); }
+        catch (RogOledEnvelopeRefusedException ex)
+        { throw new RogReadOnlyObservationEnvelopeRefusedException(operation, connection.DeviceKey, connection.ConnectionKind, VerifiedProfileToken, ex); }
     }
 
     private void Renewed() { Renewals++; _lastRenewal = Timestamp(); }

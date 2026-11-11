@@ -29,6 +29,7 @@ internal interface ICodexDesktopAutomation : IDisposable
     nint BrowserWindow { get; }
     nint ViewWindow { get; }
     CodexActivationResult ShellExecute(string file, string arguments, string directory, string verb, int show);
+    bool OpenHomeAssistant(Uri endpoint) => false;
 }
 
 /// <summary>Query-only process/token access. No impersonation, token duplication, process creation or live calls at construction.</summary>

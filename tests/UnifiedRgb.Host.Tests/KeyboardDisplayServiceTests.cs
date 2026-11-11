@@ -592,8 +592,15 @@ public sealed partial class KeyboardDisplayServiceTests : IDisposable
             {
                 while (true)
                 {
-                    using var preference = ReadPreferenceSnapshot(preferencePath);
-                    if (preference.RootElement.GetProperty("Brightness").GetByte() == 20) break;
+                    try
+                    {
+                        using var preference = ReadPreferenceSnapshot(preferencePath);
+                        if (preference.RootElement.GetProperty("Brightness").GetByte() == 20) break;
+                    }
+                    catch (FileNotFoundException)
+                    {
+                        // ReplaceFile can briefly hide the destination from an independent reader.
+                    }
                     await Task.Delay(20, bound.Token);
                 }
             }

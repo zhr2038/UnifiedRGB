@@ -19,6 +19,8 @@ public sealed class ControllerEntry(ControllerDescriptor descriptor, IDeviceAdap
 
     public bool IsActive => Writer is not null;
 
+    internal bool OpenedOnce { get; set; }
+
     /// <summary>
     /// Owner of the bring-up session holding this controller (NATIVE design §6), or null. While set the writer (if any) stays
     /// paused and the status is BringUp.
@@ -47,6 +49,8 @@ public sealed partial class AdapterHost(
     private readonly Dictionary<IDeviceAdapterFactory, IDeviceAdapter> _adapterFactories = new(ReferenceEqualityComparer.Instance);
     // Active discovery skipped by the guard (or not yet successful) must run once after unblock, even with no entries yet.
     private readonly HashSet<IDeviceAdapter> _deferredDiscovery = new(ReferenceEqualityComparer.Instance);
+    // Only typed, pre-write mouse-startup timeouts qualify. Rechecking one receiver must not retry unrelated terminal opens.
+    private readonly HashSet<ControllerId> _mouseStartupRetries = [];
     private readonly List<ControllerEntry> _entries = [];
     private readonly List<IPreciseSleeper> _sleepers = [];
     private readonly object _gate = new();
@@ -165,13 +169,18 @@ public sealed partial class AdapterHost(
             ct.ThrowIfCancellationRequested();
             if (Volatile.Read(ref _stopping)) break;
             bool deferred;
+            HashSet<ControllerId> mouseRetries;
             lock (_gate)
             {
                 deferred = _deferredDiscovery.Contains(adapter);
+                mouseRetries = _entries.Where(e => ReferenceEquals(e.Adapter, adapter) && _mouseStartupRetries.Contains(e.Descriptor.Id))
+                    .Select(e => e.Descriptor.Id).ToHashSet();
             }
 
             changed |= deferred && verdict.State == GuardState.Clear
                 ? await DiscoverAndApplyAsync(adapter, ct).ConfigureAwait(false)
+                : mouseRetries.Count > 0 && verdict.State == GuardState.Clear
+                    ? await DiscoverAndApplyAsync(adapter, ct, retryOnly: mouseRetries).ConfigureAwait(false)
                 : await ApplyAsync(adapter, verdict, retryOpen: false, ct).ConfigureAwait(false);
         }
 
@@ -217,6 +226,7 @@ public sealed partial class AdapterHost(
                     foreach (var pair in _adapterFactories.Where(p => ReferenceEquals(p.Value, adapter)).ToArray())
                         _adapterFactories.Remove(pair.Key);
                     _deferredDiscovery.Remove(adapter);
+                    foreach (var entry in _entries.Where(e => ReferenceEquals(e.Adapter, adapter))) _mouseStartupRetries.Remove(entry.Descriptor.Id);
                     _entries.RemoveAll(e => ReferenceEquals(e.Adapter, adapter));
                 }
             }
@@ -471,7 +481,8 @@ public sealed partial class AdapterHost(
     }
 
     /// <summary>Discovery admitted by the guard; only a completed, uncancelled discovery consumes a deferred retry.</summary>
-    private async Task<bool> DiscoverAndApplyAsync(IDeviceAdapter adapter, CancellationToken ct, bool throwOnError = false)
+    private async Task<bool> DiscoverAndApplyAsync(IDeviceAdapter adapter, CancellationToken ct, bool throwOnError = false,
+        IReadOnlySet<ControllerId>? retryOnly = null)
     {
         ct.ThrowIfCancellationRequested();
         if (Volatile.Read(ref _stopping)) return false;
@@ -504,10 +515,11 @@ public sealed partial class AdapterHost(
         }
 
         // Discovery may have awaited while another writer appeared: recheck before any controller open.
-        return await ApplyAsync(adapter, guard.Check(adapter.Class), retryOpen: true, ct).ConfigureAwait(false) || changed;
+        return await ApplyAsync(adapter, guard.Check(adapter.Class), retryOpen: true, ct, retryOnly).ConfigureAwait(false) || changed;
     }
 
-    private async Task<bool> ApplyAsync(IDeviceAdapter adapter, GuardVerdict verdict, bool retryOpen, CancellationToken ct)
+    private async Task<bool> ApplyAsync(IDeviceAdapter adapter, GuardVerdict verdict, bool retryOpen, CancellationToken ct,
+        IReadOnlySet<ControllerId>? retryOnly = null)
     {
         ControllerEntry[] mine;
         lock (_gate)
@@ -532,6 +544,7 @@ public sealed partial class AdapterHost(
             }
             else if (verdict.State == GuardState.Clear)
             {
+                if (retryOnly is not null && !retryOnly.Contains(e.Descriptor.Id)) continue;
                 var previous = e.Verdict;
                 e.Verdict = GuardVerdict.Clear;
                 if (previous.State != GuardState.Clear || retryOpen)
@@ -604,8 +617,17 @@ public sealed partial class AdapterHost(
         {
             await entry.Adapter.OpenAsync(id, ct).ConfigureAwait(false);
         }
+        catch (UnifiedRgb.Devices.AsusRog.RogMouseStartupNotReadyException ex) when (!entry.OpenedOnce
+            && entry.Descriptor.Class == DeviceClass.AsusRog && entry.Descriptor.DeviceType == DeviceType.Mouse
+            && string.Equals(ex.ControllerId, id.Value, StringComparison.Ordinal))
+        {
+            lock (_gate) _mouseStartupRetries.Add(id);
+            LogOpenFailed(id.Value, ex);
+            return;
+        }
         catch (DeviceBlockedException ex)
         {
+            lock (_gate) _mouseStartupRetries.Remove(id);
             // a standing block (e.g. "yuz.dll missing"): shown as Blocked(reason), logged when it first appears or changes
             entry.Verdict = GuardVerdict.Blocked(ex.Reason);
             if (previous != entry.Verdict)
@@ -619,9 +641,13 @@ public sealed partial class AdapterHost(
         catch (Exception ex) when (ex is not OperationCanceledException)
 #pragma warning restore CA1031
         {
+            lock (_gate) _mouseStartupRetries.Remove(id);
             LogOpenFailed(id.Value, ex);
             return;
         }
+
+        entry.OpenedOnce = true;
+        lock (_gate) _mouseStartupRetries.Remove(id);
 
         var sleeper = sleeperFactory();
         lock (_gate)

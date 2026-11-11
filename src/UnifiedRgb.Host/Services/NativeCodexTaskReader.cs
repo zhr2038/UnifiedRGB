@@ -236,6 +236,8 @@ internal sealed class CodexReadOnlySqlite : IDisposable
 
 internal sealed class CodexTaskOwnerSource : ICodexTaskOwnerSource
 {
+    internal const string PackageFamily = "OpenAI.Codex_2p2nqsd0c76g0";
+
     public IReadOnlyList<CodexTaskOwner> Read(CancellationToken ct)
     {
         var result = new List<CodexTaskOwner>();
@@ -248,8 +250,12 @@ internal sealed class CodexTaskOwnerSource : ICodexTaskOwnerSource
                 try
                 {
                     var image = process.MainModule?.FileName;
-                    if (image is null || !Path.GetFullPath(image).StartsWith(allowed, StringComparison.OrdinalIgnoreCase) ||
-                        !Path.GetFileName(image).Equals("codex.exe", StringComparison.OrdinalIgnoreCase)) continue;
+                    if (image is null || !Path.GetFileName(image).Equals("codex.exe", StringComparison.OrdinalIgnoreCase)) continue;
+                    if (!IsAllowedImage(image, allowed, null, null))
+                    {
+                        var package = ReadPackage(process.Id);
+                        if (!IsAllowedImage(image, allowed, package.Family, package.Root)) continue;
+                    }
                     var command = CommandLine(process.Id);
                     if (!Regex.IsMatch(command, @"(?:^|\s)app-server(?:\s|$)", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(100))) continue;
                     result.Add(new(process.Id, new DateTimeOffset(process.StartTime.ToUniversalTime())));
@@ -259,6 +265,46 @@ internal sealed class CodexTaskOwnerSource : ICodexTaskOwnerSource
             }
         }
         return result;
+    }
+
+    internal static bool IsAllowedImage(string image, string legacyDirectory, string? packageFamily, string? packageRoot)
+    {
+        var path = Path.GetFullPath(image);
+        if (!Path.GetFileName(path).Equals("codex.exe", StringComparison.OrdinalIgnoreCase)) return false;
+        var legacy = Path.TrimEndingDirectorySeparator(Path.GetFullPath(legacyDirectory)) + Path.DirectorySeparatorChar;
+        if (path.StartsWith(legacy, StringComparison.OrdinalIgnoreCase)) return true;
+        return packageFamily == PackageFamily && packageRoot is not null
+            && path.Equals(Path.GetFullPath(Path.Combine(packageRoot, "app", "resources", "codex.exe")), StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static (string? Family, string? Root) ReadPackage(int pid)
+    {
+        using var process = OpenProcess(0x1000, false, pid);
+        if (process.IsInvalid) throw new System.ComponentModel.Win32Exception(Marshal.GetLastPInvokeError());
+        var family = ReadPackageString((ref uint length, char[]? value) => GetPackageFamilyName(process, ref length, value));
+        if (family != PackageFamily) return (family, null);
+        var fullName = ReadPackageString((ref uint length, char[]? value) => GetPackageFullName(process, ref length, value))
+            ?? throw new IOException("Codex package identity changed during inspection.");
+        var root = ReadPackageString((ref uint length, char[]? value) => GetPackagePathByFullName(fullName, ref length, value))
+            ?? throw new IOException("Codex package location is unavailable.");
+        return (family, root);
+    }
+
+    private delegate int PackageString(ref uint length, char[]? value);
+
+    private static string? ReadPackageString(PackageString query)
+    {
+        uint length = 0;
+        var error = query(ref length, null);
+        if (error == 15700) return null; // APPMODEL_ERROR_NO_PACKAGE is normal for the legacy install.
+        if (error != 122) throw new System.ComponentModel.Win32Exception(error);
+        if (length is 0 or > 32768) throw new InvalidDataException("Codex package identity length.");
+        var buffer = new char[length];
+        error = query(ref length, buffer);
+        if (error != 0) throw new System.ComponentModel.Win32Exception(error);
+        if (length == 0 || length > buffer.Length || buffer[length - 1] != '\0')
+            throw new InvalidDataException("Codex package identity termination.");
+        return new string(buffer, 0, checked((int)length - 1));
     }
     private static string CommandLine(int pid)
     {
@@ -280,6 +326,15 @@ internal sealed class CodexTaskOwnerSource : ICodexTaskOwnerSource
     [StructLayout(LayoutKind.Sequential)] private struct UnicodeString { internal ushort Length, MaximumLength; internal nint Buffer; }
     [DllImport("kernel32.dll",SetLastError=true)]
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)] private static extern SafeProcessHandle OpenProcess(uint access,[MarshalAs(UnmanagedType.Bool)] bool inherit,int pid);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    private static extern int GetPackageFamilyName(SafeProcessHandle process, ref uint length, [Out] char[]? value);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    private static extern int GetPackageFullName(SafeProcessHandle process, ref uint length, [Out] char[]? value);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    private static extern int GetPackagePathByFullName(string fullName, ref uint length, [Out] char[]? value);
     [DllImport("ntdll.dll",EntryPoint="NtQueryInformationProcess")]
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)] private static extern int QueryProcess(SafeProcessHandle process,int information,nint buffer,int length,out int returned);
 }

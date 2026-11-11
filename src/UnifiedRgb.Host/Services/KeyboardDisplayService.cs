@@ -30,6 +30,7 @@ public sealed partial class KeyboardDisplayService : BackgroundService, IKeyboar
     private readonly TimeProvider _time;
     private readonly CodexEntryHold _codexEntry;
     private readonly Func<byte[]?>? _idleFrame;
+    private readonly Func<byte[]?>? _homeAssistantFrame;
     private readonly Func<KeyboardCodexUsageDto>? _codexStatus;
     private readonly Func<bool, CancellationToken, KeyboardCodexUsageDto>? _setCodexEnabled;
     private readonly Func<string, bool> _wiredRoutePresent;
@@ -78,10 +79,11 @@ public sealed partial class KeyboardDisplayService : BackgroundService, IKeyboar
         Func<long>? nativeFrameOverlayRevision = null, IClock? masterClock = null, Func<string, int?>? sceneLoopDurationMs = null,
         Func<byte[]?>? idleFrame = null, Func<KeyboardCodexUsageDto>? codexStatus = null,
         Func<bool, CancellationToken, KeyboardCodexUsageDto>? setCodexEnabled = null,
-        Func<string, bool>? wiredRoutePresent = null)
+        Func<string, bool>? wiredRoutePresent = null, Func<byte[]?>? homeAssistantFrame = null)
     {
         _options = options; _rgb = rgb; _screens = screens; _factory = factory; _guard = guard;
         _idleFrame = idleFrame; _codexStatus = codexStatus; _setCodexEnabled = setCodexEnabled;
+        _homeAssistantFrame = homeAssistantFrame;
         _wiredRoutePresent = wiredRoutePresent ?? ExactWiredPresent;
         _wirelessFactory = wirelessFactory;
         _configurationGate = configurationGate;
@@ -178,7 +180,8 @@ public sealed partial class KeyboardDisplayService : BackgroundService, IKeyboar
             : "光域标志渲染失败，进入原生光域后直接进入待机；";
         var custom = _animation.Status(pageEnabled: true, nativeOwnsDisplay: false);
         note += NativeIdlePolicyNote();
-        note += presentation.IdleChoice == KeyboardNativeArtwork.CodexQuota ? "独立 Codex 页：显示本机额度缓存；通过键盘原有实体翻页键选择，不影响光域素材或机箱电源；" : custom.State switch
+        note += presentation.IdleChoice == KeyboardNativeArtwork.HomeAssistantScenes ? "独立 HA 页：上下拨选家庭场景，中按执行；"
+            : presentation.IdleChoice == KeyboardNativeArtwork.CodexQuota ? "独立 Codex 页：显示本机额度缓存；通过键盘原有实体翻页键选择，不影响光域素材或机箱电源；" : custom.State switch
         {
             KeyboardDisplayAnimationStates.Off => "场景素材偏好为关；",
             KeyboardDisplayAnimationStates.NotAdmitted => "主机未准许场景素材；",
@@ -325,7 +328,8 @@ public sealed partial class KeyboardDisplayService : BackgroundService, IKeyboar
                     {
                         sessionDone.TrySetResult();
                         CompleteResume(new KeyboardResumeResult(false, null));
-                        Publish(_enabled ? "Waiting" : "Stopped", _enabled ? "等待已绑定键盘的 USB 或 2.4G 无线连接" : "键盘状态屏已关闭；等待已绑定灯光连接");
+                        var requested = _enabled || _options.KeyboardDisplay.HasVerifiedLightingRoute || _nativeMenu?.Requested == true;
+                        Publish(requested ? "Waiting" : "Stopped", requested ? "等待已绑定键盘的 USB 或 2.4G 无线连接；设备上线后自动接管" : "键盘状态屏已关闭");
                         await Task.Delay(5000, sessionStop.Token).ConfigureAwait(false); continue;
                     }
                     if (ReferenceEquals(Interlocked.Exchange(ref _routeRecoveryOnly, null), connection))
@@ -358,6 +362,10 @@ public sealed partial class KeyboardDisplayService : BackgroundService, IKeyboar
                 {
                     Publish("Connecting", "已检测到绑定键盘的 USB 连接；旧无线会话已关闭，正在接入有线并重新协商原生页面");
                 }
+                catch (KeyboardRecoveryIntentChangedException)
+                {
+                    Publish("Connecting", "键盘使用请求已更新，正在按当前请求重新核对连接");
+                }
                 catch (RogOledConnectionLostException ex)
                 {
                     CompleteResume(new KeyboardResumeResult(true, ex));
@@ -388,6 +396,18 @@ public sealed partial class KeyboardDisplayService : BackgroundService, IKeyboar
                     // This typed startup outcome was raised before settings/output. Normal acquisition may wait for a wake;
                     // an explicit maintenance FreshResume keeps its existing bounded failure behavior instead.
                     Publish("Waiting", "2.4G 接收器已应答但键盘尚未就绪；未写入设置，等待唤醒并每 5 秒重新读取");
+                    try { await Task.Delay(5000, sessionStop.Token).ConfigureAwait(false); }
+                    catch (OperationCanceledException) when (sessionStop.IsCancellationRequested) { }
+                }
+                catch (RogKeyboardStartupNotReadyException) when (_configurationGate is { RogAcquisitionAllowed: true, FreshResumeAllowed: false })
+                {
+                    Publish("Waiting", "键盘只读初始化尚未就绪；保留当前设置，每 5 秒等待自动接管");
+                    try { await Task.Delay(5000, sessionStop.Token).ConfigureAwait(false); }
+                    catch (OperationCanceledException) when (sessionStop.IsCancellationRequested) { }
+                }
+                catch (KeyboardPresentationNotReadyException) when (_configurationGate is { RogAcquisitionAllowed: true, FreshResumeAllowed: false })
+                {
+                    Publish("Waiting", "键盘恢复所需的只读状态尚未就绪；保留恢复记录，每 5 秒重新核对设备");
                     try { await Task.Delay(5000, sessionStop.Token).ConfigureAwait(false); }
                     catch (OperationCanceledException) when (sessionStop.IsCancellationRequested) { }
                 }
@@ -438,37 +458,32 @@ public sealed partial class KeyboardDisplayService : BackgroundService, IKeyboar
         var connection = first;
         byte[]? expectedJournal = null;
         ObservationOwnerRetiredException? pendingObservation = null;
+        var retryingInterruptedRestore = false;
         while (true)
         {
             ObservationOwnerRetiredException retired;
             var verifyingRecovery = expectedJournal is not null;
             var waitingForWake = false;
+            var newlyRetired = false;
+            var brightnessWasNotSent = false;
             using (connection)
             {
                 try
                 {
-                    if (verifyingRecovery && pendingObservation?.ArtworkRefused == true)
-                    {
-                        RequireObservationReplacement(pendingObservation, "before-refusal-cap");
-                        try
-                        {
-                            var transport = connection.ConnectionKind == "wired" ? (byte)1 : (byte)2;
-                            var cap = RogNativeMenuCodec.ParseCapability(await connection.ExchangeAsync(
-                                RogNativeMenuCodec.CapabilityRequest(), false, ct).ConfigureAwait(false), 0x12, transport);
-                            Publish("Recovering", "已读取新连接的原生状态；正在核对原设备恢复记录，未重发旧图块",
-                                error: pendingObservation.Message + "; " + RogNativeArtworkUploadRefusedException.Describe("freshNativeBeforeRestore", cap));
-                        }
-                        catch (Exception ex) when (ex is not OutOfMemoryException && !(ex is OperationCanceledException && ct.IsCancellationRequested))
-                        { throw new AggregateException("Fresh native CAP before restoration failed; original refusal and journal retained.", pendingObservation, ex); }
-                        // The existing artwork-replacement500ms pause moved here so passive polling can capture actual state
-                        // before any Snapshot/Preset/brightness/bank restoration. No new delay or old-owner I/O is added.
-                        await Task.Delay(500, ct).ConfigureAwait(false);
-                        RequireObservationReplacement(pendingObservation, "after-refusal-cap");
-                    }
                     await RunSessionAsync(connection, ct, expectedJournal: expectedJournal,
-                        recoveryVerified: () => verifyingRecovery = false).ConfigureAwait(false); return;
+                        requirePresentationReadiness: (pendingObservation?.ArtworkRefused == true || retryingInterruptedRestore)
+                            && _nativeMenu?.Requested == true,
+                        recoveryVerified: () =>
+                        {
+                            verifyingRecovery = false;
+                            retryingInterruptedRestore = false;
+                            if (pendingObservation is not null)
+                                Serilog.Log.Information("Keyboard recovery owner ready: transport={Transport}, phase={Phase}, profile={Profile}",
+                                    pendingObservation.ConnectionKind, pendingObservation.Phase, pendingObservation.ProfileToken);
+                        }).ConfigureAwait(false); return;
                 }
-                catch (ObservationOwnerRetiredException ex) { retired = ex; pendingObservation = ex; }
+                catch (ObservationOwnerRetiredException ex)
+                { retired = ex; pendingObservation = ex; waitingForWake = ex.PeerUnavailable; newlyRetired = true; }
                 catch (RogKeyboardNotReadyException) when (verifyingRecovery && pendingObservation is not null)
                 {
                     // Snapshot proved an empty RF peer before ANY settings. Preserve the same recovery record/intent and
@@ -476,17 +491,52 @@ public sealed partial class KeyboardDisplayService : BackgroundService, IKeyboar
                     retired = pendingObservation;
                     waitingForWake = true;
                 }
-                catch (Exception ex) when (verifyingRecovery && ex is not OutOfMemoryException
+                catch (RogKeyboardStartupNotReadyException) when (verifyingRecovery && pendingObservation is not null)
+                {
+                    retired = pendingObservation;
+                    waitingForWake = true;
+                }
+                catch (KeyboardPresentationNotReadyException) when (verifyingRecovery && pendingObservation is not null)
+                {
+                    retired = pendingObservation;
+                    waitingForWake = true;
+                }
+                catch (RogOledEnvelopeRefusedException ex) when (ex.UnsentCommand == 0x68 && verifyingRecovery
+                    && pendingObservation is not null && connection.ConnectionKind == "wireless"
+                    && ex.Data["KeyboardStartupStage"] is "restore-native-goal" && !ct.IsCancellationRequested)
+                {
+                    // The same-selector preset completed. The proposed brightness write never reached the wire.
+                    // Retry the recorded restore only on a fresh owner, within the original episode budget.
+                    retired = pendingObservation;
+                    brightnessWasNotSent = true;
+                    retryingInterruptedRestore = true;
+                }
+                catch (Exception ex) when (verifyingRecovery && ex is not OutOfMemoryException and not KeyboardRecoveryIntentChangedException
                     && !(ex is OperationCanceledException && ct.IsCancellationRequested))
-                { throw new IOException("Recorded replacement startup/recovery failed; no further automatic recovery; journal retained."
-                    + (pendingObservation?.ArtworkRefused == true ? " " + ex.Message : ""), ex); }
+                {
+                    var diagnostic = RecoveryFailureDetail(ex);
+                    Serilog.Log.Warning("Keyboard replacement startup/recovery failed: {Diagnostic}", diagnostic);
+                    throw new IOException("Recorded replacement startup/recovery failed; no further automatic recovery; journal retained. " + diagnostic, ex);
+                }
             }
             ct.ThrowIfCancellationRequested();
             RequireObservationReplacement(retired, "after-dispose");
-            if (waitingForWake)
+            if (newlyRetired)
+                Serilog.Log.Information("Keyboard temporary presentation owner retired: transport={Transport}, phase={Phase}, profile={Profile}",
+                    retired.ConnectionKind, retired.Phase, retired.ProfileToken);
+            if (brightnessWasNotSent)
+            {
+                if (Volatile.Read(ref _observationReplacements) >= 3)
+                    throw ObservationDenied(retired, "budget-exhausted", "before-native-restore-replacement");
+                var attempt = Interlocked.Increment(ref _observationReplacements);
+                Serilog.Log.Information("Keyboard recovery brightness was not sent; retired RF owner, attempt {Attempt}/3 after delay", attempt);
+                Publish("Waiting", $"恢复亮度前收到无线拒绝；亮度指令未发送，5 秒后重新核对原设备和恢复记录（{attempt}/3）");
+                await Task.Delay(5000, ct).ConfigureAwait(false);
+            }
+            else if (waitingForWake)
             {
                 Publish("Waiting", "原设备恢复连接已应答，但键盘尚未就绪；未写入设置，保留同一恢复记录并每 5 秒等待唤醒",
-                    error: retired.Message);
+                    error: null);
                 await Task.Delay(5000, ct).ConfigureAwait(false);
             }
             else
@@ -495,28 +545,40 @@ public sealed partial class KeyboardDisplayService : BackgroundService, IKeyboar
                 if (Volatile.Read(ref _observationReplacements) >= 3) throw ObservationDenied(retired, "budget-exhausted", "before-replacement");
                 var attempt = Interlocked.Increment(ref _observationReplacements);
                 Publish("Recovering", retired.ArtworkRefused
-                    ? $"键盘临时画面传输收到拒绝应答；旧连接已关闭，按原设备恢复后重新连接（{attempt}/3），未重发旧图块"
-                    : $"键盘独立只读{(retired.InnerException is RogReadOnlyObservationUnexpectedReplyException ? "应答不匹配" : "检查超时")}；旧连接已关闭，按原设备恢复后重新连接（{attempt}/3），未重发旧报文",
+                    ? $"键盘临时画面会话已退出；旧连接已关闭，按原设备恢复后重新连接（{attempt}/3），未重发旧图块"
+                    : $"键盘独立只读{(retired.InnerException is RogReadOnlyObservationEnvelopeRefusedException ? "查询收到拒绝应答" : retired.InnerException is RogReadOnlyObservationUnexpectedReplyException ? "应答不匹配" : "检查超时")}；旧连接已关闭，按原设备恢复后重新连接（{attempt}/3），未重发旧报文",
                     error: retired.Message);
-                if (!retired.ArtworkRefused) await Task.Delay(500, ct).ConfigureAwait(false);
+                await Task.Delay(500, ct).ConfigureAwait(false);
             }
             RequireObservationReplacement(retired, "before-open");
             expectedJournal = retired.Journal;
-            try
+            while (true)
             {
-                connection = await _configurationGate!.RunAcquisitionAsync(token =>
+                try
                 {
-                    token.ThrowIfCancellationRequested();
-                    RequireObservationReplacement(retired, "inside-acquisition");
-                    if (!File.Exists(_journalPath) || !ReadBytes(_journalPath).AsSpan().SequenceEqual(retired.Journal))
-                        throw new RecoveryScopeException("Recorded recovery changed or disappeared; no automatic replacement writes.", "恢复记录已改变或缺失；已停止自动重新连接");
-                    var record = JsonSerializer.Deserialize<RecoveryRecord>(retired.Journal) ?? throw MissingRecoveryScope();
-                    return Task.FromResult(OpenRecordedConnection(record)
-                        ?? throw new IOException("The exact recorded keyboard route is absent; recovery record retained."));
-                }, ct).ConfigureAwait(false);
+                    connection = await _configurationGate!.RunAcquisitionAsync(token =>
+                    {
+                        token.ThrowIfCancellationRequested();
+                        RequireObservationReplacement(retired, "inside-acquisition");
+                        if (!File.Exists(_journalPath) || !ReadBytes(_journalPath).AsSpan().SequenceEqual(retired.Journal))
+                            throw new RecoveryScopeException("Recorded recovery changed or disappeared; no automatic replacement writes.", "恢复记录已改变或缺失；已停止自动重新连接");
+                        var record = JsonSerializer.Deserialize<RecoveryRecord>(retired.Journal) ?? throw MissingRecoveryScope();
+                        if (RecoveryKind(record) == "wireless" && WiredSwitchKey is { } wiredKey && CanSwitchToKnownWired(wiredKey))
+                            throw new KeyboardTransportChangedException();
+                        return Task.FromResult(OpenRecordedConnection(record)
+                            ?? throw new IOException("The exact recorded keyboard route is absent; recovery record retained."));
+                    }, ct).ConfigureAwait(false);
+                    break;
+                }
+                catch (RogKeyboardNotReadyException)
+                {
+                    RequireObservationReplacement(retired, "sleeping-peer-before-open");
+                    Publish("Waiting", "接收器已应答，键盘处于休眠或离线；保留原设置，每 5 秒等待自动接管");
+                    await Task.Delay(5000, ct).ConfigureAwait(false);
+                }
+                catch (RogOledConnectionLostException ex)
+                { throw new IOException("Recorded replacement acquisition failed; no startup retry or route substitution; journal retained.", ex); }
             }
-            catch (Exception ex) when (ex is RogKeyboardNotReadyException or RogOledConnectionLostException)
-            { throw new IOException("Recorded replacement acquisition failed; no startup retry or route substitution; journal retained.", ex); }
             var afterOpenDenial = ObservationReplacementDenial(retired);
             if (ct.IsCancellationRequested || afterOpenDenial is not null)
             {
@@ -552,9 +614,19 @@ public sealed partial class KeyboardDisplayService : BackgroundService, IKeyboar
         + $"normalGate={_configurationGate?.RogAcquisitionAllowed}; freshResume={_configurationGate?.FreshResumeAllowed}; primary={retired.Message}", retired);
 
     private sealed class ObservationOwnerRetiredException(IOException cause, byte[] journal,
-        TimeSpan healthyFor, long intentRevision, long nativeRevision) : IOException(cause.Message, cause)
+        TimeSpan healthyFor, long intentRevision, long nativeRevision, string connectionKind, byte profileToken) : IOException(cause.Message, cause)
     {
-        public bool ArtworkRefused { get; } = cause is RogNativeArtworkUploadRefusedException;
+        public bool ArtworkRefused { get; } = cause is RogNativeArtworkUploadRefusedException or RogNativePresentationUnavailableException;
+        public bool PeerUnavailable { get; } = cause is RogReadOnlyObservationPeerUnavailableException;
+        public string ConnectionKind { get; } = connectionKind;
+        public byte ProfileToken { get; } = profileToken;
+        public string Phase { get; } = cause switch
+        {
+            RogNativeArtworkUploadRefusedException artwork => artwork.Phase,
+            RogNativePresentationUnavailableException presentation => presentation.Phase,
+            RogReadOnlyObservationException observation => observation.Operation.ToString(),
+            _ => "unknown",
+        };
         public byte[] Journal { get; } = journal;
         public TimeSpan HealthyFor { get; } = healthyFor;
         public long IntentRevision { get; } = intentRevision;
@@ -730,7 +802,7 @@ public sealed partial class KeyboardDisplayService : BackgroundService, IKeyboar
     }
 
     private async Task RunSessionAsync(IRogOledConnection connection, CancellationToken ct, bool recoveryOnly = false,
-        byte[]? expectedJournal = null, Action? recoveryVerified = null)
+        byte[]? expectedJournal = null, Action? recoveryVerified = null, bool requirePresentationReadiness = false)
     {
         var routeSwitch = connection.ConnectionKind == "wireless" && WiredSwitchKey is { } wiredKey
             ? new KeyboardTransportSwitch(_time, () => CanSwitchToKnownWired(wiredKey)) : null;
@@ -767,13 +839,50 @@ public sealed partial class KeyboardDisplayService : BackgroundService, IKeyboar
         var confirmedRemoval = false;
         var recoveryComplete = false;
         var observationRetired = false;
+        var nativeRecoveryAdopted = false;
+        var nativeGoalRestored = false;
         long? runningAt = null;
         long? failedAt = null;
-        long intentRevision = 0, nativeRevision = 0;
+        long intentRevision = Interlocked.Read(ref _intentRevision), nativeRevision = _nativeMenu?.RequestRevision ?? 0;
+        var nativeRequestedAtStart = _nativeMenu?.Requested == true;
+        var startupStage = "snapshot";
+
+        async Task RestoreNativeAtStartupAsync(byte brightness, bool allowFreshNative)
+        {
+            startupStage = "restore-native-goal";
+            try { await RestoreNativeGoalAsync(session, connection, brightness, allowFreshNative, ct).ConfigureAwait(false); }
+            catch (Exception ex) when (nativeRequestedAtStart && !session.MutationAdmitted && ReadOnlyRecoveryUnavailable(ex))
+            {
+                // RestoreAsync first reads the current device/profile. That read can fail after a successful
+                // snapshot on a route that has just switched. Retire it like the other startup reads.
+                ct.ThrowIfCancellationRequested();
+                if (intentRevision != Interlocked.Read(ref _intentRevision) || nativeRevision != (_nativeMenu?.RequestRevision ?? 0))
+                    throw new KeyboardRecoveryIntentChangedException();
+                throw new KeyboardPresentationNotReadyException(ex);
+            }
+        }
+
         try
         {
             Publish("Connecting", "正在核对键盘与原显示设置");
-            var brightness = await session.SnapshotAsync(connection.FirmwareHeader, ct).ConfigureAwait(false);
+            byte brightness;
+            try { brightness = await session.SnapshotAsync(connection.FirmwareHeader, ct).ConfigureAwait(false); }
+            catch (Exception ex) when (nativeRequestedAtStart
+                && ex is RogKeyboardStartupNotReadyException or RogKeyboardNotReadyException)
+            {
+                ct.ThrowIfCancellationRequested();
+                if (intentRevision != Interlocked.Read(ref _intentRevision) || nativeRevision != (_nativeMenu?.RequestRevision ?? 0))
+                    throw new KeyboardRecoveryIntentChangedException();
+                throw;
+            }
+            catch (Exception ex) when (nativeRequestedAtStart && !session.MutationAdmitted && ReadOnlyRecoveryUnavailable(ex))
+            {
+                ct.ThrowIfCancellationRequested();
+                if (intentRevision != Interlocked.Read(ref _intentRevision) || nativeRevision != (_nativeMenu?.RequestRevision ?? 0))
+                    throw new KeyboardRecoveryIntentChangedException();
+                throw new KeyboardPresentationNotReadyException(ex);
+            }
+            startupStage = "recovery-record";
             if (expectedJournal is not null && !File.Exists(_journalPath))
                 throw new RecoveryScopeException("Expected recovery record disappeared.", "恢复记录已缺失；未写入恢复设置");
             if (File.Exists(_journalPath))
@@ -818,27 +927,57 @@ public sealed partial class KeyboardDisplayService : BackgroundService, IKeyboar
                         throw new RecoveryScopeException("Previous OLED session belongs to a different keyboard profile; journal retained.",
                             "恢复记录属于其他键盘配置档；切回原档后重新启用");
                     brightness = prior.Brightness;
-                    await RestoreNativeGoalAsync(session, connection, brightness, allowFreshNative: false, ct).ConfigureAwait(false);
-                    if (prior.Lighting is not null && prior.StaticBank is not null)
-                        await session.RestoreLightingAsync(prior.Lighting, prior.StaticBank, ct).ConfigureAwait(false);
+                    if (!recoveryOnly && !display)
+                    {
+                        startupStage = "reconcile-native-recovery";
+                        nativeRecoveryAdopted = await TryResumeNativeRecoveryAsync(session, connection, prior, priorBytes, ownsLighting, ct).ConfigureAwait(false);
+                    }
+                    if (!nativeRecoveryAdopted)
+                    {
+                        if (requirePresentationReadiness)
+                        {
+                            startupStage = "snapshot-native-readiness";
+                            await RequireFreshPresentationReadinessAsync(session, connection, ct).ConfigureAwait(false);
+                        }
+                        await RestoreNativeAtStartupAsync(brightness, allowFreshNative: false).ConfigureAwait(false);
+                        nativeGoalRestored = true;
+                        if (prior.Lighting is not null && prior.StaticBank is not null)
+                        {
+                            startupStage = "restore-lighting";
+                            await session.RestoreLightingAsync(prior.Lighting, prior.StaticBank, ct).ConfigureAwait(false);
+                        }
+                    }
                 }
             }
             original = brightness;
-            if (ownsLighting) await session.SnapshotLightingAsync(ct).ConfigureAwait(false);
+            startupStage = "snapshot-lighting";
+            if (ownsLighting && !nativeRecoveryAdopted)
+            {
+                try { await session.SnapshotLightingAsync(ct).ConfigureAwait(false); }
+                catch (Exception ex) when (nativeRequestedAtStart && !session.MutationAdmitted && ReadOnlyRecoveryUnavailable(ex))
+                {
+                    ct.ThrowIfCancellationRequested();
+                    if (intentRevision != Interlocked.Read(ref _intentRevision) || nativeRevision != (_nativeMenu?.RequestRevision ?? 0))
+                        throw new KeyboardRecoveryIntentChangedException();
+                    throw new KeyboardPresentationNotReadyException(ex);
+                }
+            }
             if (recoveryOnly)
             {
                 recoveryComplete = true;
                 return;
             }
             // Persist recovery intent before the first mutation, including process termination/restart.
-            Save(_journalPath, new RecoveryRecord(2, connection.DeviceKey, ConnectionLabel(connection), brightness, session.VerifiedProfileToken,
-                session.OriginalLighting, session.OriginalStaticBank));
+            if (!nativeRecoveryAdopted)
+                Save(_journalPath, new RecoveryRecord(2, connection.DeviceKey, ConnectionLabel(connection), brightness, session.VerifiedProfileToken,
+                    session.OriginalLighting, session.OriginalStaticBank));
+            startupStage = "start-output";
             await RefreshArtworkAsync(ct).ConfigureAwait(false); // No raw image is presented as a completed device write.
             if (display) await session.StartOutputAsync(_options.KeyboardDisplay.Brightness, ct).ConfigureAwait(false);
             else
             {
-                var goal = await RestoreNativeGoalAsync(session, connection, brightness, allowFreshNative: true, ct).ConfigureAwait(false);
-                if (session.CurrentNativeBrightness != goal) await session.RestoreAsync(goal, ct).ConfigureAwait(false);
+                if (!nativeRecoveryAdopted && !nativeGoalRestored)
+                    await RestoreNativeAtStartupAsync(brightness, allowFreshNative: true).ConfigureAwait(false);
                 Publish("Stopped", InactiveDisplayDetail);
             }
             Volatile.Write(ref _coldStartRetries, 0);
@@ -847,7 +986,8 @@ public sealed partial class KeyboardDisplayService : BackgroundService, IKeyboar
             if (ownsLighting) lighting = _lighting.Attach();
             monitor = MonitorAsync();
             var presentation = nativeMenu is not null && NativePresentationDeclared(connection)
-                ? new KeyboardNativePresentation(_animation, _options.KeyboardDisplay.DeviceShowsNativeEntryLogo ? null : EntryLogo(), _time, _nativeFrameOverlay, _nativeFrameAcknowledged, _nativeFrameOverlayRevision, () => CaseBlackout, _idleFrame, _codexEntry) : null;
+                ? new KeyboardNativePresentation(_animation, _options.KeyboardDisplay.DeviceShowsNativeEntryLogo ? null : EntryLogo(), _time,
+                    _nativeFrameOverlay, _nativeFrameAcknowledged, _nativeFrameOverlayRevision, () => CaseBlackout, _idleFrame, _codexEntry, _homeAssistantFrame) : null;
             // Ordinary application output has its own entry too. It must not upload a status/animation frame before a later
             // native entry gets its logo. Reuse only the pure selector and the existing owner's upload acknowledgement/lease.
             var ordinaryPresentation = !NativeOwnsDisplay ? new KeyboardNativePresentation(_animation, EntryLogo(), _time, idleFrame: _idleFrame) : null;
@@ -858,6 +998,7 @@ public sealed partial class KeyboardDisplayService : BackgroundService, IKeyboar
             // leaves the animation's held frame alone. Installed ownership keeps display false, so the legacy path never uploads
             // and the presentation's logo is the first image of every native entry (ARM, then logo, then the chosen idle).
             runningAt = _time.GetTimestamp();
+            startupStage = "running";
             await session.RunAsync(() => ordinaryPresentation is not null && LegacyDisplayEnabled
                     ? ordinaryPresentation.Latest(Volatile.Read(ref _pixels), pageEnabled: true)
                     : presentation?.Entered == true ? Volatile.Read(ref _pixels)
@@ -878,8 +1019,12 @@ public sealed partial class KeyboardDisplayService : BackgroundService, IKeyboar
                 restoreNativeGoal: token => Task.FromResult(ResolveNativeGoal(session, connection, brightness, allowFreshNative: false, token)),
                 nativeBrightnessChanged: (current, token) => PersistObservedNativeAsync(connection, session.VerifiedProfileToken, current, token),
                 nativeTick: nativeMenu is null ? null : presentation is null
-                    ? token => nativeMenu.StepAsync(capability => !_options.KeyboardDisplay.HostArtworkEnabled ? null
-                        : capability.Mode == RogNativeMenuCodec.CodexMode ? (_codexEntry.Holding ? null : _idleFrame?.Invoke()) : Volatile.Read(ref _pixels), token)
+                    ? token => nativeMenu.StepAsync(capability => !_options.KeyboardDisplay.HostArtworkEnabled ? null : capability.Mode switch
+                    {
+                        RogNativeMenuCodec.CodexMode => _codexEntry.Holding ? null : _idleFrame?.Invoke(),
+                        RogNativeMenuCodec.HomeAssistantMode => _codexEntry.Holding ? null : _homeAssistantFrame?.Invoke(),
+                        _ => Volatile.Read(ref _pixels),
+                    }, token)
                     : async token =>
                     {
                         // Control and Host artwork are separate: a null answer keeps the lever armed while the keyboard shows its
@@ -911,6 +1056,7 @@ public sealed partial class KeyboardDisplayService : BackgroundService, IKeyboar
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
+            ex.Data["KeyboardStartupStage"] = startupStage;
             // A different exact configured route is a new acquisition intent, not a retry of this RF command.
             // Even if USB enumeration followed an in-flight RF failure, no old-route cleanup or packet is replayed.
             failure = !ct.IsCancellationRequested && routeSwitch?.Observe(force: true) == true
@@ -919,7 +1065,7 @@ public sealed partial class KeyboardDisplayService : BackgroundService, IKeyboar
                 failure = ex as RogOledConnectionLostException ?? new RogOledConnectionLostException(
                     "The original keyboard HID route is confirmed absent; retain its recovery record and acquire a fresh configured route.", ex);
             failedAt = _time.GetTimestamp();
-            if (ex is RogReadOnlyObservationException or RogNativeArtworkUploadRefusedException)
+            if (ex is RogReadOnlyObservationException or RogNativeArtworkUploadRefusedException or RogNativePresentationUnavailableException)
             {
                 // Healthy same-session changes are legitimate. Freeze the LATEST intent at the classified fault; any
                 // changes after this point still invalidate replacement before/inside/after the fresh open.
@@ -930,7 +1076,7 @@ public sealed partial class KeyboardDisplayService : BackgroundService, IKeyboar
         finally
         {
             // Eligibility is captured BEFORE stopping native input; never reinterpret a native/physical/join fault as a poll failure.
-            var classifiedObservation = failure is RogReadOnlyObservationException or RogNativeArtworkUploadRefusedException;
+            var classifiedObservation = failure is RogReadOnlyObservationException or RogNativeArtworkUploadRefusedException or RogNativePresentationUnavailableException;
             var transportChanged = failure is KeyboardTransportChangedException;
             var samePhysical = false;
             if (classifiedObservation)
@@ -955,7 +1101,7 @@ public sealed partial class KeyboardDisplayService : BackgroundService, IKeyboar
                         : new AggregateException("Owner retirement failed; automatic replacement refused.", failure, ex);
                 }
             }
-            observationRetired = observation && failure is RogReadOnlyObservationException or RogNativeArtworkUploadRefusedException
+            observationRetired = observation && failure is RogReadOnlyObservationException or RogNativeArtworkUploadRefusedException or RogNativePresentationUnavailableException
                 && nativeMenu?.RecoveryBlocked != true;
             monitorStop.Cancel();
             if (monitor is not null) await monitor.ConfigureAwait(false);
@@ -990,11 +1136,19 @@ public sealed partial class KeyboardDisplayService : BackgroundService, IKeyboar
                 var record = JsonSerializer.Deserialize<RecoveryRecord>(bytes) ?? throw MissingRecoveryScope();
                 if (record.Schema != 2 || record.ProfileToken != session.VerifiedProfileToken
                     || observed is RogReadOnlyObservationException { ProfileToken: { } token } && record.ProfileToken != token
-                    || record.DeviceKey != (observed is RogReadOnlyObservationException read ? read.DeviceKey
-                        : ((RogNativeArtworkUploadRefusedException)observed).DeviceKey)
+                    || observed is RogNativePresentationUnavailableException presentation
+                        && (record.ProfileToken != presentation.ProfileToken || connection.ConnectionKind != presentation.ConnectionKind)
+                    || record.DeviceKey != (observed switch
+                    {
+                        RogReadOnlyObservationException read => read.DeviceKey,
+                        RogNativeArtworkUploadRefusedException artwork => artwork.DeviceKey,
+                        RogNativePresentationUnavailableException lease => lease.DeviceKey,
+                        _ => throw MissingRecoveryScope(),
+                    })
                     || !SameProtocol(record.FirmwareHeader, ConnectionLabel(connection))) throw MissingRecoveryScope();
                 var healthy = runningAt is { } start && failedAt is { } end && end >= start ? _time.GetElapsedTime(start, end) : TimeSpan.Zero;
-                failure = new ObservationOwnerRetiredException(observed, bytes, healthy, intentRevision, nativeRevision);
+                failure = new ObservationOwnerRetiredException(observed, bytes, healthy, intentRevision, nativeRevision,
+                    connection.ConnectionKind, session.VerifiedProfileToken);
             }
             catch (Exception ex) when (ex is not OutOfMemoryException)
             { failure = new AggregateException("Classified owner fault has no matching recorded recovery scope; journal retained.", observed, ex); }

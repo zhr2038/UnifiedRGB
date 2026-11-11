@@ -130,8 +130,36 @@ public sealed partial class RogNativeMenuSourceTests
         public CodexWireChannel Usb { get; } = new(1);
         public CodexWireChannel Radio { get; } = new(2);
         public List<Port> Ports { get; } = [];
-        public bool WiredAvailable { get; private set; }
+        public bool WiredAvailable { get; set; }
         public bool AbsenceVisible { get; set; } = true;
+        public bool RadioPeerUnavailable { get; set; }
+        public bool RadioCapsUnavailable { get; set; }
+        public bool RadioCapsMalformed { get; set; }
+        public bool RadioRefuseArmOnce { get; set; }
+        public bool RadioRefuseDisarmOnce { get; set; }
+        private string? _radioTransientPhase;
+        private Port? _radioTransientPort;
+        private int _radioTransientImageTarget;
+        public void ArmRadioTransientPhase(string phase)
+        {
+            _radioTransientPort = Ports.Last(p => p.Transport == 2 && !p.Disposed);
+            _radioTransientPhase = phase; _radioTransientImageTarget = Radio.Images.Count + 1;
+        }
+        public string? RadioPartialStartup { get; set; }
+        public byte? RadioActiveProfileToken { get; set; }
+        public byte? RadioStartupBrightness { get; set; }
+        public bool RadioRefuseBrightnessReadbackAfterSetter { get; set; }
+        public byte? RefuseCapabilityTransport { get; set; }
+        public byte? RefuseReadCommand { get; set; }
+        public Action? AfterCapabilityRead { get; set; }
+        public int? TimeoutColourPacket { get; set; }
+        public int? RefuseCapabilityAfterImages { get; set; }
+        public bool? RadioRestoreBrightnessRefusalBeforeWrite { get; set; }
+        public bool RadioRefuseNextCap { get; set; }
+        public bool RadioRefuseCommitCap { get; set; }
+        public bool WiredBadBasicInfo { get; set; }
+        public bool UseCodexPage { get; set; } = codexPage;
+        public int EmptyPeerReplies { get; private set; }
         public bool FailUsbKeyWriteAndSwitchToRadio { get; set; }
         public int TransitionWriteFailures { get; private set; }
         public byte ActiveTransport => Ports.LastOrDefault(p => !p.Disposed)?.Transport ?? 0;
@@ -169,7 +197,7 @@ public sealed partial class RogNativeMenuSourceTests
         private Port OpenPort(byte transport)
         {
             OpenWhilePriorInputLive |= inputs.LiveHandles != 0;
-            var port = new Port(this, transport, transport == 1 ? Usb : Radio, codexPage); Ports.Add(port);
+            var port = new Port(this, transport, transport == 1 ? Usb : Radio, UseCodexPage); Ports.Add(port);
             MaximumLivePorts = Math.Max(MaximumLivePorts, Ports.Count(p => !p.Disposed)); return port;
         }
         public void Dispose() { foreach (var port in Ports) port.Dispose(); Usb.Dispose(); Radio.Dispose(); }
@@ -178,10 +206,28 @@ public sealed partial class RogNativeMenuSourceTests
             public byte Transport => transport;
             public bool Disposed { get; private set; }
             public int MaximumReaders { get; private set; }
+            public List<byte[]> Requests { get; } = [];
+            public int? FirstEmptyAtWriteCount { get; private set; }
+            public int? RefusedCapAtWriteCount { get; private set; }
+            public int? PartialStartupAtWriteCount { get; private set; }
+            public int? TransientFailureAtWriteCount { get; private set; }
+            public int? FreshPresentationProbeAtWriteCount { get; private set; }
+            public List<string> InjectedTransientFailures { get; } = [];
             private int _readers;
+            private int _colourPackets;
+            private bool _presetAcknowledged;
             public async ValueTask WriteAsync(ReadOnlyMemory<byte> report, CancellationToken ct)
             {
                 ObjectDisposedException.ThrowIf(Disposed, this);
+                Requests.Add(report.ToArray());
+                if (report.Span[1] == 0xC0 && report.Span[2] == 0x81
+                    && ++_colourPackets == routes.TimeoutColourPacket)
+                {
+                    routes.TimeoutColourPacket = null;
+                    TransientFailureAtWriteCount = Requests.Count;
+                    InjectedTransientFailures.Add("colour-write-timeout");
+                    await Task.Delay(Timeout.InfiniteTimeSpan, ct);
+                }
                 if (transport == 1 && routes.FailUsbKeyWriteAndSwitchToRadio && report.Span[1] == 0xC0 && report.Span[2] == 0x81)
                 {
                     // The write was already admitted on the USB route. Simulate Windows losing it while SetupAPI's
@@ -205,13 +251,117 @@ public sealed partial class RogNativeMenuSourceTests
                 MaximumReaders = Math.Max(MaximumReaders, ++_readers);
                 try
                 {
+                    if (transport == 2 && routes.RadioRestoreBrightnessRefusalBeforeWrite == true
+                        && _presetAcknowledged && Requests[^1][1] == 0x61)
+                    {
+                        routes.RadioRestoreBrightnessRefusalBeforeWrite = null;
+                        RewriteNegative(buffer, "brightness-before-write");
+                        return 64;
+                    }
                     var length = await firmware.ReadAsync(buffer, ct);
+                    if (buffer.Span[1] == 0x12 && buffer.Span[2] == 0x7D
+                        && routes.RefuseCapabilityAfterImages is { } target && firmware.Images.Count >= target)
+                    {
+                        routes.RefuseCapabilityAfterImages = null;
+                        RewriteNegative(buffer, "post-frame-capability");
+                    }
+                    else if (buffer.Span[1] == 0x12 && buffer.Span[2] == 0x7D && routes.RefuseCapabilityTransport == transport)
+                    {
+                        routes.RefuseCapabilityTransport = null;
+                        RewriteNegative(buffer, "standalone-capability");
+                    }
+                    else if (routes.RefuseReadCommand == buffer.Span[1])
+                    {
+                        routes.RefuseReadCommand = null;
+                        RewriteNegative(buffer, "readonly-reconciliation");
+                    }
+                    else if (buffer.Span[1] == 0x12 && buffer.Span[2] == 0x7D)
+                    {
+                        routes.AfterCapabilityRead?.Invoke();
+                    }
+                    if (transport == 2 && buffer.Span[1] == 0x61) _presetAcknowledged = true;
+                    if (transport == 2 && buffer.Span[1] == 0x68 && routes.RadioRestoreBrightnessRefusalBeforeWrite == false)
+                    {
+                        routes.RadioRestoreBrightnessRefusalBeforeWrite = null;
+                        RewriteNegative(buffer, "brightness-after-write");
+                    }
+                    if (transport == 2 && buffer.Span[1] == 0x12 && buffer.Span[2] == 0x7D
+                        && (routes.RadioCapsUnavailable || routes.RadioCapsMalformed))
+                    {
+                        FreshPresentationProbeAtWriteCount = Requests.Count;
+                        if (routes.RadioCapsUnavailable)
+                        { buffer.Span.Clear(); buffer.Span[0] = 2; buffer.Span[1] = 0xFF; buffer.Span[2] = 0xAA; }
+                        else buffer.Span[33] ^= 1; // malformed208px geometry is not a temporary transport refusal
+                    }
+                    if (transport == 2 && buffer.Span[1] == 0x71 && buffer.Span[2] == 0x7D
+                        && (routes.RadioRefuseArmOnce && Requests[^1][10] == 1 || routes.RadioRefuseDisarmOnce && Requests[^1][10] == 0))
+                    {
+                        routes.RadioRefuseArmOnce = false; routes.RadioRefuseDisarmOnce = false;
+                        RewriteNegative(buffer, "persistent-arm-or-disarm");
+                    }
+                    if (transport == 2 && ReferenceEquals(this, routes._radioTransientPort))
+                    {
+                        var matches = routes._radioTransientPhase switch
+                        {
+                            "image-begin" => buffer.Span[1] == 0x67 && buffer.Span[2] == 0,
+                            "pixel95-abort-cap" => buffer.Span[1] == 0x67 && buffer.Span[2] == 1 && buffer.Span[3] == 95,
+                            "abort-cap" => buffer.Span[1] == 0x12 && buffer.Span[2] == 0x7D,
+                            "post-frame-capability" => buffer.Span[1] == 0x12 && buffer.Span[2] == 0x7D && firmware.Images.Count >= routes._radioTransientImageTarget,
+                            "first-native-lease" => buffer.Span[1] == 0x67 && buffer.Span[2] == 2 && firmware.Images.Count >= routes._radioTransientImageTarget,
+                            "native-lease" => buffer.Span[1] == 0x67 && buffer.Span[2] == 2,
+                            _ => false,
+                        };
+                        if (matches)
+                        {
+                            var phase = routes._radioTransientPhase!;
+                            routes._radioTransientPhase = phase == "pixel95-abort-cap" ? "abort-cap" : null;
+                            routes.RadioPeerUnavailable = true; RewriteNegative(buffer, phase);
+                        }
+                    }
+                    if (transport == 2 && buffer.Span[1] == 0x12 && buffer.Span[2] == 0x7D
+                        && (routes.RadioRefuseNextCap || routes.RadioRefuseCommitCap && firmware.Images.Count > 0))
+                    {
+                        routes.RadioRefuseNextCap = false; routes.RadioRefuseCommitCap = false;
+                        routes.RadioPeerUnavailable = true; RefusedCapAtWriteCount = Requests.Count;
+                        buffer.Span.Clear(); buffer.Span[0] = 2; buffer.Span[1] = 0xFF; buffer.Span[2] = 0xAA;
+                    }
                     if (!codexPage && buffer.Span[1] == 0x12 && buffer.Span[2] == 0x7D) buffer.Span[11] = 0;
+                    if (buffer.Span[1] == 0x12 && buffer.Span[2] == 0)
+                    {
+                        if (transport == 2 && routes.RadioPeerUnavailable)
+                        {
+                            buffer.Span.Slice(12, 4).Clear(); routes.EmptyPeerReplies++;
+                            FirstEmptyAtWriteCount ??= Requests.Count;
+                        }
+                        else if (transport == 1 && routes.WiredBadBasicInfo)
+                        { buffer.Span[9] = 0; buffer.Span[11] = 0; }
+                        if (transport == 2 && routes.RadioActiveProfileToken is { } profile) buffer.Span[11] = profile;
+                    }
+                    if (transport == 2 && !routes.RadioPeerUnavailable && routes.RadioPartialStartup is { } stage
+                        && (stage.StartsWith("selector", StringComparison.Ordinal) && buffer.Span[1] == 0x21 && buffer.Span[2] == 0
+                            || stage.StartsWith("content", StringComparison.Ordinal) && buffer.Span[1] == 0x23 && buffer.Span[2] == 2))
+                    {
+                        PartialStartupAtWriteCount = Requests.Count;
+                        if (stage.EndsWith("negative", StringComparison.Ordinal))
+                        { buffer.Span.Clear(); buffer.Span[0] = 2; buffer.Span[1] = 0xFF; buffer.Span[2] = 0xAA; }
+                        else buffer.Span[5] = 0;
+                    }
+                    if (transport == 2 && buffer.Span[1] == 0x23 && buffer.Span[2] == 3)
+                    {
+                        if (routes.RadioRefuseBrightnessReadbackAfterSetter && Requests.Any(p => p[1] == 0x68))
+                        { buffer.Span.Clear(); buffer.Span[0] = 2; buffer.Span[1] = 0xFF; buffer.Span[2] = 0xAA; }
+                        else if (routes.RadioStartupBrightness is { } brightness) buffer.Span[5] = brightness;
+                    }
                     return length;
                 }
                 finally { _readers--; }
             }
             public void Dispose() => Disposed = true; // preserve the simulated physical keyboard state for its next owner
+            private void RewriteNegative(Memory<byte> buffer, string phase)
+            {
+                buffer.Span.Clear(); buffer.Span[0] = transport == 1 ? (byte)0 : (byte)2; buffer.Span[1] = 0xFF; buffer.Span[2] = 0xAA;
+                TransientFailureAtWriteCount = Requests.Count; InjectedTransientFailures.Add(phase);
+            }
         }
     }
 }

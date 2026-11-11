@@ -53,6 +53,7 @@ public sealed class WindowsCodexActivationTests
         public nint BrowserWindow { get; set; } = 101;
         public nint ViewWindow { get; set; } = 102;
         public int Calls;
+        public Uri? OpenedHomeAssistant;
         public bool Disposed;
         public string Status = "Requested";
         public bool Throw;
@@ -63,7 +64,36 @@ public sealed class WindowsCodexActivationTests
             if (Throw) throw new IOException("unknown broker outcome");
             return new(Status, 0, 100); // even a mistaken broker PID must be stripped
         }
+        public bool OpenHomeAssistant(Uri endpoint) { OpenedHomeAssistant = endpoint; return true; }
         public void Dispose() => Disposed = true;
+    }
+
+    [Theory]
+    [InlineData(false, false)] [InlineData(true, false)] [InlineData(true, true)]
+    public void HomeAssistant_browser_uses_the_desktop_of_the_same_user_and_rechecks_the_press(bool elevated, bool revoked)
+    {
+        var platform = new Platform { Current = User(elevated) };
+        var endpoint = new Uri("http://192.168.10.7/");
+        Uri? direct = null;
+        var browser = new WindowsHomeAssistantBrowser(platform, url => { direct = url; return true; });
+        browser.Request(endpoint, () => !revoked, default).Status.Should().Be(revoked ? "Cancelled" : "Requested");
+        direct.Should().Be(elevated || revoked ? null : endpoint);
+        platform.Desktop!.Automation.OpenedHomeAssistant.Should().Be(elevated && !revoked ? endpoint : null);
+        platform.Desktop.Automation.Calls.Should().Be(0);
+        if (elevated) platform.Desktop.Disposed.Should().BeTrue();
+    }
+
+    [Fact]
+    public void HomeAssistant_browser_rejects_unrelated_URIs_and_a_replaced_desktop()
+    {
+        var platform = new Platform();
+        var browser = new WindowsHomeAssistantBrowser(platform, _ => throw new InvalidOperationException());
+        foreach (var address in new[] { "file:///C:/Windows/explorer.exe", "http://192.168.10.7/?arg=abc", "https://name@192.168.10.7/" })
+            browser.Request(new Uri(address), () => true, default).Status.Should().Be("Unsupported");
+        platform.DesktopCalls.Should().Be(0);
+        platform.Desktop!.Fault = "identity-replaced";
+        browser.Request(new Uri("http://192.168.10.7/"), () => true, default).Status.Should().Be("Unsupported");
+        platform.Desktop.Automation.OpenedHomeAssistant.Should().BeNull();
     }
 
     [Theory]

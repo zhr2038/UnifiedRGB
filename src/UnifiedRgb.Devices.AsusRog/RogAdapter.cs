@@ -16,6 +16,8 @@ public sealed class RogAdapter : IWholeFrameAdapter, INativeBringup, IFrameBudge
     private readonly RogOptions _options;
     private readonly Dictionary<ControllerId, Target> _targets = [];
     private readonly Dictionary<string, RogReceiverSession> _sessions = new(StringComparer.Ordinal);
+    // Never reset by rediscovery: an uncertain mutation on a previously opened receiver cannot become startup readiness.
+    private readonly HashSet<string> _openedReceivers = new(StringComparer.OrdinalIgnoreCase);
     private readonly SemaphoreSlim _lifecycle = new(1, 1);
     private readonly object _gate = new();
     private Task? _configurationReleaseTask;
@@ -116,10 +118,20 @@ public sealed class RogAdapter : IWholeFrameAdapter, INativeBringup, IFrameBudge
             {
                 var mouse = paired.SingleOrDefault(p => p.ReportId == mouseBinding.ReportId && p.IsHarpeEdition20)
                     ?? throw new DeviceBlockedException("Pinned receiver route does not currently name a P725 mouse.");
-                target.MouseStatic = RogProtocol.ParseMouseStatic(await target.Session.QueryMouseLightingAsync(mouse, 0, ct).ConfigureAwait(false), mouse.ReportId);
+                byte[] snapshot;
+                try { snapshot = await target.Session.QueryMouseLightingAsync(mouse, 0, ct).ConfigureAwait(false); }
+                catch (TimeoutException ex) when (!ct.IsCancellationRequested && InitialMouseReadOnlyOwner(target))
+                {
+                    // The failed transaction has already closed its channels and released its gate. Join disposal before
+                    // permitting fresh discovery; no old request, cached brightness or scene frame is retried here.
+                    await target.Session.DisposeAsync().ConfigureAwait(false);
+                    throw new RogMouseStartupNotReadyException(id.Value, mouseBinding.ReceiverKey, mouseBinding.ReportId, ex);
+                }
+                target.MouseStatic = RogProtocol.ParseMouseStatic(snapshot, mouse.ReportId);
                 target.Paired = mouse;
                 target.Generation = target.Session.Generation;
                 target.Open = true;
+                _openedReceivers.Add(mouseBinding.ReceiverKey);
                 return;
             }
             var keyboardBinding = target.Binding ?? throw new DeviceBlockedException("No keyboard route pin is configured.");
@@ -130,8 +142,17 @@ public sealed class RogAdapter : IWholeFrameAdapter, INativeBringup, IFrameBudge
             target.Paired = keyboard;
             target.Generation = target.Session.Generation;
             target.Open = true;
+            _openedReceivers.Add(keyboardBinding.ReceiverKey);
         }
         finally { _lifecycle.Release(); }
+    }
+
+    private bool InitialMouseReadOnlyOwner(Target target)
+    {
+        lock (_gate)
+            return target.MouseBinding is { } binding && !_openedReceivers.Contains(binding.ReceiverKey)
+                && !target.Session.IsAvailable
+                && !_targets.Values.Any(t => ReferenceEquals(t.Session, target.Session) && (t.Open || t.Bringup || t.LightingTouched));
     }
 
     public void WriteFrame(ControllerId id, ZoneId zone, ReadOnlySpan<Rgb> colors) =>

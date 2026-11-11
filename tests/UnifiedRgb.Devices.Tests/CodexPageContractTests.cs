@@ -7,6 +7,23 @@ public sealed class CodexPageContractTests
 {
     [Theory]
     [InlineData((byte)1)] [InlineData((byte)2)]
+    public void HomeAssistant_requires_its_own_capability_and_preserves_older_flag_semantics(byte transport)
+    {
+        var packet = Cap(11, transport, 0x70);
+        BinaryPrimitives.WriteUInt32LittleEndian(packet.AsSpan(29), 0x25314841);
+        Action read = () => RogNativeMenuCodec.ParseCapability(packet, 0x12, transport);
+        read.Should().Throw<InvalidDataException>();
+        packet[14] |= 0x80;
+        var ha = RogNativeMenuCodec.ParseCapability(packet, 0x12, transport);
+        RogNativeMenuCodec.ArmRequest(ha, 123)[25].Should().Be(11);
+        packet[11] = 10;
+        RogNativeMenuCodec.ParseCapability(packet, 0x12, transport).Flags.Should().Be(0x70);
+        packet[11] = 12;
+        read.Should().Throw<InvalidDataException>();
+    }
+
+    [Theory]
+    [InlineData((byte)1)] [InlineData((byte)2)]
     public void Old_modes_remain_admitted_and_diagnostic_build_never_enables10(byte transport)
     {
         for (byte mode = 0; mode <= 9; mode++)

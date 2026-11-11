@@ -15,8 +15,16 @@ public static class CaseStatusSummary
         var blackout = IsBlackout(scene);
         var assigned = scene.Assignments.SelectMany(a => a.Targets).Select(t => t.ControllerId).Distinct(StringComparer.Ordinal).ToArray();
         if (assigned.Length == 0) return new(CaseStatusState.Unknown, "没有灯光编排", "不会自动恢复旧场景");
-        if (assigned.Any(id => !controllers.Any(c => c.Id == id && c.State == ControllerStates.Active)))
-            return new(CaseStatusState.Error, "灯光设备待检查", "存在离线或未接管分区");
+        var unavailable = assigned.Where(id => !controllers.Any(c => c.Id == id && c.State == ControllerStates.Active)).ToArray();
+        if (unavailable.Length != 0)
+        {
+            // Keep the whole-scene readiness verdict strict, including package-bound peripherals. Name a sole peripheral
+            // failure so a mouse control-channel fault is not presented as an unspecified case/controller outage.
+            var sole = unavailable.Length == 1 ? controllers.FirstOrDefault(c => c.Id == unavailable[0]) : null;
+            var device = sole?.DeviceType switch { "Mouse" => "鼠标", "Keyboard" => "键盘", _ => null };
+            return new(CaseStatusState.Error, device is null ? "灯光设备待检查" : device + "灯光未连接",
+                device is null ? "存在离线或未接管分区" : device + "灯光通道未就绪，场景未确认");
+        }
         if (screenScene is null || screens is null) return new(CaseStatusState.Unknown, blackout ? "熄灯模式" : "场景已设置", "屏幕状态未读取");
         // Only configured case screens participate. A future keyboard/control display is explicitly excluded.
         var targets = screenScene.Assignments.Where(a => a.Enabled && a.ScreenId.StartsWith("screen:", StringComparison.Ordinal))

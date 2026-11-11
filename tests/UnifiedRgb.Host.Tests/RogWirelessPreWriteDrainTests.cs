@@ -53,7 +53,9 @@ public sealed class RogWirelessPreWriteDrainTests(ITestOutputHelper output)
     [Fact]
     public async Task PreWriteDrain_cap_is_nonfatal_and_truthfully_traced_after_the_read_has_joined()
     {
-        using var channel = new DrainChannel(); using var connection = Open(channel);
+        var clock = new EvidenceClock();
+        using var channel = new DrainChannel { AdvancePastCap = clock.AdvancePastCap };
+        using var connection = Open(channel, clock);
         await connection.WriteLightingFrameAsync(Enumerable.Range(0, 85).Select(i => new RogKeyColor((byte)i, new(1, 2, 3))).ToArray(), default);
         channel.ContinuousColour = true;
         var reply = await connection.ExchangeAsync(RogWiredOledProtocol.Query(0x12, 0), false, default);
@@ -131,9 +133,17 @@ public sealed class RogWirelessPreWriteDrainTests(ITestOutputHelper output)
         output.WriteLine("HID_READ_WINDOW_RACE=" + JsonSerializer.Serialize(new { windows = 32, highResolution, firstHighResolution = first.HighResolutionUsed }));
     }
 
-    private static RogWirelessOledConnection Open(DrainChannel channel) => new(
+    private sealed class EvidenceClock : TimeProvider
+    {
+        private long _timestamp;
+        public override long TimestampFrequency => 1000;
+        public override long GetTimestamp() => Interlocked.Read(ref _timestamp);
+        public void AdvancePastCap() => Interlocked.Add(ref _timestamp, 33);
+    }
+
+    private static RogWirelessOledConnection Open(DrainChannel channel, TimeProvider? clock = null) => new(
         new(new string('A', 64), 0x1ACE, new Dictionary<byte, HidCollectionInfo>()), channel, "0800070025000100", () => true)
-    { KeyReportDelayMs = 0 };
+    { KeyReportDelayMs = 0, EvidenceTime = clock ?? TimeProvider.System };
 
     private sealed class DrainChannel : IHidReportChannel
     {
@@ -145,6 +155,7 @@ public sealed class RogWirelessPreWriteDrainTests(ITestOutputHelper output)
         private int _controlWrites;
         public bool HoldCancelledRead { get; set; }
         public bool ContinuousColour { get; set; }
+        public Action? AdvancePastCap { get; init; }
         public bool DropControl { get; set; }
         public bool WriteWhileReading { get; private set; }
         public int EmptyReadStarts { get; private set; }
@@ -171,9 +182,9 @@ public sealed class RogWirelessPreWriteDrainTests(ITestOutputHelper output)
             {
                 if (ContinuousColour)
                 {
-                    // Complete one real read after the recent-RGB32ms cap, modelling an I/O completion racing cancellation. The owner must
-                    // join it, validate the report, record Cap and proceed once; it must not fabricate a quiet outcome.
-                    await Task.Delay(40, CancellationToken.None); buffer.Span.Clear(); buffer.Span[0] = 2; buffer.Span[1] = 0xC0;
+                    // Model a completed RF report arriving beyond the 32 ms RGB-tail budget without relying on scheduler latency.
+                    AdvancePastCap!();
+                    buffer.Span.Clear(); buffer.Span[0] = 2; buffer.Span[1] = 0xC0;
                     buffer.Span[2] = 0x82; buffer.Span[3] = 14; return 64;
                 }
                 if (_replies.Reader.Count == 0) { EmptyReadStarts++; ReadStarted.TrySetResult(); }

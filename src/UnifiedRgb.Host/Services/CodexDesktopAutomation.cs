@@ -83,6 +83,14 @@ internal sealed class CodexDesktopAutomation : ICodexDesktopAutomation
         { return CodexActivationDiagnostics.Failure("Desktop.ShellExecute.Invoke", ex, true); } // Never retry an uncertain invoke.
     }
 
+    public bool OpenHomeAssistant(Uri endpoint)
+    {
+        if (_shell is null || !endpoint.IsAbsoluteUri || KeyboardHomeAssistantOptions.ParseEndpoint(endpoint.AbsoluteUri) is null
+            || !_desktop.Revalidate() || !_desktop.OwnsWindow(BrowserWindow) || !_desktop.OwnsWindow(ViewWindow)) return false;
+        ((dynamic)_shell).ShellExecute(endpoint.AbsoluteUri, "", "", "open", 1);
+        return true;
+    }
+
     internal static (object? Location, object? Root) DesktopLookupArguments() => (0 /* CSIDL_DESKTOP */, null);
 
     private object Track(object? value)

@@ -174,7 +174,7 @@ public sealed partial class RogNativeMenuSourceTests
         {
             var outside = new byte[21]; outside[0] = 3; outside[1] = 0x91; outside[4] = 0;
             rig.Input.Send(outside);
-            await Until(() => rig.Input.Reads >= 1 && rig.Input.Pending == 0);
+            await Until(() => !rig.Actor.Armed);
         }
         (await rig.Actor.StepAsync(Pixels, default)).Should().BeFalse();
         (await rig.Actor.StepAsync(Pixels, default)).Should().BeTrue("a normal menu transition must not disable the owner permanently");
@@ -188,7 +188,7 @@ public sealed partial class RogNativeMenuSourceTests
             BinaryPrimitives.WriteUInt64LittleEndian(report.AsSpan(11), Cookie + 1);
             rig.Input.Send(report);
         }
-        await rig.Input.WaitReads(2); // a physical page-exit notice retires the reader before queue admission
+        await rig.Input.WaitReads(2);
         (await rig.Actor.StepAsync(Pixels, default)).Should().BeTrue();
         rig.Events.OfType<NativeMenuPress>().Should().ContainSingle().Which.Intent.Action.Should().Be(DesiredAction.Toggle);
     }
@@ -583,14 +583,16 @@ public sealed partial class RogNativeMenuSourceTests
                         {
                             if (SemanticFault == "arm-cookie") BinaryPrimitives.WriteUInt64LittleEndian(changed.AsSpan(19), _cookie + 1);
                             if (SemanticFault == "arm-epoch") BinaryPrimitives.WriteUInt32LittleEndian(changed.AsSpan(15), Epoch - 1);
-                            if (SemanticFault == "arm-geometry") BinaryPrimitives.WriteUInt16LittleEndian(changed.AsSpan(33), 207);
+                            if (SemanticFault == "arm-geometry") changed[35] = 63;
+                            if (SemanticFault == "arm-build") BinaryPrimitives.WriteUInt32LittleEndian(changed.AsSpan(29), 0);
                         }
                         else
                         {
                             if (SemanticFault == "disarm-epoch") BinaryPrimitives.WriteUInt32LittleEndian(changed.AsSpan(15), Epoch - 1);
                             if (SemanticFault == "disarm-status")
                             { changed[10] = 1; changed[14] = 17; BinaryPrimitives.WriteUInt64LittleEndian(changed.AsSpan(19), Cookie); }
-                            if (SemanticFault == "disarm-geometry") BinaryPrimitives.WriteUInt16LittleEndian(changed.AsSpan(33), 207);
+                            if (SemanticFault == "disarm-geometry") changed[35] = 63;
+                            if (SemanticFault == "disarm-build") BinaryPrimitives.WriteUInt32LittleEndian(changed.AsSpan(29), 0);
                         }
                         return Task.FromResult(changed);
                     case (0x67, 2):
@@ -613,7 +615,7 @@ public sealed partial class RogNativeMenuSourceTests
                         break;
                     case (0x67, 1):
                         if (FailStage == "chunk") throw new IOException("Injected unknown chunk outcome.");
-                        if (!_imageReceiving || EnforceNativeImageGate && !ImageScopeMatches || _remainingChunks == 0 ||
+                        if (!_imageReceiving || (EnforceNativeImageGate && !ImageScopeMatches) || _remainingChunks == 0 ||
                             BinaryPrimitives.ReadUInt16LittleEndian(request.AsSpan(3)) != _remainingChunks - 1)
                             throw new InvalidDataException("Fake native image chunk order/scope differs");
                         _image.AddRange(request.AsSpan(5, Math.Min(PixelPayloadCapacity, 6656 - _image.Count)).ToArray());
@@ -647,17 +649,26 @@ public sealed partial class RogNativeMenuSourceTests
             if (ImageScopeMatches && _imageReady) { p[14] |= 8; p[14] &= 0xEF; }
             if (DedicatedPage) p[14] |= 0x40;
             BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(15), Epoch); BinaryPrimitives.WriteUInt64LittleEndian(p.AsSpan(19), _cookie);
-            BinaryPrimitives.WriteUInt16LittleEndian(p.AsSpan(27), _sequence); BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(29), 0x25314D49); if (BadCapability) p[9] = 3;
+            BinaryPrimitives.WriteUInt16LittleEndian(p.AsSpan(27), _sequence);
+            BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(29), 0x25314D49);
+            if (BadCapability) p[9] = 0;
             BinaryPrimitives.WriteUInt16LittleEndian(p.AsSpan(33), 208); p[35] = 64; p[36] = (byte)PixelPayloadCapacity; p[37] = 3; return p;
         }
         public async Task LeaseAsync(Func<bool> changed, Action renewed, CancellationToken ct)
         {
-            // The actor now uses the existing lease API for the first renewal too. Model that
-            // wire operation and its optional reply instead of reporting a synthetic renewal.
-            var reply = await ExchangeAsync(RogWiredOledProtocol.Renew(), false, ct);
-            RogWiredOledProtocol.RequireRenewalReply(reply);
             PendingLeaseReaders++;
-            try { for (var n = 0; n < 20; n++) { ct.ThrowIfCancellationRequested(); renewed(); await Task.Delay(10, ct); if (changed()) break; } }
+            try
+            {
+                for (var n = 0; n < 20 && !changed(); n++)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    if (_frameAwaitingRenewal)
+                        RogWiredOledProtocol.RequireRenewalReply(await ExchangeAsync(RogWiredOledProtocol.Renew(), true, ct));
+                    renewed();
+                    if (changed()) break;
+                    await Task.Delay(10, ct);
+                }
+            }
             finally { PendingLeaseReaders--; }
         }
         public void Dispose() { }

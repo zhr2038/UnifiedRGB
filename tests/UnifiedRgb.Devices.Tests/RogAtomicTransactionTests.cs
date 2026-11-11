@@ -30,7 +30,9 @@ public sealed class RogAtomicTransactionTests
         await ((Func<Task>)(() => connection.ExchangeAsync(RogWiredOledProtocol.Query(0x23, 3), false, stop.Token))).Should().ThrowAsync<OperationCanceledException>();
         io.AfterWrite = null; io.Brightness = 20;
         (await connection.ExchangeAsync(RogWiredOledProtocol.Query(0x23, 3), false, default))[5].Should().Be(20);
-        io.Queued.Should().Be(0); io.RepliesRead.Should().Be(2, "RF quiet-window reads are not replies to either query");
+        io.Queued.Should().Be(0); io.CompletedReads.Should().Be(2);
+        io.Reads.Should().Be(2 + io.CancelledReads, "RF pre-drain quiet windows are cancelled reads, not accepted replies");
+        io.Writes.Should().Be(2); io.PendingReads.Should().Be(0);
     }
 
     [Theory] [InlineData(false)] [InlineData(true)]
@@ -158,7 +160,7 @@ public sealed class RogAtomicTransactionTests
         public byte Brightness = 100;
         public bool NonzeroAck, BadEcho, BlockRenewWrite, GateRenewWrite, EchoRenew, ShortNextOut, DropReply, WriteCancellationObserved;
         public Action? AfterWrite;
-        public int Writes, Reads, RepliesRead, PendingWrites, PendingReads;
+        public int Writes, Reads, CompletedReads, CancelledReads, PendingWrites, PendingReads;
         public TaskCompletionSource RenewAdmitted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource FinishRenew { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public void Enqueue(byte[] normalized)
@@ -193,7 +195,8 @@ public sealed class RogAtomicTransactionTests
         public async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct)
         {
             ct.ThrowIfCancellationRequested(); Reads++; PendingReads++;
-            try { var b = await _queue.Reader.ReadAsync(ct); RepliesRead++; b.CopyTo(buffer); return b.Length; }
+            try { var b = await _queue.Reader.ReadAsync(ct); b.CopyTo(buffer); CompletedReads++; return b.Length; }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { CancelledReads++; throw; }
             finally { PendingReads--; }
         }
         public void Dispose() => _queue.Writer.TryComplete();

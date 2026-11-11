@@ -131,8 +131,11 @@ public sealed class ConfiguredFirmwareRegressionTests
         var identity = new byte[65]; identity[1] = 0x12; identity[3] = 1; identity[5] = 8; identity[7] = 7; identity[9] = 6; identity[11] = 6; identity[12] = 0x24; identity[14] = 2;
         using var io = new IdentityChannel(identity);
         using var connection = new RogWirelessOledConnection(new(new string('A', 64), 0x1ACE, new Dictionary<byte, HidCollectionInfo>()), io, "0800070025000100", () => true);
-        await ((Func<Task>)(() => new RogWiredOledSession(connection).SnapshotAsync("0800070025000100", default))).Should().ThrowAsync<RogOledUnexpectedReplyException>();
-        io.Writes.Should().Be(1); io.Reads.Should().Be(1);
+        var session = new RogWiredOledSession(connection);
+        var failure = await ((Func<Task>)(() => session.SnapshotAsync("0800070025000100", default)))
+            .Should().ThrowAsync<RogKeyboardStartupNotReadyException>().WithMessage("*operation=identity; no setting was written*");
+        failure.Which.InnerException.Should().BeOfType<RogOledUnexpectedReplyException>();
+        io.Writes.Should().Be(1); io.Reads.Should().Be(1); session.MutationAdmitted.Should().BeFalse();
     }
 
     private sealed class LegacyFactory : IRogWiredOledFactory

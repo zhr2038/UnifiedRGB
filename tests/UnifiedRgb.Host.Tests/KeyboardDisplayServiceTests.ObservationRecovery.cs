@@ -398,7 +398,8 @@ public sealed partial class KeyboardDisplayServiceTests
                 else _stall = true;
                 return ValueTask.CompletedTask;
             }
-            if (refuse && observer) { _ownReply = new byte[65]; _ownReply[1] = 0xFF; _ownReply[2] = 0xAA; return ValueTask.CompletedTask; }
+            // This fixture option tests mandatory verification after SET68, not an independent idle read.
+            if (refuse && setterReadback) { _ownReply = new byte[65]; _ownReply[1] = 0xFF; _ownReply[2] = 0xAA; return ValueTask.CompletedTask; }
             if (p[1] is 0x27 or 0x74) { _ownReply = new byte[65]; p.AsSpan(0, 6).CopyTo(_ownReply); return ValueTask.CompletedTask; }
             return inner.WriteAsync(report, ct);
         }

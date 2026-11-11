@@ -78,10 +78,10 @@ public sealed class RogUnexpectedReplyTests
     }
 
     [Theory]
-    [InlineData("short")] [InlineData("rid")] [InlineData("negative")] [InlineData("bad-negative")]
+    [InlineData("short")] [InlineData("rid")] [InlineData("bad-negative")]
     [InlineData("eof")] [InlineData("renewal-body")] [InlineData("bad-capability")]
     [InlineData("profile")] [InlineData("generation")] [InlineData("brightness-value")]
-    public async Task Malformed_negative_EOF_and_semantic_failures_are_not_reclassified(string kind)
+    public async Task Malformed_EOF_and_semantic_failures_are_not_reclassified(string kind)
     {
         using var io = new ReplyChannel(); using var connection = Open(io);
         var session = new RogWiredOledSession(connection); await session.SnapshotAsync(Header, default);
@@ -99,12 +99,26 @@ public sealed class RogUnexpectedReplyTests
         error.Which.Should().NotBeOfType<RogOledUnexpectedReplyException>();
         error.Which.Should().BeOfType(kind switch
         {
-            "negative" => typeof(RogOledEnvelopeRefusedException),
             "eof" => typeof(RogOledConnectionLostException),
             _ => typeof(InvalidDataException),
         });
         // Semantic failures are rejected by the session, not transport poisoning. Do not broaden that contract here.
         if (kind is not ("profile" or "generation" or "brightness-value")) await NoLaterIo(connection, io);
+    }
+
+    [Fact]
+    public async Task Exact_RF_negative_during_standalone_read_is_typed_and_still_poisons_the_old_owner()
+    {
+        using var io = new ReplyChannel(); using var connection = Open(io);
+        var session = new RogWiredOledSession(connection); await session.SnapshotAsync(Header, default);
+        io.Inject = _ => StrictFailure("negative");
+        var error = await ((Func<Task>)(() => session.RunAsync(() => new byte[6656], () => { }, default, display: false)))
+            .Should().ThrowAsync<RogReadOnlyObservationEnvelopeRefusedException>();
+        error.Which.Operation.Should().Be(RogReadOnlyOperation.IdleScopeObservation);
+        error.Which.ConnectionKind.Should().Be("wireless"); error.Which.ProfileToken.Should().Be(6);
+        error.Which.InnerException.Should().BeOfType<RogOledEnvelopeRefusedException>();
+        session.MutationAdmitted.Should().BeFalse(); io.Inner.Mutations.Should().Be(0);
+        await NoLaterIo(connection, io);
     }
 
     [Fact]

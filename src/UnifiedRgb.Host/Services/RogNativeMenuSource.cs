@@ -15,11 +15,14 @@ namespace UnifiedRgb.Host.Services;
 /// </summary>
 public sealed class RogNativeMenuSource(KeyboardNativeMenuOptions options, IHidInputReportDevices? inputs = null,
     IHidContainerResolver? containers = null, TimeProvider? time = null, Func<ulong>? cookie = null,
-    KeyboardDisplayOptions? displayOptions = null, Action<int>? codexTaskBrowse = null) : INativeMenuSource
+    KeyboardDisplayOptions? displayOptions = null, Action<int>? codexTaskBrowse = null,
+    Action<byte, byte[]?, Func<bool>>? homeAssistantInput = null, Action<bool>? homeAssistantPageObserved = null) : INativeMenuSource
 {
     private readonly KeyboardNativeMenuOptions[] _routes = options.QualifiedRoutes(displayOptions);
     private readonly bool _verboseCodexCommit = options.DiagnoseCodexPostUploadCapability;
     private readonly Action<int>? _codexTaskBrowse = codexTaskBrowse;
+    private readonly Action<byte, byte[]?, Func<bool>>? _homeAssistantInput = homeAssistantInput;
+    private readonly Action<bool>? _homeAssistantPageObserved = homeAssistantPageObserved;
     private readonly object _sync = new();
     private readonly IHidInputReportDevices? _inputs = inputs;
     private readonly IHidContainerResolver? _containers = containers;
@@ -37,11 +40,17 @@ public sealed class RogNativeMenuSource(KeyboardNativeMenuOptions options, IHidI
     /// <summary>The pinned installed policy owns OLED output even while native operation is disabled or outside mode9.</summary>
     public bool OwnsDisplayOutput => options.Admitted;
     internal bool ControlsRequested => OwnsDisplayOutput && Volatile.Read(ref _requested) != 0;
-    internal bool Requested => OwnsDisplayOutput && (ControlsRequested || Volatile.Read(ref _codexRequested) != 0);
+    internal bool Requested => OwnsDisplayOutput && (ControlsRequested || Volatile.Read(ref _codexRequested) != 0 || _homeAssistantInput is not null);
     internal bool? DedicatedPageSupported => Volatile.Read(ref _dedicatedSupport) switch { 1 => false, 2 => true, _ => null };
     internal bool DedicatedPageActive => Volatile.Read(ref _actor)?.DedicatedPageActive == true;
-    private bool PageRequested(RogNativeCapability capability) => RogNativeMenuCodec.IsAdmittedPage(capability)
-        && (capability.Mode == RogNativeMenuCodec.NativeMode ? ControlsRequested : Volatile.Read(ref _codexRequested) != 0);
+    internal bool PageRequested(RogNativeCapability capability) => RogNativeMenuCodec.IsAdmittedPage(capability)
+        && (capability.Mode switch
+        {
+            RogNativeMenuCodec.NativeMode => ControlsRequested,
+            RogNativeMenuCodec.CodexMode => Volatile.Read(ref _codexRequested) != 0,
+            RogNativeMenuCodec.HomeAssistantMode => _homeAssistantInput is not null,
+            _ => false,
+        });
     internal long RequestRevision => Interlocked.Read(ref _requestRevision);
     internal IReadOnlyList<KeyboardNativeMenuOptions> QualifiedRoutes => _routes;
     internal bool OwnerDetached => Volatile.Read(ref _actor) is null;
@@ -62,7 +71,7 @@ public sealed class RogNativeMenuSource(KeyboardNativeMenuOptions options, IHidI
     {
         Interlocked.Increment(ref _requestRevision);
         Volatile.Write(ref _requested, enabled ? 1 : 0);
-        if (!enabled && Volatile.Read(ref _actor)?.IsCodexContext != true) Volatile.Read(ref _actor)?.Retire("disabled", disconnected: false);
+        if (!enabled && Volatile.Read(ref _actor)?.IsIndependentPageContext != true) Volatile.Read(ref _actor)?.Retire("disabled", disconnected: false);
     }
 
     internal void RequestCodexEnabled(bool enabled)
@@ -141,7 +150,7 @@ public sealed class RogNativeMenuSource(KeyboardNativeMenuOptions options, IHidI
         internal long ReceivedNotifications => Interlocked.Read(ref _receivedNotifications);
         internal Action<byte>? PageObserved { get; set; }
         internal Action? BeforeOperation { get; set; }
-        internal bool IsCodexContext { get { lock (_sync) return _state.Scope?.Mode == RogNativeMenuCodec.CodexMode; } }
+        internal bool IsIndependentPageContext { get { lock (_sync) return _state.Scope?.Mode is RogNativeMenuCodec.CodexMode or RogNativeMenuCodec.HomeAssistantMode; } }
 
         internal Actor(RogNativeMenuSource source, IRogOledConnection connection)
         {
@@ -239,6 +248,7 @@ public sealed class RogNativeMenuSource(KeyboardNativeMenuOptions options, IHidI
                         capability.Mode, capability.Profile, capability.Transport, capability.Epoch, capability.Flags, capability.Status);
                 Volatile.Write(ref _source._dedicatedSupport, RogNativeMenuCodec.SupportsDedicatedPage(capability) ? 2 : 1);
                 PageObserved?.Invoke(capability.Mode); // includes stock pages: no artwork callback is needed to observe an exit
+                _source._homeAssistantPageObserved?.Invoke(capability.Mode == RogNativeMenuCodec.HomeAssistantMode);
                 if (!_source.PageRequested(capability))
                 {
                     await LeaveAsync("native mode exited", ct, capability).ConfigureAwait(false);
@@ -324,10 +334,11 @@ public sealed class RogNativeMenuSource(KeyboardNativeMenuOptions options, IHidI
                     }
                     if (!_source.PageRequested(capability) || _retired) { await LeaveAsync("admission closed before frame commit", ct).ConfigureAwait(false); return false; }
                     RequireConnection();
-                    // Each complete Codex frame must prove that the firmware committed these bytes in the exact ARM epoch.
-                    // This is a post-mutation barrier, not an optional probe or a recoverable standalone observation.
-                    var frameReadyProof = _armed is { Mode: RogNativeMenuCodec.CodexMode } expected
-                        ? await RequireCodexFrameReadyAsync(expected, requestRevision, upload.Token).ConfigureAwait(false) : null;
+                    // Each dedicated page frame must prove that the firmware committed these bytes in the exact ARM epoch.
+                    // Never accept the image or renew without proof. A failed RF transport retires the entire ephemeral
+                    // presentation owner; parsed scope/READY mismatches remain terminal, as do persistent settings failures.
+                    var frameReadyProof = _armed is { Mode: RogNativeMenuCodec.CodexMode or RogNativeMenuCodec.HomeAssistantMode } expected
+                        ? await RequireDedicatedFrameReadyAsync(expected, requestRevision, upload.Token).ConfigureAwait(false) : null;
                     // Force one renewal on this owner, then cancel/join its optional reply reader; no mandatory ACK.
                     var didRenew = false;
                     try
@@ -335,6 +346,8 @@ public sealed class RogNativeMenuSource(KeyboardNativeMenuOptions options, IHidI
                         await _connection.LeaseAsync(() => didRenew || !_source.PageRequested(capability) || _retired, () => didRenew = true, upload.Token).ConfigureAwait(false);
                         if (!didRenew && _source.PageRequested(capability) && !_retired) throw new IOException("Native display renewal was not sent.");
                     }
+                    catch (Exception ex) when (EphemeralTransportFailure(ex))
+                    { throw AbandonEphemeralPresentation(ex, "first-native-lease"); }
                     catch (Exception ex) when (ex is not OutOfMemoryException)
                     {
                         if (frameReadyProof is not null)
@@ -347,6 +360,9 @@ public sealed class RogNativeMenuSource(KeyboardNativeMenuOptions options, IHidI
                     if (!_source.PageRequested(capability) || _retired) { await LeaveAsync("admission closed after native renewal", ct).ConfigureAwait(false); return false; }
                     if (_sent is null && capability.Mode == RogNativeMenuCodec.CodexMode)
                         Serilog.Log.Information("Codex native frame committed: transport={Transport}, pixelBytes={PixelBytes}, chunks={Chunks}; communication confirmation only",
+                            _kind, pixels.Length, (pixels.Length + _capacity - 1) / _capacity);
+                    if (_sent is null && capability.Mode == RogNativeMenuCodec.HomeAssistantMode)
+                        Serilog.Log.Information("HA native frame committed: transport={Transport}, pixelBytes={PixelBytes}, chunks={Chunks}; communication confirmation only",
                             _kind, pixels.Length, (pixels.Length + _capacity - 1) / _capacity);
                     _sent = (byte[])pixels.Clone();
                 }
@@ -371,7 +387,11 @@ public sealed class RogNativeMenuSource(KeyboardNativeMenuOptions options, IHidI
                 if (RecoveryBlocked) throw new IOException("Native image retirement is blocked; no resynchronization I/O.");
                 ct.ThrowIfCancellationRequested(); RequireConnection();
                 if (!_source.Requested) { await LeaveAsync("disabled after image negative", ct, noWire: true).ConfigureAwait(false); return false; }
-                var cap = RogNativeMenuCodec.ParseCapability(await ExchangeAsync(RogNativeMenuCodec.CapabilityRequest(), false, ct).ConfigureAwait(false), 0x12, _transport);
+                byte[] reply;
+                try { reply = await _connection.ExchangeAsync(RogNativeMenuCodec.CapabilityRequest(), false, ct).ConfigureAwait(false); }
+                catch (Exception ex) when (EphemeralTransportFailure(ex))
+                { throw AbandonEphemeralPresentation(ex, "image-abort-status"); }
+                var cap = RogNativeMenuCodec.ParseCapability(reply, 0x12, _transport);
                 if (!_source.PageRequested(cap) || cap.Mode != prior.Mode || cap.Profile != prior.Profile || cap.Transport != prior.Transport)
                 {
                     await LeaveAsync("mode/profile/transport changed after image negative", ct, noWire: true).ConfigureAwait(false);
@@ -392,6 +412,7 @@ public sealed class RogNativeMenuSource(KeyboardNativeMenuOptions options, IHidI
                 Volatile.Write(ref _rearmIdle, true);
                 return true;
             }
+            catch (RogNativeArtworkUploadRefusedException) { throw; }
             catch (Exception ex) when (ex is not OutOfMemoryException)
             { LatchUnknown(ex, "native image resynchronization failed"); throw; }
         }
@@ -545,6 +566,7 @@ public sealed class RogNativeMenuSource(KeyboardNativeMenuOptions options, IHidI
                 NativeMenuSceneBrowse? browse = null;
                 CodexLaunchIntent? launch = null;
                 (CodexLaunchIntent Scope, int Direction, long Revision)? taskBrowse = null;
+                HomeAssistantPress? homeAssistant = null;
                 lock (_sync)
                 {
                     if (_retired || _stopped || !_source.Requested) continue;
@@ -555,16 +577,22 @@ public sealed class RogNativeMenuSource(KeyboardNativeMenuOptions options, IHidI
                     if (decision == RogNativeDecision.Ignore && item.Kind == RogNativeNoticeKind.Tagged && item.Notice.Mask is 1 or 2 or 4
                         && neutralBefore && armedNeutral != 0 && item.Notice.Sequence == armedNeutral + 1
                         && item.Notice.Sequence == sequenceBefore + 1
-                        && _state.Sequence == item.Notice.Sequence && _state.Scope is { Mode: RogNativeMenuCodec.CodexMode } codex
-                        && item.Notice.Epoch == codex.Epoch && item.Notice.Cookie == codex.Cookie && item.Notice.Profile == codex.Profile
-                        && item.Notice.Mode == codex.Mode && (item.Notice.Flags & 1) != 0
+                        && _state.Sequence == item.Notice.Sequence
+                        && _state.Scope is { Mode: RogNativeMenuCodec.CodexMode or RogNativeMenuCodec.HomeAssistantMode } dedicated
+                        && item.Notice.Epoch == dedicated.Epoch && item.Notice.Cookie == dedicated.Cookie && item.Notice.Profile == dedicated.Profile
+                        && item.Notice.Mode == dedicated.Mode && (item.Notice.Flags & 1) != 0
                         && _source._time.GetUtcNow() - item.At is var age && age >= TimeSpan.Zero && age <= TimeSpan.FromMilliseconds(750)
-                        && RogNativeMenuCodec.SupportsDedicatedPage(codex) && _source.PageRequested(codex))
+                        && _source.PageRequested(dedicated))
                     {
-                        var codexEdge = new CodexLaunchIntent(_session, codex.Epoch, codex.Cookie, codex.Profile, item.Notice.Sequence,
-                            armedNeutral, item.At, codex.Mode, codex.Flags);
-                        if (item.Notice.Mask == 2) launch = codexEdge;
-                        else taskBrowse = (codexEdge, item.Notice.Mask == 1 ? -1 : 1, _source.RequestRevision);
+                        if (dedicated.Mode == RogNativeMenuCodec.HomeAssistantMode)
+                            homeAssistant = new(dedicated, item.Notice.Sequence, item.Notice.Mask, item.At, _source.RequestRevision);
+                        else
+                        {
+                            var codexEdge = new CodexLaunchIntent(_session, dedicated.Epoch, dedicated.Cookie, dedicated.Profile,
+                                item.Notice.Sequence, armedNeutral, item.At, dedicated.Mode, dedicated.Flags);
+                            if (item.Notice.Mask == 2) launch = codexEdge;
+                            else taskBrowse = (codexEdge, item.Notice.Mask == 1 ? -1 : 1, _source.RequestRevision);
+                        }
                     }
                     if (decision != RogNativeDecision.Disarmed && item.Kind == RogNativeNoticeKind.Tagged
                         && item.Notice.Mask == 0 && _state.Neutral && _state.Sequence == item.Notice.Sequence) _neutral = item.Notice.Sequence;
@@ -601,8 +629,20 @@ public sealed class RogNativeMenuSource(KeyboardNativeMenuOptions options, IHidI
                     var captured = launch;
                     _source._codexLaunch?.Submit(captured, () => LaunchAdmitted(captured));
                 }
+                if (homeAssistant is { } press && HomeAssistantAdmitted(press))
+                    _source._homeAssistantInput?.Invoke(press.Mask, _sent, () => HomeAssistantAdmitted(press));
             }
         }
+
+        private bool HomeAssistantAdmitted(HomeAssistantPress press)
+        {
+            lock (_sync) return !_retired && !_stopped && _state.Scope == press.Scope
+                && _source.RequestRevision == press.Revision && _source.PageRequested(press.Scope)
+                && _state.Sequence >= press.Sequence && _source._time.GetUtcNow() - press.At is var age
+                && age >= TimeSpan.Zero && age <= TimeSpan.FromMilliseconds(750);
+        }
+
+        private sealed record HomeAssistantPress(RogNativeCapability Scope, ushort Sequence, byte Mask, DateTimeOffset At, long Revision);
 
         private bool LaunchAdmitted(CodexLaunchIntent intent)
         {
@@ -732,14 +772,11 @@ public sealed class RogNativeMenuSource(KeyboardNativeMenuOptions options, IHidI
                 return reply;
             }
             catch (RogNativeImageNackException) { throw; }
-            catch (RogOledEnvelopeRefusedException ex) when (ack && packet[1] == 0x67 && packet[2] == 1)
+            catch (Exception ex) when (ack && packet[1] == 0x67 && packet[2] is 0 or 1 && EphemeralTransportFailure(ex))
             {
-                // This says WHEN the envelope was received, not which command produced it. Only ephemeral pixel chunks
-                // use this path; do not mark the frame sent, replay a chunk, or reinterpret an unknown settings mutation.
-                _artworkRefused = true;
-                Volatile.Write(ref _source._present, 0);
-                Retire("negative envelope during native artwork; fresh owner required", false);
-                throw new RogNativeArtworkUploadRefusedException(_key, _kind, _armed, ex);
+                // The whole ephemeral image is abandoned; no old chunk is acknowledged or replayed, and no settings
+                // mutation uses this classification.
+                throw AbandonEphemeralPresentation(ex, packet[2] == 0 ? "image-begin" : "pixel-upload");
             }
             catch (Exception ex) when (ex is not OutOfMemoryException)
             {
@@ -748,8 +785,8 @@ public sealed class RogNativeMenuSource(KeyboardNativeMenuOptions options, IHidI
             }
         }
 
-        // Only this standalone Step GET is recoverable. Leave/Stop, ARM replies, pixels and every other exchange keep the
-        // existing unknown-outcome latch. The connection itself remains poisoned and must never be reused.
+        // Standalone Step GET failures retire the old owner. Persistent settings, ARM/DISARM and semantic scope failures
+        // keep the unknown-outcome latch; separately tagged ephemeral presentation transport failures abandon the whole frame.
         private async Task<byte[]> ReadStepCapabilityAsync(CancellationToken ct)
         {
             if (_artworkRefused) throw new IOException("Native artwork owner was retired after a negative envelope; no further I/O.");
@@ -759,37 +796,45 @@ public sealed class RogNativeMenuSource(KeyboardNativeMenuOptions options, IHidI
             { throw new RogReadOnlyObservationTimeoutException(RogReadOnlyOperation.NativeStepCapability, _key, _kind, null, ex); }
             catch (RogOledUnexpectedReplyException ex)
             { throw new RogReadOnlyObservationUnexpectedReplyException(RogReadOnlyOperation.NativeStepCapability, _key, _kind, null, ex); }
+            catch (RogOledEnvelopeRefusedException ex)
+            { throw new RogReadOnlyObservationEnvelopeRefusedException(RogReadOnlyOperation.NativeStepCapability, _key, _kind, null, ex); }
             catch (Exception ex) when (ex is not OutOfMemoryException)
             { LatchUnknown(ex, "unknown or failed control exchange"); throw; }
         }
 
         // This follows native pixel mutations. It MUST NOT use ReadStepCapabilityAsync's recoverable observation path.
-        private async Task<string> RequireCodexFrameReadyAsync(RogNativeCapability expected, long requestRevision, CancellationToken ct)
+        private async Task<string> RequireDedicatedFrameReadyAsync(RogNativeCapability expected, long requestRevision, CancellationToken ct)
         {
             static string Describe(string label, RogNativeCapability value) =>
                 $"{label}=[mode={value.Mode}; profile={value.Profile}; transport={value.Transport}; epoch={value.Epoch}; cookie={value.Cookie:X16}; status={value.Status}; flags={value.Flags:X2}; ready={(value.Flags & 8) != 0}; rx={(value.Flags & 4) != 0}]";
-            var detail = "operation=CodexFrameReady; pixelsAcknowledged=6656; " + Describe("armed", expected) + "; observed=unavailable";
+            var page = expected.Mode == RogNativeMenuCodec.CodexMode ? "Codex" : "HomeAssistant";
+            var detail = $"operation={page}FrameReady; pixelsAcknowledged=6656; " + Describe("armed", expected) + "; observed=unavailable";
             try
             {
                 RequireConnection();
-                var reply = await _connection.ExchangeAsync(RogNativeMenuCodec.CapabilityRequest(), false, ct).ConfigureAwait(false);
+                byte[] reply;
+                try { reply = await _connection.ExchangeAsync(RogNativeMenuCodec.CapabilityRequest(), false, ct).ConfigureAwait(false); }
+                catch (Exception ex) when (EphemeralTransportFailure(ex))
+                { throw AbandonEphemeralPresentation(ex, "post-frame-capability"); }
                 var observed = RogNativeMenuCodec.ParseCapability(reply, 0x12, _transport);
-                detail = "operation=CodexFrameReady; pixelsAcknowledged=6656; " + Describe("armed", expected) + "; " + Describe("observed", observed);
-                if (_source._verboseCodexCommit) Serilog.Log.Information("Codex frame commit readiness: {Proof}", detail);
+                detail = $"operation={page}FrameReady; pixelsAcknowledged=6656; " + Describe("armed", expected) + "; " + Describe("observed", observed);
+                if (_source._verboseCodexCommit && expected.Mode == RogNativeMenuCodec.CodexMode)
+                    Serilog.Log.Information("Codex frame commit readiness: {Proof}", detail);
                 // 0x02 means neutral, not READY. READY is0x08 and active RX is0x04; Status1 and2 are both legitimate here.
                 if (observed.Mode != expected.Mode || observed.Profile != expected.Profile || observed.Transport != expected.Transport ||
                     observed.Epoch != expected.Epoch || observed.Cookie != expected.Cookie || observed.Status is not (1 or 2) ||
                     (observed.Flags & 1) == 0 || (observed.Flags & 8) == 0 || (observed.Flags & 4) != 0 ||
                     !RogNativeMenuCodec.IsAdmittedPage(observed) || !_source.PageRequested(observed) || _retired || _source.RequestRevision != requestRevision)
-                    throw new InvalidDataException("Post-upload Codex scope or READY state differs; renewal was not sent.");
+                    throw new InvalidDataException($"Post-upload {page} scope or READY state differs; renewal was not sent.");
                 return detail;
             }
+            catch (RogNativeArtworkUploadRefusedException) { throw; }
             catch (Exception ex) when (ex is not OutOfMemoryException)
             {
-                // Even a read timeout here follows mutations: terminal owner retirement, never automatic observation recovery.
+                // Parsed scope/READY failures never grant image acceptance or a renewal and remain terminal.
                 var failure = new IOException(detail + "; terminalAfterPixelWrites; renewalNotSent; noRetry. " + ex.Message, ex);
-                Serilog.Log.Warning("Codex frame commit readiness failed: {Proof}", failure.Message);
-                LatchUnknown(failure, "Codex frame commit readiness failed"); throw failure;
+                Serilog.Log.Warning("{Page} frame commit readiness failed: {Proof}", page, failure.Message);
+                LatchUnknown(failure, page + " frame commit readiness failed"); throw failure;
             }
         }
 
@@ -797,6 +842,17 @@ public sealed class RogNativeMenuSource(KeyboardNativeMenuOptions options, IHidI
         {
             _wireFault ??= failure; Volatile.Write(ref _source._present, 0);
             Retire(reason, true);
+        }
+
+        private bool EphemeralTransportFailure(Exception error) => _kind is "wired" or "wireless" && !PhysicalScopeLost && !_joinFailed
+            && _wireFault is null && error is RogOledEnvelopeRefusedException or RogOledTimeoutException or RogOledUnexpectedReplyException;
+
+        private RogNativeArtworkUploadRefusedException AbandonEphemeralPresentation(Exception error, string phase)
+        {
+            _artworkRefused = true;
+            Volatile.Write(ref _source._present, 0);
+            Retire("ephemeral native presentation abandoned; phase=" + phase, false);
+            return new(_key, _kind, _armed, error, phase);
         }
 
         private void RequireConnection()
@@ -827,13 +883,15 @@ public sealed class RogNativeMenuSource(KeyboardNativeMenuOptions options, IHidI
     }
 }
 
-/// <summary>An exact negative RF envelope arrived inside native67/1; its origin is not inferred and the old owner is unusable.</summary>
-internal sealed class RogNativeArtworkUploadRefusedException(string deviceKey, string connectionKind, RogNativeCapability? armed, Exception inner)
-    : IOException("operation=NativeArtworkChunk; " + Describe("expectedArmed", armed)
-        + "; negative envelope during ephemeral upload; old owner must be replaced. " + inner.Message, inner)
+/// <summary>An ephemeral presentation transport failed; the old owner is unusable and no failed packet is replayed.</summary>
+internal sealed class RogNativeArtworkUploadRefusedException(string deviceKey, string connectionKind, RogNativeCapability? armed,
+    Exception inner, string phase = "pixel-upload")
+    : IOException("operation=" + phase + "; " + Describe("expectedArmed", armed)
+        + "; ephemeral display operation failed; old owner must be replaced. " + inner.Message, inner)
 {
     public string DeviceKey { get; } = deviceKey;
     public string ConnectionKind { get; } = connectionKind;
+    public string Phase { get; } = phase;
     internal static string Describe(string label, RogNativeCapability? capability) => capability is { } c
         ? $"{label}=[epoch={c.Epoch}; profile={c.Profile}; cookie={c.Cookie:X16}; flags={c.Flags:X2}; mode={c.Mode}; status={c.Status}]"
         : label + "=none";

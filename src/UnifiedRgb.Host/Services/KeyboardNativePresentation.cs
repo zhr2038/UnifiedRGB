@@ -42,6 +42,7 @@ internal enum KeyboardNativeArtwork
     /// <summary>The transient status/scene-name popup of a valid lever action.</summary>
     InteractionStatus = 5,
     CodexQuota = 6,
+    HomeAssistantScenes = 7,
 }
 
 /// <summary>
@@ -65,7 +66,8 @@ internal enum KeyboardNativeArtwork
 /// </summary>
 internal sealed class KeyboardNativePresentation(KeyboardDisplayAnimation animation, byte[]? logo, TimeProvider time,
     Func<byte[], byte[]>? overlay = null, Action<byte[]>? frameAcknowledged = null, Func<long>? overlayRevision = null,
-    Func<bool>? caseBlackout = null, Func<byte[]?>? idleFrame = null, CodexEntryHold? codexEntry = null)
+    Func<bool>? caseBlackout = null, Func<byte[]?>? idleFrame = null, CodexEntryHold? codexEntry = null,
+    Func<byte[]?>? homeAssistantFrame = null)
 {
     /// <summary>Nominal entry overlay; it ends at this bound after the logo's acknowledged upload, never later.</summary>
     internal const int EntryLogoMs = 1200;
@@ -106,6 +108,12 @@ internal sealed class KeyboardNativePresentation(KeyboardDisplayAnimation animat
         if (newEntry) Stepped(false);
         _entered = true;
         if (_codexEntry.Holding) return DeviceIdle();
+        if (capability.Mode == RogNativeMenuCodec.HomeAssistantMode)
+        {
+            if (homeAssistantFrame?.Invoke() is not { Length: RogWiredOledProtocol.PixelBytes } scenes) return DeviceIdle();
+            Volatile.Write(ref _idle, (int)KeyboardNativeArtwork.HomeAssistantScenes);
+            return Choose(scenes, scenes, KeyboardNativeArtwork.HomeAssistantScenes);
+        }
         if (CachedIdle() is not { } quota) return DeviceIdle();
         Volatile.Write(ref _idle, (int)KeyboardNativeArtwork.CodexQuota);
         return Choose(quota, quota, KeyboardNativeArtwork.CodexQuota);
@@ -285,7 +293,8 @@ internal sealed class KeyboardNativePresentation(KeyboardDisplayAnimation animat
         if (_shown is null || !chosen.AsSpan().SequenceEqual(_shown))
         {
             if (ReferenceEquals(_chosenBase, logo)) _logoUntil ??= time.GetTimestamp() + EntryLogoMs * time.TimestampFrequency / 1000;
-            else if (_chosenKind is not (KeyboardNativeArtwork.InteractionStatus or KeyboardNativeArtwork.CodexQuota) && !ReferenceEquals(_chosenBase, _shownBase))
+            else if (_chosenKind is not (KeyboardNativeArtwork.InteractionStatus or KeyboardNativeArtwork.CodexQuota or KeyboardNativeArtwork.HomeAssistantScenes)
+                && !ReferenceEquals(_chosenBase, _shownBase))
                 animated = animation.Uploaded();
         }
         _shown = chosen; _shownBase = _chosenBase;

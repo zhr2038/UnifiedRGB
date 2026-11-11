@@ -36,7 +36,7 @@ public sealed partial class RogNativeMenuSourceTests
     }
 
     [Theory] [InlineData("arm")] [InlineData("begin")] [InlineData("chunk")] [InlineData("stop-capability")]
-    public async Task ObservationRecovery_unexpected_native_mutation_or_stop_verification_is_terminal(string role)
+    public async Task ObservationRecovery_unexpected_native_reply_closes_the_current_scope(string role)
     {
         await using var rig = new Rig(2); rig.Source.RequestEnabled(true);
         if (role == "stop-capability") await rig.Actor.StepAsync(Pixels, default);
@@ -48,9 +48,15 @@ public sealed partial class RogNativeMenuSourceTests
             _ => p[1] == 0x12 && p[2] == 0x7D,
         }) ? new RogOledUnexpectedReplyException("Injected complete unmatched reply", new InvalidDataException()) : null;
         Func<Task> action = role == "stop-capability" ? () => rig.Actor.StopAsync(default) : () => rig.Actor.StepAsync(Pixels, default);
-        await action.Should().ThrowAsync<RogOledUnexpectedReplyException>();
-        rig.Actor.RecoveryBlocked.Should().BeTrue();
+        var ephemeral = role is "begin" or "chunk";
+        if (ephemeral)
+            await action.Should().ThrowAsync<RogNativeArtworkUploadRefusedException>();
+        else
+            await action.Should().ThrowAsync<RogOledUnexpectedReplyException>();
+        rig.Actor.RecoveryBlocked.Should().Be(!ephemeral);
         var writes = rig.Io.Writes.Count;
+        if (ephemeral)
+            await rig.Actor.RetireAfterRecoverableFaultAsync(default);
         await rig.Actor.StopAsync(default); await rig.Actor.StopAsync(default);
         rig.Io.Writes.Should().HaveCount(writes); rig.Input.Pending.Should().Be(0);
     }

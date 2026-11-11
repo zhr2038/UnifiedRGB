@@ -45,20 +45,29 @@ public sealed partial class RogNativeMenuSourceTests
     [InlineData("epoch", false)] [InlineData("epoch", true)] [InlineData("cookie", false)] [InlineData("cookie", true)]
     [InlineData("profile", false)] [InlineData("profile", true)] [InlineData("mode", false)] [InlineData("mode", true)]
     [InlineData("transport", false)] [InlineData("transport", true)] [InlineData("timeout", false)] [InlineData("timeout", true)]
-    public async Task Diagnostic_invalid_post_upload_state_or_read_failure_is_terminal_before_any_renewal(string fault, bool verbose)
+    public async Task Diagnostic_invalid_post_upload_state_or_read_failure_retires_the_current_owner_before_any_renewal(string fault, bool verbose)
     {
         await using var rig = new Rig(1); await rig.Actor.DisposeAsync(); rig.Io.DedicatedPage = true; rig.Io.Mode = 10;
         var source = new RogNativeMenuSource(Policy() with { DiagnoseCodexPostUploadCapability = verbose }, rig.Input, rig.Input, rig.Time, () => Cookie);
         source.RequestCodexEnabled(true);
         using var link = new PostUploadDiagnosticConnection(rig.Io) { Fault = fault };
         await using var actor = source.Attach(link);
-        var result = await ((Func<Task>)(() => actor.StepAsync(Pixels, default))).Should().ThrowAsync<IOException>()
-            .WithMessage("*operation=CodexFrameReady*terminalAfterPixelWrites*renewalNotSent*noRetry*");
-        result.Which.Should().NotBeOfType<RogReadOnlyObservationException>();
+        var step = () => actor.StepAsync(Pixels, default);
+        var transportTimeout = fault == "timeout";
+        if (transportTimeout)
+            await step.Should().ThrowAsync<RogNativeArtworkUploadRefusedException>()
+                .WithMessage("*operation=post-frame-capability*old owner must be replaced*");
+        else
+            await step.Should().ThrowAsync<IOException>()
+                .WithMessage("*operation=CodexFrameReady*terminalAfterPixelWrites*renewalNotSent*noRetry*");
         link.PostUploadCaps.Should().Be(1); link.Renewals.Should().Be(0);
-        actor.RecoveryBlocked.Should().BeTrue(); actor.Armed.Should().BeFalse(); source.IsPresent.Should().BeFalse();
+        actor.RecoveryBlocked.Should().Be(!transportTimeout);
+        actor.Armed.Should().BeFalse(); source.IsPresent.Should().BeFalse();
         var writes = rig.Io.Packets.Count;
-        await ((Func<Task>)(() => actor.StepAsync(Pixels, default))).Should().ThrowAsync<IOException>();
+        if (transportTimeout)
+            (await step()).Should().BeFalse("the old owner cannot send anything after an ephemeral failure");
+        else
+            await step.Should().ThrowAsync<IOException>();
         rig.Io.Packets.Should().HaveCount(writes);
     }
 

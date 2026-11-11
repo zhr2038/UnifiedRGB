@@ -186,6 +186,9 @@ public static class HostComposition
             () => !options.UseVirtualAdapter && sp.GetRequiredService<KeyboardCodexUsageProvider>().Status.Enabled,
             sp.GetRequiredService<TimeProvider>(), sp.GetService<ILogger<CodexTaskViewProvider>>()));
         services.AddHostedService(sp => sp.GetRequiredService<CodexTaskViewProvider>());
+        services.AddSingleton(_ => new HomeAssistantSceneClient(options.KeyboardHomeAssistant));
+        services.AddSingleton(sp => new KeyboardHomeAssistantPage(options.KeyboardHomeAssistant,
+            sp.GetRequiredService<HomeAssistantSceneClient>(), sp.GetRequiredService<TimeProvider>()));
         // Same arguments the former type registration resolved; nativeFrameOverlay is the Logo provider's optional final parameter.
         services.AddSingleton(sp => new KeyboardDisplayService(
             sp.GetRequiredService<UnifiedRgbOptions>(), sp.GetRequiredService<IRgbService>(), sp.GetRequiredService<IScreenService>(),
@@ -206,7 +209,8 @@ public static class HostComposition
                 .TryResolve(id, out var package, out _, out _) ? (int?)package.Manifest.DurationMs : null,
             idleFrame: () => sp.GetRequiredService<CodexTaskViewProvider>().Pixels,
             codexStatus: () => sp.GetRequiredService<KeyboardCodexUsageProvider>().Status,
-            setCodexEnabled: sp.GetRequiredService<KeyboardCodexUsageProvider>().SetEnabled));
+            setCodexEnabled: sp.GetRequiredService<KeyboardCodexUsageProvider>().SetEnabled,
+            homeAssistantFrame: () => sp.GetRequiredService<KeyboardHomeAssistantPage>().Pixels));
         services.AddSingleton<IKeyboardDisplayService>(sp => sp.GetRequiredService<KeyboardDisplayService>());
         services.AddHostedService(sp => sp.GetRequiredService<KeyboardDisplayService>());
         services.AddSingleton<IPeripheralConfigurationResources, RogPeripheralConfigurationResources>();
@@ -229,10 +233,16 @@ public static class HostComposition
             sp.GetRequiredService<TimeProvider>(), sp.GetRequiredService<PeripheralConfigurationGate>()));
         services.AddSingleton<RogNativeMenuSource>(sp =>
         {
+            var ha = sp.GetRequiredService<KeyboardHomeAssistantPage>();
+            var gate = sp.GetRequiredService<PeripheralConfigurationGate>();
+            var homeAssistantEnabled = !options.UseVirtualAdapter && options.KeyboardDisplay.HostArtworkEnabled && ha.Enabled;
             var source = new RogNativeMenuSource(options.KeyboardNativeMenu,
                 sp.GetService<IHidInputReportDevices>(), sp.GetService<IHidContainerResolver>(), sp.GetRequiredService<TimeProvider>(),
                 displayOptions: options.KeyboardDisplay,
-                codexTaskBrowse: direction => sp.GetRequiredService<CodexTaskViewProvider>().Browse(direction));
+                codexTaskBrowse: direction => sp.GetRequiredService<CodexTaskViewProvider>().Browse(direction),
+                homeAssistantInput: homeAssistantEnabled
+                    ? (mask, pixels, admitted) => ha.Interact(mask, pixels, () => gate.RogAcquisitionAllowed && admitted()) : null,
+                homeAssistantPageObserved: homeAssistantEnabled ? ha.ObservePage : null);
             source.SetLaunchCoordinator(sp.GetRequiredService<CodexLaunchCoordinator>());
             return source;
         });
@@ -251,6 +261,8 @@ public static class HostComposition
         // Registered after the menu owner, so it stops first: no scene apply starts once the Host is stopping.
         services.AddHostedService(sp => sp.GetRequiredService<KeyboardSceneCycleBridge>());
         services.AddHostedService(sp => sp.GetRequiredService<CodexLaunchCoordinator>());
+        if (!options.UseVirtualAdapter && options.KeyboardNativeMenu.Admitted && options.KeyboardDisplay.HostArtworkEnabled)
+            services.AddHostedService(sp => sp.GetRequiredService<KeyboardHomeAssistantPage>());
         if (enableIpc)
         {
             services.AddSingleton<PipeServer>();

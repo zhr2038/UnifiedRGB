@@ -165,18 +165,18 @@ public sealed partial class RogNativeMenuSourceTests
         private readonly IDisposable _registration;
         public bool Present { get; set; } = true;
         public bool AbsenceProof { get; set; } = true;
-        public RealTransportCodexRig(byte transport)
+        public RealTransportCodexRig(byte transport, Action<byte, byte[]?, Func<bool>>? homeAssistant = null)
         {
-            _transport = transport; Input = new(Time, transport); Wire = new(transport);
+            _transport = transport; Input = new(Time, transport); Wire = new(transport, homeAssistant is null ? (byte)10 : (byte)11);
             var factory = new CodexActualTransportFactory(Policy(transport), Wire, Time, () => Present, () => !Present && AbsenceProof);
             Connection = transport == 1 ? factory.TryOpen(Policy(transport).DeviceKey)! : factory.TryOpen(Policy(transport).DeviceKey, Policy(transport).FirmwareHeader)!;
-            Source = new(Policy(transport), Input, Input, Time, () => Cookie, codexTaskBrowse: Browses.Add);
+            Source = new(Policy(transport), Input, Input, Time, () => Cookie, codexTaskBrowse: Browses.Add, homeAssistantInput: homeAssistant);
             _registration = Source.Connect(Events.Add); Source.RequestCodexEnabled(true);
             Actor = Source.Attach(Connection); Input.Admitted = () => Actor.ReceivedNotifications;
         }
         public async Task SendAsync(ushort sequence, byte mask, byte flags = 1)
         {
-            var notice = Notice(sequence, mask, flags, _transport); notice[4] = 10;
+            var notice = Notice(sequence, mask, flags, _transport); notice[4] = Wire.Mode;
             BinaryPrimitives.WriteUInt32LittleEndian(notice.AsSpan(7), Wire.Epoch);
             BinaryPrimitives.WriteUInt64LittleEndian(notice.AsSpan(11), Wire.CookieValue);
             var before = Actor.ReceivedNotifications; Input.Send(notice); await Until(() => Actor.ReceivedNotifications > before);
@@ -185,7 +185,7 @@ public sealed partial class RogNativeMenuSourceTests
     }
 
     private sealed class CodexActualTransportFactory(KeyboardNativeMenuOptions policy, CodexWireChannel wire, TimeProvider time,
-        Func<bool>? present = null, Func<bool>? absence = null)
+        Func<bool>? present = null, Func<bool>? absence = null, Func<CodexWireChannel>? reopen = null)
         : IRogWiredOledFactory, IRogWirelessOledFactory
     {
         public int Opens { get; private set; }
@@ -195,15 +195,17 @@ public sealed partial class RogNativeMenuSourceTests
         public RogWiredOledConnection? TryOpen(string deviceKey)
         {
             if (policy.ConnectionKind != "wired") return null;
-            deviceKey.Should().Be(policy.DeviceKey); Opens++;
-            return new(wire, () => present?.Invoke() ?? true, () => deviceKey, () => policy.FirmwareHeader)
+            deviceKey.Should().Be(policy.DeviceKey);
+            var channel = Opens++ == 0 || reopen is null ? wire : reopen();
+            return new(channel, () => present?.Invoke() ?? true, () => deviceKey, () => policy.FirmwareHeader)
             { NativeControlBinding = new([Control], null, time.GetTimestamp()), RouteAbsentProbe = () => absence?.Invoke() ?? present?.Invoke() == false };
         }
         public RogWirelessOledConnection? TryOpen(string receiverKey, string firmwareHeader)
         {
             if (policy.ConnectionKind != "wireless") return null;
-            receiverKey.Should().Be(policy.DeviceKey); Opens++;
-            return new(new(receiverKey, 0x1ACE, new Dictionary<byte, HidCollectionInfo>()), wire, firmwareHeader, () => present?.Invoke() ?? true)
+            receiverKey.Should().Be(policy.DeviceKey);
+            var channel = Opens++ == 0 || reopen is null ? wire : reopen();
+            return new(new(receiverKey, 0x1ACE, new Dictionary<byte, HidCollectionInfo>()), channel, firmwareHeader, () => present?.Invoke() ?? true)
             { NativeControlBinding = new([Control], new(0x1C25, 2, 4), time.GetTimestamp()), EvidenceTime = time, KeyReportDelayMs = 0,
                 RouteAbsentProbe = () => absence?.Invoke() ?? present?.Invoke() == false };
         }
@@ -211,7 +213,7 @@ public sealed partial class RogNativeMenuSourceTests
 
     // The sole fake control seam is the raw HID channel. The Host always receives real wired/RF connection classes.
     // This is an independent packet model, not a fake IRogOledConnection or a call-through to that fake.
-    private sealed class CodexWireChannel(byte transport) : IHidReportChannel
+    private sealed class CodexWireChannel(byte transport, byte mode = 10) : IHidReportChannel
     {
         private readonly Channel<byte[]> _replies = Channel.CreateUnbounded<byte[]>();
         private readonly List<byte> _pixels = [];
@@ -226,6 +228,14 @@ public sealed partial class RogNativeMenuSourceTests
         public int LastCopyLength { get; private set; }
         public int MaximumReaders { get; private set; }
         public int PendingReads { get; private set; }
+        public int BasicInfoReads { get; private set; }
+        public int RefuseBasicInfoAt { get; init; }
+        public bool RefuseBrightnessReadback { get; init; }
+        private bool _brightnessWritten;
+        public bool Disposed { get; private set; }
+        public byte Mode { get; } = mode;
+        public byte ProfileToken { get; set; } = 6;
+        public byte Brightness { get; set; } = 100;
         public string? CommitFault { get; set; }
         public bool PixelNegative { get; set; }
         public bool DuplicateReadyEcho { get; set; }
@@ -253,7 +263,7 @@ public sealed partial class RogNativeMenuSourceTests
                     }
                     break;
                 case (0x71, 0x7D):
-                    p[24].Should().Be(transport); p[25].Should().Be(10);
+                    p[24].Should().Be(transport); p[25].Should().Be(Mode);
                     BinaryPrimitives.ReadUInt32LittleEndian(p.AsSpan(19)).Should().Be(Epoch);
                     Epoch++; CookieValue = BinaryPrimitives.ReadUInt64LittleEndian(p.AsSpan(11)); _ready = false; _remaining = 0;
                     if (p[10] == 1) Arms++; Operations.Add(p[10] == 1 ? "ARM" : "DISARM"); reply = Cap(0x71); break;
@@ -272,17 +282,22 @@ public sealed partial class RogNativeMenuSourceTests
                     Operations.Add("PIXEL"); break;
                 case (0x67, 2): _ready.Should().BeTrue(); Operations.Add("RENEW"); Renewals++; break;
                 case (0x12, 0):
+                    if (++BasicInfoReads == RefuseBasicInfoAt) { reply[1] = 0xFF; reply[2] = 0xAA; break; }
                     if (transport == 2) { reply[5] = 8; reply[7] = 7; reply[12] = 0x25; reply[14] = 1; }
                     else { reply[5] = 0x25; reply[7] = 1; }
-                    reply[9] = 6; reply[11] = 6; break;
+                    reply[9] = 6; reply[11] = ProfileToken; break;
                 case (0x21, 0): reply[5] = 3; break;
                 case (0x23, 2): reply[5] = 1; break;
-                case (0x23, 3): reply[5] = 100; break;
+                case (0x23, 3):
+                    if (_brightnessWritten && RefuseBrightnessReadback) { reply[1] = 0xFF; reply[2] = 0xAA; }
+                    else reply[5] = Brightness;
+                    break;
                 case (0x25, 0x0E): Convert.FromHexString(_bank.Payloads[RogProtocol.KeyboardPayloadLengths(0).Count - 1 - p[4]]).CopyTo(reply, 5); break;
                 case (0x27, 0): reply[5] = _software; break;
                 case (0x74, 0): _software = p[5]; reply[5] = _software; break;
                 case (0xC0, 0x81): reply[2] = 0x82; break;
-                case (0x51, 0x2C): case (0x68, 0): reply = p; break;
+                case (0x51, 0x2C): reply = p; break;
+                case (0x68, 0): Brightness = p[5]; _brightnessWritten = true; reply = p; break;
                 case (0x61, 0): break;
                 default: throw new InvalidOperationException("Unexpected raw test packet.");
             }
@@ -299,8 +314,8 @@ public sealed partial class RogNativeMenuSourceTests
         private byte[] Cap(byte command)
         {
             var p = new byte[65]; p[1] = command; p[2] = 0x7D; "GYM1"u8.CopyTo(p.AsSpan(5));
-            p[9] = 2; p[10] = CookieValue == 0 ? (byte)0 : (byte)1; p[11] = 10; p[13] = transport;
-            p[14] = (byte)(0x70 | (CookieValue == 0 ? 0 : 1) | (_remaining == 0 ? 0 : 4) | (_ready ? 8 : 0));
+            p[9] = 2; p[10] = CookieValue == 0 ? (byte)0 : (byte)1; p[11] = Mode; p[12] = (byte)(ProfileToken % 6); p[13] = transport;
+            p[14] = (byte)((Mode == 11 ? 0xF0 : 0x70) | (CookieValue == 0 ? 0 : 1) | (_remaining == 0 ? 0 : 4) | (_ready ? 8 : 0));
             BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(15), Epoch); BinaryPrimitives.WriteUInt64LittleEndian(p.AsSpan(19), CookieValue);
             BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(29), 0x25314D50); BinaryPrimitives.WriteUInt16LittleEndian(p.AsSpan(33), 208);
             p[35] = 64; p[36] = transport == 1 ? (byte)60 : (byte)59; p[37] = 3; return p;
@@ -316,6 +331,6 @@ public sealed partial class RogNativeMenuSourceTests
             }
             finally { PendingReads--; }
         }
-        public void Dispose() => _replies.Writer.TryComplete();
+        public void Dispose() { Disposed = true; _replies.Writer.TryComplete(); }
     }
 }

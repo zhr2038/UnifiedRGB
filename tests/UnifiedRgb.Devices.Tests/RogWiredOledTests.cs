@@ -102,7 +102,7 @@ public sealed class RogWiredOledTests
         using var connection = new RogWiredOledConnection(io, () => true);
         var session = new RogWiredOledSession(connection);
         await session.SnapshotAsync("001200000024000100", default); await session.StartOutputAsync(100, default);
-        await ((Func<Task>)(() => session.RunAsync(() => new byte[6656], () => { }, default))).Should().ThrowAsync<InvalidDataException>();
+        await ((Func<Task>)(() => session.RunAsync(() => new byte[6656], () => { }, default))).Should().ThrowAsync<RogOledEnvelopeRefusedException>();
         io.BeginPackets.Should().Be(1); io.DataPackets.Should().Be(0);
         var writes = io.Writes;
         await ((Func<Task>)(() => session.RestoreAsync(0, default))).Should().ThrowAsync<IOException>().WithMessage("*poisoned*");

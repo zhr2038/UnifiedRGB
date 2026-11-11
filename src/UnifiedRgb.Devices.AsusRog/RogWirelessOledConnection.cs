@@ -420,7 +420,7 @@ public sealed class RogWirelessOledConnection : IRogOledConnection
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch (Exception ex) when (ex is not OutOfMemoryException)
-        { throw Fail(ex, request, buffer, length, reads, "pre-drain", false, false); }
+        { throw Fail(ex, request, buffer, length, reads, "pre-drain", false, false, unsentCommand: request[1]); }
     }
 
     private static void RequireNotRefused(byte[] reply)
@@ -448,6 +448,7 @@ public sealed class RogWirelessOledConnection : IRogOledConnection
                     RecordFlight(FlightOperation.Lease, FlightStage.RxDone, buffer, length);
                     RequireNotEof(length);
                     var reply = FromWireless(buffer, length);
+                    RequireNotRefused(reply);
                     if (IsWrittenColourReply(reply))
                     {
                         if (++colourReplies > ColourReplyDrainLimit) throw new InvalidDataException("Wireless colour reply drain budget exceeded.");
@@ -544,7 +545,8 @@ public sealed class RogWirelessOledConnection : IRogOledConnection
             ? FormattableString.Invariant($"{EvidenceTime.GetElapsedTime(origin, last).TotalMilliseconds:F3}") : "none";
         return FormattableString.Invariant($"rfElapsedMs={EvidenceTime.GetElapsedTime(origin, now).TotalMilliseconds:F3}; colourReportsAdmitted={_colourWritesAdmitted}; colourReportsCompleted={_colourWritesCompleted}; c082Observed={_colourRepliesObserved}; lastColourDoneMs={lastColour}; drainHighResWindows={_drainHighResolutionWindows}; drainCoarseWindows={_drainCoarseWindows}; flightRecords={records.Length}/{_flightCount}; rfFlight=[{string.Join('|', records)}]");
     }
-    private Exception Fail(Exception ex, byte[] request, byte[]? reply, int length, int ordinal, string stage, bool zeroAck, bool expired, string? seenHeaders = null)
+    private Exception Fail(Exception ex, byte[] request, byte[]? reply, int length, int ordinal, string stage, bool zeroAck, bool expired,
+        string? seenHeaders = null, byte? unsentCommand = null)
     {
         lock (_state)
         {
@@ -556,7 +558,9 @@ public sealed class RogWirelessOledConnection : IRogOledConnection
         Exception fault = ex is OperationCanceledException && expired
             ? new RogOledTimeoutException("Wireless keyboard OLED command timed out; " + detail, ex)
              : ex is RogOledEnvelopeRefusedException
-                 ? new RogOledEnvelopeRefusedException("Wireless OLED negative envelope; " + detail, ex)
+                 ? unsentCommand is { } command
+                     ? new RogOledEnvelopeRefusedException("Wireless OLED negative envelope; " + detail, ex, command)
+                     : new RogOledEnvelopeRefusedException("Wireless OLED negative envelope; " + detail, ex)
              : ex is RogOledUnexpectedReplyException
                  ? new RogOledUnexpectedReplyException("Wireless OLED unexpected protocol reply; " + detail, ex)
             : ex is RogOledConnectionLostException || ex is IOException && PhysicalRouteAbsent
@@ -620,8 +624,7 @@ public sealed class RogWirelessOledFactory : IRogWirelessOledFactory
         {
             var paired = session.QueryPairingAsync(default).GetAwaiter().GetResult();
             pairingTimestamp = _time.GetTimestamp();
-            keyboard = paired.SingleOrDefault(RogKeyboardInputContract.IsVerifiedTarget)
-                ?? throw new InvalidDataException("Pinned receiver does not currently name the verified Azoth X route.");
+            keyboard = RequirePairedKeyboard(paired);
         }
         finally { session.DisposeAsync().AsTask().GetAwaiter().GetResult(); }
         var capturedControl = receiver.Channels[keyboard.ReportId];
@@ -632,5 +635,13 @@ public sealed class RogWirelessOledFactory : IRogWirelessOledFactory
             NativeControlBinding = new(receiver.Channels.Values.ToArray(), keyboard, pairingTimestamp), EvidenceTime = _time,
             RouteAbsentProbe = () => RogHidRoutePresence.Probe(devices, 0x0B05, 0x1ACE, capturedControl.Path),
         };
+    }
+
+    internal static RogPairedDevice RequirePairedKeyboard(IReadOnlyList<RogPairedDevice> paired)
+    {
+        if (paired.Count == 0)
+            throw new RogKeyboardNotReadyException("The exact pinned receiver answered with no active peers; wait for the bound keyboard before opening its control writer.");
+        return paired.SingleOrDefault(RogKeyboardInputContract.IsVerifiedTarget)
+            ?? throw new InvalidDataException("Pinned receiver does not currently name the verified Azoth X route.");
     }
 }

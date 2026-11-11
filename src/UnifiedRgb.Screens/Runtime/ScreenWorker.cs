@@ -60,6 +60,9 @@ internal sealed record ScreenWorkerContext(
     /// inline overlay operations, <see cref="ScreenWorker.PrepareOverlayPng"/>.
     /// </summary>
     public Func<OverlayPreparationRequest, (byte[] Bytes, string Note)>? PrepareOverlayForTest { get; init; }
+
+    /// <summary>Allows wire tests to hold the native PNG overlay's rasterization stable across independent workers.</summary>
+    public OverlayRenderer? NativeVideoOverlayForTest { get; init; }
 }
 
 internal sealed record WorkerCommand(ScreenAssignmentDto? Assignment, bool Paused, bool Stop = false);
@@ -115,6 +118,7 @@ internal sealed partial class ScreenWorker : IDisposable
 
         _device = device;
         _ctx = ctx;
+        _videoOverlay = ctx.NativeVideoOverlayForTest ?? new();
         _framesWritten = previous?.FramesWritten ?? 0;
         _dropped = previous?.Dropped ?? 0;
         _backoff = new Backoff(ctx.Options.BackoffInitialMs, ctx.Options.BackoffMaxMs);

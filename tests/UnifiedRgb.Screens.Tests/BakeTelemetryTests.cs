@@ -131,14 +131,14 @@ public sealed class BakeTelemetryTests
     [InlineData(true)]
     public async Task A_false_flag_is_inert_and_a_baked_transcript_has_no_worker_png(bool bake)
     {
-        // Keep every encoded byte/header/selection/counter equal on this OS. A desktop's WIC/font/MF output hash
-        // is not a portable reference for a different Windows build or the encoder's chosen slice implementation.
-        var omitted = await NativeVideoDefaultOffTests.TranscriptAsync(null);
-        var text = await NativeVideoDefaultOffTests.TranscriptAsync(t => t with { BakeTelemetry = bake });
+        // Offscreen WPF text can rasterize differently on a cold worker. Use a deterministic overlay for
+        // the byte-for-byte comparison; other tests below still verify real WPF text and telemetry pixels.
+        var omitted = await NativeVideoDefaultOffTests.TranscriptAsync(null, WithStableOverlay);
+        var text = await NativeVideoDefaultOffTests.TranscriptAsync(t => t with { BakeTelemetry = bake }, WithStableOverlay);
         Capture($"transcript-bake-{bake}.txt", text);
         if (!bake)
         {
-            text.Should().Be(omitted, "an explicit false flag preserves this platform's complete default wire transcript byte for byte");
+            text.Should().Be(omitted, "an explicit false flag preserves the complete wire transcript for identical inputs");
             return;
         }
 
@@ -150,6 +150,21 @@ public sealed class BakeTelemetryTests
         lines[start..end].Should().NotContain(l => l.StartsWith("102 ", StringComparison.Ordinal), "no worker PNG at begin, telemetry changes, overlay none/dashboard or rotation");
         lines.Count(l => l.Contains(BakedNote + " | " + ScreenWorker.BakedOverlayNote, StringComparison.Ordinal)).Should().Be(14,
             "begin, nine steps, dashboard again, telemetry 77, rotation 180 and its step; the two overlay-none pictures bake nothing");
+    }
+
+    private static ScreenWorkerContext WithStableOverlay(ScreenWorkerContext context)
+    {
+        byte revision = 0;
+        return context with
+        {
+            NativeVideoOverlayForTest = new((_, width, height) =>
+            {
+                var frame = new PixelFrame(width, height);
+                frame.Pixels[0] = ++revision;
+                frame.Pixels[3] = 255;
+                return frame;
+            }),
+        };
     }
 
     [MediaFoundationFact]
