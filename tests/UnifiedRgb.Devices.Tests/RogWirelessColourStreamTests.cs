@@ -33,7 +33,9 @@ public sealed class RogWirelessColourStreamTests
         Keys.Select(k => k.Color).Distinct().Should().HaveCount(85);
         io.Reads.Should().Be(0); connection.PairingEvidence.Should().Be(before);
         (await connection.ExchangeAsync(RogWiredOledProtocol.Query(0x23, 3), false, default))[5].Should().Be(37);
-        io.Reads.Should().Be(1); connection.PairingEvidence.Should().Be(before);
+        io.CompletedReads.Should().Be(1, "only the command's own post-TX response completed a read");
+        io.Reads.Should().Be(1 + io.CancelledReads, "RF settle windows are joined without inventing colour acknowledgements");
+        io.PendingReads.Should().Be(0); connection.PairingEvidence.Should().Be(before);
     }
 
     [Theory]
@@ -48,14 +50,25 @@ public sealed class RogWirelessColourStreamTests
         var drained = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         io.OnRead = n => { if (n == 20) drained.TrySetResult(); };
         var request = Request(command);
+        var controlWritten = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        io.WriteGate = (packet, _) =>
+        {
+            packet.Should().Equal(Wireless(request));
+            controlWritten.TrySetResult();
+            return Task.CompletedTask;
+        };
         var exchange = connection.ExchangeAsync(request, false, default);
         await drained.Task.WaitAsync(TimeSpan.FromSeconds(5));
         exchange.IsCompleted.Should().BeFalse("RGB replies cannot acknowledge a strict control request");
         connection.PairingEvidence.Should().Be(before, "discarded RGB replies are not keyboard pairing evidence");
+        await controlWritten.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        exchange.IsCompleted.Should().BeFalse("even after the actual control TX, old colour replies cannot satisfy it");
         var ownReply = ControlReply(request); io.Enqueue(ownReply);
         var result = await exchange;
         result[1..64].Should().Equal(ownReply[1..]);
         connection.PairingEvidence!.Observations.Should().Be(command == "settings" ? 0 : 1);
+        io.Writes.Should().HaveCount(8, "seven RGB reports and exactly one new control request were sent");
+        io.CompletedReads.Should().Be(20, "nineteen buffered colour replies plus the one post-TX control response");
         io.PendingReads.Should().Be(0); io.MaximumReaders.Should().Be(1);
     }
 
@@ -76,14 +89,16 @@ public sealed class RogWirelessColourStreamTests
     [Theory]
     [InlineData("reserved")] [InlineData("tail")] [InlineData("zero-count")] [InlineData("large-count")]
     [InlineData("unwritten-count")] [InlineData("unwritten-owner")] [InlineData("rid")] [InlineData("short")]
-    [InlineData("refused")] [InlineData("unrelated")]
+    [InlineData("refused")] [InlineData("bad-negative")] [InlineData("unrelated")]
     public async Task Malformed_refused_or_unowned_colour_replies_remain_terminal(string kind)
     {
         using var io = new Fake(); using var connection = Open(io);
         if (kind != "unwritten-owner") await connection.WriteLightingFrameAsync(Keys, default);
         io.Enqueue(BadReply(kind));
-        await ((Func<Task>)(() => connection.ExchangeAsync(Request("settings"), false, default)))
-            .Should().ThrowAsync<InvalidDataException>();
+        Func<Task> exchange = () => connection.ExchangeAsync(Request("settings"), false, default);
+        if (kind == "refused") await exchange.Should().ThrowAsync<RogOledEnvelopeRefusedException>();
+        else if (kind == "unwritten-owner") await exchange.Should().ThrowAsync<RogOledUnexpectedReplyException>();
+        else await exchange.Should().ThrowAsync<InvalidDataException>();
         await RequirePoisoned(connection, io);
     }
 
@@ -128,13 +143,14 @@ public sealed class RogWirelessColourStreamTests
     }
 
     [Theory]
-    [InlineData("refused")] [InlineData("tail")]
+    [InlineData("refused")] [InlineData("bad-negative")] [InlineData("tail")]
     public async Task Lease_colour_refusals_and_malformed_replies_still_fault_and_join(string kind)
     {
         using var io = new Fake(); using var connection = Open(io);
         await connection.WriteLightingFrameAsync(Keys, default); io.Enqueue(BadReply(kind));
-        await ((Func<Task>)(() => connection.LeaseAsync(() => false, () => { }, default)))
-            .Should().ThrowAsync<InvalidDataException>();
+        Func<Task> lease = () => connection.LeaseAsync(() => false, () => { }, default);
+        if (kind == "refused") await lease.Should().ThrowAsync<RogOledEnvelopeRefusedException>();
+        else await lease.Should().ThrowAsync<InvalidDataException>();
         io.PendingReads.Should().Be(0); await RequirePoisoned(connection, io);
     }
 
@@ -266,7 +282,8 @@ public sealed class RogWirelessColourStreamTests
             case "unwritten-count": p[3] = 2; break;
             case "rid": p[0] = 3; break;
             case "short": return p[..63];
-            case "refused": p[1] = 0xFF; p[2] = 0xAA; break;
+            case "refused": p[1] = 0xFF; p[2] = 0xAA; Array.Clear(p, 3, p.Length - 3); break;
+            case "bad-negative": p[1] = 0xFF; p[2] = 0xAA; break;
             case "unrelated": return Wireless(RogWiredOledProtocol.Query(0x21, 0));
         }
         return p;
@@ -281,6 +298,8 @@ public sealed class RogWirelessColourStreamTests
         private readonly RogWiredOledTests.OledFake _inner = new() { Brightness = 37 };
         public List<byte[]> Writes { get; } = [];
         public int Reads { get; private set; }
+        public int CompletedReads { get; private set; }
+        public int CancelledReads { get; private set; }
         public int PendingReads { get; private set; }
         public int PendingWrites { get; private set; }
         public int MaximumReaders { get; private set; }
@@ -314,7 +333,8 @@ public sealed class RogWirelessColourStreamTests
         public async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct)
         {
             Reads++; PendingReads++; MaximumReaders = Math.Max(MaximumReaders, PendingReads);
-            try { OnRead?.Invoke(Reads); var reply = await _queue.Reader.ReadAsync(ct); reply.CopyTo(buffer); return reply.Length; }
+            try { OnRead?.Invoke(Reads); var reply = await _queue.Reader.ReadAsync(ct); reply.CopyTo(buffer); CompletedReads++; return reply.Length; }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { CancelledReads++; throw; }
             finally { PendingReads--; }
         }
 

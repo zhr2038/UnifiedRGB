@@ -298,9 +298,7 @@ internal sealed partial class AssetStore
                 var meta = JsonSerializer.Deserialize(ReadBounded(Path.Combine(dir, "meta.json"), MaxMetaBytes), ScreensJsonContext.Default.AssetMeta);
                 if (meta is null || meta.Id != name || meta.DelaysMs is not { Length: >= 1 } || meta.Width < 1 || meta.Height < 1
                     || string.IsNullOrEmpty(meta.Name)
-                    || (meta.Format == "mp4"
-                        ? meta.Version != 2 || meta.DelaysMs.Length is < 2 or > Mp4Importer.MaxFrames || meta.DelaysMs.Any(d => d <= 0 || d > 30000) || meta.DelaysMs.Sum(d => (long)d) > 30000
-                        : meta.Version != 1 || meta.DelaysMs.Length > 300 || meta.Format is not ("jpeg" or "png" or "gif")))
+                    || !ValidTiming(meta))
                 {
                     LogSkipped(_log, name, "invalid meta.json");
                     continue;
@@ -319,6 +317,21 @@ internal sealed partial class AssetStore
                 LogSkipped(_log, name, ex.Message);
             }
         }
+    }
+
+    // Normalized caches must obey the same frame/timing contract as fresh imports. In particular,
+    // corrupted GIF delays must not enter the index and later overflow DurationMs in a list/preview RPC.
+    private static bool ValidTiming(AssetMeta meta)
+    {
+        if (meta.Format == "mp4")
+            return meta.Version == 2 && meta.DelaysMs.Length is >= 2 and <= Mp4Importer.MaxFrames
+                && meta.DelaysMs.All(d => d is > 0 and <= 30000) && meta.DelaysMs.Sum(d => (long)d) <= 30000;
+
+        if (meta.Version != 1 || meta.Format is not ("jpeg" or "png" or "gif")) return false;
+        if (meta.DelaysMs.Length == 1) return meta.DelaysMs[0] == 0;
+        return meta.Format == "gif" && meta.DelaysMs.Length <= ImportLimits.Default.MaxFrames
+            && meta.DelaysMs.All(d => d is >= ImportLimits.MinDelayMs and <= 30000)
+            && meta.DelaysMs.Sum(d => (long)d) <= ImportLimits.Default.MaxDurationMs;
     }
 
     private void TryDeleteDirectory(string path)

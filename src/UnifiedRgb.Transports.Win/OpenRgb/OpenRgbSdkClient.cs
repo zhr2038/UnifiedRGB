@@ -16,8 +16,11 @@ public sealed class OpenRgbSdkClient : IDisposable
 
     private readonly ITransport _raw;
     private readonly SemaphoreSlim _requestGate = new(1, 1);
+    private readonly object _lifetimeGate = new();
     private readonly byte[] _header = new byte[OpenRgbHeader.Size];
     private volatile bool _deviceListChanged;
+    private int _requests;
+    private bool _disposed;
 
     public OpenRgbSdkClient(ITransport transport, ILogger? logger = null)
     {
@@ -84,7 +87,13 @@ public sealed class OpenRgbSdkClient : IDisposable
 
     public void Dispose()
     {
-        _requestGate.Dispose();
+        lock (_lifetimeGate)
+        {
+            if (_disposed) return;
+            _disposed = true;
+            // An active request must still release the gate. The last active/queued request disposes it after leaving.
+            if (_requests == 0) _requestGate.Dispose();
+        }
         (_raw as IDisposable)?.Dispose();
     }
 
@@ -98,9 +107,20 @@ public sealed class OpenRgbSdkClient : IDisposable
 
     private async Task<byte[]> RequestAsync(byte[] request, uint replyId, CancellationToken ct)
     {
-        await _requestGate.WaitAsync(ct).ConfigureAwait(false);
+        lock (_lifetimeGate)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            _requests++;
+        }
+        var acquired = false;
+        var started = false;
         try
         {
+            await _requestGate.WaitAsync(ct).ConfigureAwait(false);
+            acquired = true;
+            lock (_lifetimeGate) ObjectDisposedException.ThrowIf(_disposed, this);
+            ct.ThrowIfCancellationRequested();
+            started = true;
             await Transport.SendAsync(request, ct).ConfigureAwait(false);
             while (true)
             {
@@ -125,9 +145,21 @@ public sealed class OpenRgbSdkClient : IDisposable
                 }
             }
         }
+        catch
+        {
+            // TCP has no request generation marker. After a partial send/read or cancellation, the next reply can be
+            // stale or start mid-packet; only a fresh connection may issue another request. A queued cancellation is safe.
+            if (started) Dispose();
+            throw;
+        }
         finally
         {
-            _requestGate.Release();
+            if (acquired) _requestGate.Release();
+            lock (_lifetimeGate)
+            {
+                _requests--;
+                if (_disposed && _requests == 0) _requestGate.Dispose();
+            }
         }
     }
 

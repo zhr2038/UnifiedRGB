@@ -213,16 +213,5 @@ public sealed class StackingReturnHostTests
         return (rpc, svc, pipe);
     }
 
-    private static string RepoRoot()
-    {
-        for (var d = new DirectoryInfo(AppContext.BaseDirectory); d is not null; d = d.Parent)
-        {
-            if (File.Exists(Path.Combine(d.FullName, "src", "UnifiedRgb.sln")))
-            {
-                return d.FullName;
-            }
-        }
-
-        throw new DirectoryNotFoundException("repository root");
-    }
+    private static string RepoRoot() => RepositoryPaths.Root();
 }

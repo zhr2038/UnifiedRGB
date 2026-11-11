@@ -165,16 +165,7 @@ public sealed class DeviceClockHostTests
         return o;
     }
 
-    private static string RepoRoot()
-    {
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "src", "UnifiedRgb.sln")))
-        {
-            dir = dir.Parent;
-        }
-
-        return dir?.FullName ?? throw new DirectoryNotFoundException("repository root (src/UnifiedRgb.sln) not found");
-    }
+    private static string RepoRoot() => RepositoryPaths.Root();
 
     private sealed class EmptySnapshot : ISystemSnapshot
     {

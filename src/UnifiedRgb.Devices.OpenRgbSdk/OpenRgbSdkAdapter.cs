@@ -157,7 +157,7 @@ public sealed partial class OpenRgbSdkAdapter : IDeviceAdapter, IActiveDiscovery
                 vt.AsTask().GetAwaiter().GetResult();
             }
         }
-        catch (Exception ex) when (ex is System.Net.Sockets.SocketException or IOException or ObjectDisposedException)
+        catch (Exception ex) when (ex is System.Net.Sockets.SocketException or IOException or ObjectDisposedException or TimeoutException)
         {
             _broken = true;
             throw;

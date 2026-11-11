@@ -1,0 +1,3 @@
+# Retained fake source is hash-pinned by the worker's core-manifest.json.
+[FakeBoot.cs]
+dotnet_diagnostic.CA1051.severity = none

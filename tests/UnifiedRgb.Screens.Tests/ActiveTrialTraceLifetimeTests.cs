@@ -21,6 +21,45 @@ public sealed class ActiveTrialTraceLifetimeTests
     private static void Add(ScreenPerformance perf, string? trial, int k) =>
         perf.Add(Work, 60, trial, null, 0, new ScreenSourceSample(Source, k % 4, k * 100L, 5_000_000 + (k * 100_000L), 1_000_000, false, false));
 
+    [MediaFoundationFact]
+    public async Task Picture_step_waits_for_the_inflight_picture_sample_before_advancing_the_frozen_clock()
+    {
+        using var entered = new ManualResetEventSlim(false);
+        using var release = new ManualResetEventSlim(false);
+        var pngReplies = 0;
+        using var h = await NativeWorkerHarness.StartAsync(NativeWorkerHarness.NewTrial("completion"), reply: (command, _, _) =>
+        {
+            // Begin's transparent PNG completes; the first picture's live overlay reply remains in flight.
+            if (command == ScreenProtocol.PushPngCommand && Interlocked.Increment(ref pngReplies) == 2)
+            {
+                entered.Set();
+                release.Wait(TimeSpan.FromSeconds(30));
+            }
+            return null;
+        });
+        try
+        {
+            await Wait.UntilAsync(() => entered.IsSet, "the first picture is waiting for its overlay reply");
+            h.DataWrites.Should().Be(1);
+            h.Worker.Performance.Samples.Should().Be(0, "a visible data packet is not a completed picture");
+            var now = h.Time.GetTimestamp();
+            var advance = PictureAsync(h);
+            using (new FluentAssertions.Execution.AssertionScope())
+            {
+                try
+                {
+                    h.Time.GetTimestamp().Should().Be(now, "the previous picture must finish before the next period begins");
+                    advance.IsCompleted.Should().BeFalse();
+                }
+                finally { release.Set(); }
+                await advance;
+                h.DataWrites.Should().Be(2, "one completed picture follows the single clock advance");
+                h.Worker.Performance.SourceFrames.Should().HaveCount(2);
+            }
+        }
+        finally { release.Set(); }
+    }
+
     [Fact]
     public void The_production_read_shows_rows_only_for_the_active_trial_and_the_seam_and_counters_are_unchanged()
     {
@@ -58,7 +97,6 @@ public sealed class ActiveTrialTraceLifetimeTests
         h.RateTrial = new ScreenRateTrial(new("rate", [Devices.Turzx.Id], 10, 60000, false, 50), 0, long.MaxValue);
         await NativeWorkerHarness.SettleAsync(() => h.DataWrites >= 1, "first access unit");
         await PictureAsync(h);
-        await Task.Delay(250);
         var video = h.Worker.Performance;
         video.TrialId.Should().Be("video", "the native video trial takes precedence");
         video.SourceFrames.Should().HaveCount(2);
@@ -99,7 +137,6 @@ public sealed class ActiveTrialTraceLifetimeTests
         await NativeWorkerHarness.SettleAsync(() => h.DataWrites >= 1, "first access unit");
         await IdleAsync(h);
         await PictureAsync(h);
-        await Task.Delay(250);
         var old = h.Worker.Performance;
         old.TrialId.Should().Be("old");
         old.SourceFrames.Should().HaveCount(2);

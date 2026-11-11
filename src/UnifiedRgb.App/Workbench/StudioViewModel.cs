@@ -60,6 +60,10 @@ public sealed class StudioViewModel : ObservableObject, IDisposable
         BlackoutCommand = new AsyncCommand(BlackoutAsync, onError);
         RestoreCommand = new AsyncCommand(RestoreAsync, onError);
         PreviewCommand = new RelayCommand(() => PreviewPlaying = !PreviewPlaying);
+        NavigateCommand = new RelayCommand(value =>
+        {
+            if (int.TryParse(value?.ToString(), out var page) && ShellNavigation.Pages.Any(item => item.Page == page)) Page = page;
+        });
         RemoveAssignmentCommand = new AsyncCommand(RemoveAssignmentAsync, onError);
     }
 
@@ -78,6 +82,7 @@ public sealed class StudioViewModel : ObservableObject, IDisposable
     public AsyncCommand BlackoutCommand { get; }
     public AsyncCommand RestoreCommand { get; }
     public RelayCommand PreviewCommand { get; }
+    public RelayCommand NavigateCommand { get; }
     public AsyncCommand RemoveAssignmentCommand { get; }
     public string Message { get => _message; private set => SetProperty(ref _message, value); }
     public string Clock { get => _clock; private set => SetProperty(ref _clock, value); }
@@ -92,15 +97,16 @@ public sealed class StudioViewModel : ObservableObject, IDisposable
         get => _page;
         set { if (SetProperty(ref _page, value)) { PreviewPlaying = false; OnPropertyChanged(nameof(PageTitle)); OnPropertyChanged(nameof(PageSubtitle)); } }
     }
-    public string PageTitle => Page switch { 0 => "机箱总览", 1 => "场景工作台", 2 => "屏幕工作区", 3 => "设备与校准", 4 => "场景与素材库", 5 => "运行诊断", _ => "偏好设置" };
+    public string PageTitle => Page switch { 0 => "控制中心", 1 => "灯光编排", 2 => "机箱屏幕", 3 => "设备与校准", 4 => "场景库", 5 => "运行诊断", 7 => "键盘与鼠标", _ => "偏好设置" };
     public string PageSubtitle => Page switch
     {
-        0 => "一眼查看全机分区、当前编排与运行状态。",
-        1 => "编辑光线的路径、配色与节奏，确认后再应用到机箱。",
+        0 => "查看当前编排、机箱布局与设备状态。",
+        1 => "编排灯光路径，调整场景的配色与节奏。",
         2 => "选择背景，叠加电脑信息，为每一块屏幕安排内容。",
         3 => "管理接管状态与物理安装方向，保留已验证的校准。",
         4 => "把灯效与屏幕内容保存在同一个场景中。",
         5 => "检查实际发送、同步时钟和设备错误。",
+        7 => "管理键盘显示、屏幕动画、拨杆联动与键鼠配置。",
         _ => "调整启动与桌面行为。",
     };
     public bool PreviewPlaying { get => _preview; set { if (SetProperty(ref _preview, value)) OnPropertyChanged(nameof(PreviewButton)); } }
@@ -155,7 +161,7 @@ public sealed class StudioViewModel : ObservableObject, IDisposable
                 NotifyDraftAccess();
             }
             Updated = $"{DateTime.Now:HH:mm:ss} 已读取";
-            Message = !CanEditDraft ? "此编排来自独立场景包。请在“场景库 → 外部场景包”管理设备绑定和播放。" : Draft.Dirty ? "已刷新运行状态，保留本地未应用的修改。" : "场景已读取。编辑不会立即改变机箱灯光。";
+            Message = !CanEditDraft ? "此编排来自独立场景包。请在“场景库 → 场景包管理”管理设备绑定和播放。" : Draft.Dirty ? "已刷新运行状态，保留本地未应用的修改。" : "场景已读取。编辑不会立即改变机箱灯光。";
         });
     }
     private void UpdateZones(IReadOnlyList<ControllerDto> controllers)

@@ -248,6 +248,15 @@ public sealed unsafe class WinHidReportDevices : IHidReportDevices
         return result;
     }
 
+    /// <summary>Strict fresh enumeration for positive route-absence checks; failures never become an empty result.</summary>
+    public IReadOnlyList<HidCollectionInfo> EnumerateComplete(ushort vid, ushort pid)
+    {
+        if (_enumerator is not SetupApiEnumerator)
+            throw new InvalidOperationException("Complete platform enumeration is not available from this injected enumerator.");
+        return SetupApiEnumerator.EnumerateComplete(HidTransport.InterfaceClass)
+            .Where(d => d.Vid == vid && d.Pid == pid).Select(Caps).ToArray();
+    }
+
     public IHidReportChannel Open(HidCollectionInfo collection)
         => OpenCore(collection, exclusiveWriter: false);
 

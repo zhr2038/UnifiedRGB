@@ -17,6 +17,7 @@ public sealed class ProfilesViewModel : ObservableObject
     private string _color = "#5DDAC8";
     private string _details = "选择一个场景查看内容。";
     private int _libraryPage;
+    private long _previewId;
     public event EventHandler? Applied;
     public string SelectedTitle => _selected is null ? "场景详情" : DisplayNames.Scene(_selected.Name);
     public string SelectedModified => _selected is null ? "" : $"更新于 {_selected.Modified.ToLocalTime():yyyy/MM/dd HH:mm}";
@@ -75,7 +76,8 @@ public sealed class ProfilesViewModel : ObservableObject
                 OnPropertyChanged(nameof(SelectedModified));
                 ApplyCommand.RaiseCanExecuteChanged();
                 DeleteCommand.RaiseCanExecuteChanged();
-                if (value is not null) _ = ShowAsync(value.Name);
+                var previewId = ++_previewId;
+                if (value is not null) _ = ShowAsync(value.Name, previewId);
                 else { Summary = ""; Details = "选择一个场景查看内容。"; SelectedColor = "#5DDAC8"; }
             }
         }
@@ -97,9 +99,10 @@ public sealed class ProfilesViewModel : ObservableObject
     /// <summary>Saves the running scene under <see cref="NewName"/> (the Host validates the name).</summary>
     public async Task SaveAsync()
     {
+        var name = NewName.Trim();
         var svc = _client.Require();
         var scene = await svc.GetSceneAsync().ConfigureAwait(true);
-        await svc.SaveProfileAsync(new ProfileDto(NewName.Trim(), scene)).ConfigureAwait(true);
+        await svc.SaveProfileAsync(new ProfileDto(name, scene)).ConfigureAwait(true);
         await RefreshAsync().ConfigureAwait(true);
     }
 
@@ -126,14 +129,14 @@ public sealed class ProfilesViewModel : ObservableObject
         else Summary = result.Detail;
     }
 
-    private async Task ShowAsync(string name)
+    private async Task ShowAsync(string name, long previewId)
     {
         try
         {
             var p = await _client.Require().LoadProfileAsync(name).ConfigureAwait(true);
             _ui.Post(() =>
             {
-                if (_selected?.Name != name) return;
+                if (_previewId != previewId || _selected?.Name != name) return;
                 SelectedColor = p.Scene.Assignments.SelectMany(a => a.Colors).FirstOrDefault() ?? "#5DDAC8";
                 Details = $"{p.Scene.Assignments.Count} 个灯效编排 · {p.Scene.Assignments.SelectMany(a => a.Targets).Distinct().Count()} 个分区";
                 if (p.Scene.Package is { } package)
@@ -152,7 +155,7 @@ public sealed class ProfilesViewModel : ObservableObject
         catch (Exception ex)
 #pragma warning restore CA1031
         {
-            _ui.Post(() => Summary = ex.Message);
+            _ui.Post(() => { if (_previewId == previewId && _selected?.Name == name) Summary = ex.Message; });
         }
     }
 }

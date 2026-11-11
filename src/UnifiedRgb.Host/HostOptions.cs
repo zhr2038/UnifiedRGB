@@ -35,6 +35,7 @@ public sealed class UnifiedRgbOptions
     public KeyboardDisplayOptions KeyboardDisplay { get; set; } = new();
 
     public KeyboardNativeMenuOptions KeyboardNativeMenu { get; set; } = new();
+    public KeyboardHomeAssistantOptions KeyboardHomeAssistant { get; set; } = new();
 
     /// <summary>
     /// Native ENE DRAM over PawnIO SMBus (NATIVE-3); off by default. Writers additionally need EneDram:PawnIoModuleVerified

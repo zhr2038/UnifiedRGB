@@ -62,7 +62,10 @@ public sealed record FrameSet(string Id, int Frames, double IntervalMs, IReadOnl
 
         for (var i = 0; i < ZoneRgb.Count; i++)
         {
-            if (ZoneLedCounts[i] < 1 || ZoneRgb[i].Length != Frames * ZoneLedCounts[i] * 3)
+            // Widen before multiplying: malformed dimensions can wrap an int product to zero and
+            // make an empty buffer appear valid, only to fail later inside the render loop.
+            var pixels = (long)Frames * ZoneLedCounts[i];
+            if (ZoneLedCounts[i] < 1 || pixels > int.MaxValue / 3 || ZoneRgb[i].Length != pixels * 3)
             {
                 return $"frame set {Id} zone {i} block is {ZoneRgb[i].Length} bytes, not {Frames} × {ZoneLedCounts[i]} × 3";
             }

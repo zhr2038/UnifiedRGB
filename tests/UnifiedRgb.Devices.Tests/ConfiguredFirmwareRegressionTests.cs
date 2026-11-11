@@ -44,7 +44,8 @@ public sealed class ConfiguredFirmwareRegressionTests
             ((Action)(() => configured.RequireFirmwareIdentity(identity, SyntheticWired25))).Should().Throw<InvalidDataException>()
                 .WithMessage("*generation changed*");
             identity[5] = 0x25;
-            ((Action)(() => configured.RequireFirmwareIdentity(identity, RogWiredOledProtocol.LegacyFirmwareHeader))).Should().Throw<InvalidDataException>();
+            ((Action)(() => configured.RequireFirmwareIdentity(identity, RogWiredOledProtocol.LegacyFirmwareHeader))).Should().NotThrow();
+            configured.FirmwareHeader.Should().Be(SyntheticWired25, "an expected label does not replace the configured metadata");
         }
         using var legacy = factory.TryOpen(key);
         legacy!.FirmwareHeader.Should().Be("001200000024000100"); opens.Should().Be(2); devices.SharedOpens.Should().Be(0);
@@ -55,8 +56,8 @@ public sealed class ConfiguredFirmwareRegressionTests
     {
         var legacy = new LegacyFactory(); IRogWiredOledFactory factory = legacy;
         factory.TryOpen("legacy-key", "001200000024000100").Should().BeNull(); legacy.Opens.Should().Be(1);
-        ((Action)(() => factory.TryOpen("legacy-key", SyntheticWired25))).Should().Throw<InvalidOperationException>();
-        legacy.Opens.Should().Be(1);
+        factory.TryOpen("legacy-key", SyntheticWired25).Should().BeNull();
+        legacy.Opens.Should().Be(2, "the diagnostic header does not change a legacy implementation's one-argument route");
     }
 
     [Fact]
@@ -64,7 +65,8 @@ public sealed class ConfiguredFirmwareRegressionTests
     {
         using var io = new NoIo(); using var connection = new RogWiredOledConnection(io, () => true);
         var identity = new byte[65]; Convert.FromHexString(SyntheticWired25).CopyTo(identity, 0);
-        ((Action)(() => connection.RequireFirmwareIdentity(identity, SyntheticWired25))).Should().Throw<InvalidDataException>();
+        ((Action)(() => connection.RequireFirmwareIdentity(identity, SyntheticWired25))).Should().NotThrow();
+        connection.ObservedFirmwareHeader.Should().Be(SyntheticWired25);
         connection.FirmwareHeader.Should().Be("001200000024000100"); io.Commands.Should().Be(0);
     }
 
@@ -72,14 +74,16 @@ public sealed class ConfiguredFirmwareRegressionTests
     [InlineData(null)] [InlineData("")] [InlineData("0012000000250001")] [InlineData("00120000002500010000")]
     [InlineData("001300000025000100")] [InlineData("001200000000000000")] [InlineData("00120000002G000100")]
     [InlineData("0800070025000100")] [InlineData("000000000000000000")] [InlineData("0012000000250001  ")]
-    public void Invalid_or_zero_wired_pins_fail_before_enumeration_or_open(string? header)
+    public void Invalid_or_zero_diagnostic_labels_never_select_another_device_and_use_a_wired_route_label(string? header)
     {
         var devices = new FakeDevices(); var opens = 0;
         var factory = new RogWiredOledFactory(devices, new Resolver(), _ => { opens++; return new NoIo(); });
-        ((Action)(() => factory.TryOpen(new string('A', 64), header!))).Should().Throw<InvalidOperationException>();
-        RogWiredOledProtocol.IsConfiguredFirmwareHeader(header).Should().BeFalse(); devices.Enumerations.Should().Be(0); opens.Should().Be(0);
-        // The public default constructor also rejects these pins before it can reach native enumeration.
-        ((Action)(() => new RogWiredOledFactory().TryOpen(new string('A', 64), header!))).Should().Throw<InvalidOperationException>();
+        factory.TryOpen(new string('A', 64), header!).Should().BeNull("only the exact device key can select the collection");
+        RogWiredOledProtocol.IsConfiguredFirmwareHeader(header).Should().BeFalse(); devices.Enumerations.Should().Be(1); opens.Should().Be(0);
+        using var selected = factory.TryOpen(RogWiredOledProtocol.DeviceKey(devices.Collection), header!);
+        selected.Should().NotBeNull();
+        selected!.FirmwareHeader.Should().Be(RogRuntimeCompatibility.RouteLabel("wired", header));
+        opens.Should().Be(1); devices.SharedOpens.Should().Be(0);
     }
 
     [Theory]
@@ -116,22 +120,22 @@ public sealed class ConfiguredFirmwareRegressionTests
         using var io = new IdentityChannel(identity);
         using var connection = new RogWirelessOledConnection(new(new string('A', 64), 0x1ACE, new Dictionary<byte, HidCollectionInfo>()), io, "0800070025000100", () => true);
         var session = new RogWiredOledSession(connection);
-        await ((Func<Task>)(() => session.SnapshotAsync("0800070025000100", default))).Should().ThrowAsync<InvalidDataException>()
+        await ((Func<Task>)(() => session.SnapshotAsync("0800070025000100", default))).Should().ThrowAsync<RogKeyboardNotReadyException>()
             .WithMessage("*identity*unavailable*");
         io.Writes.Should().Be(1); io.Reads.Should().Be(1); session.Touched.Should().BeFalse();
     }
 
     [Fact]
-    public async Task Genuine_nonzero_keyboard_firmware_mismatch_keeps_the_existing_fail_closed_exception()
+    public async Task A_present_keyboard_with_a_malformed_identity_envelope_is_rejected_before_any_mutation()
     {
-        // Was keyboard patch 0x24 under a .25 anchor; that is the same 01 family and now connects without repinning
-        // (see reports/EXPECTATION-CHANGES.en.md). A genuinely different keyboard family (02) still fails closed.
-        var identity = new byte[65]; identity[1] = 0x12; identity[5] = 8; identity[7] = 7; identity[9] = 6; identity[11] = 6; identity[12] = 0x24; identity[14] = 2;
+        var identity = new byte[65]; identity[1] = 0x12; identity[3] = 1; identity[5] = 8; identity[7] = 7; identity[9] = 6; identity[11] = 6; identity[12] = 0x24; identity[14] = 2;
         using var io = new IdentityChannel(identity);
         using var connection = new RogWirelessOledConnection(new(new string('A', 64), 0x1ACE, new Dictionary<byte, HidCollectionInfo>()), io, "0800070025000100", () => true);
-        await ((Func<Task>)(() => new RogWiredOledSession(connection).SnapshotAsync("0800070025000100", default))).Should().ThrowAsync<InvalidDataException>()
-            .WithMessage("*firmware differs*");
-        io.Writes.Should().Be(1); io.Reads.Should().Be(1);
+        var session = new RogWiredOledSession(connection);
+        var failure = await ((Func<Task>)(() => session.SnapshotAsync("0800070025000100", default)))
+            .Should().ThrowAsync<RogKeyboardStartupNotReadyException>().WithMessage("*operation=identity; no setting was written*");
+        failure.Which.InnerException.Should().BeOfType<RogOledUnexpectedReplyException>();
+        io.Writes.Should().Be(1); io.Reads.Should().Be(1); session.MutationAdmitted.Should().BeFalse();
     }
 
     private sealed class LegacyFactory : IRogWiredOledFactory

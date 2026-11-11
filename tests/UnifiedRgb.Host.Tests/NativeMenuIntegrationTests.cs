@@ -36,6 +36,23 @@ public sealed class NativeMenuServiceIntegrationTests : IAsyncLifetime
 
     private string PreferencePath => Path.Combine(_data, "peripherals", "native-menu.json");
 
+    [Theory]
+    [InlineData((byte)10)] [InlineData((byte)11)]
+    public async Task Non_Guangyu_context_never_arms_service_or_dispatches_case_actions(byte mode)
+    {
+        var rig = await Start();
+        await rig.Menu.SetNativeMenuEnabledAsync(true);
+        rig.Source.Begin(1, 3, 0);
+        (await rig.Menu.GetNativeMenuStatusAsync()).Active.Should().BeTrue();
+        rig.Source.Send(new NativeMenuContextBegun(Session, 2, 3, 0, mode));
+        rig.Source.Press(Intent(2, DesiredAction.Toggle, 1, context: 2));
+        rig.Source.Send(new NativeMenuSceneBrowse(Session, 2, 3, 4, _time.GetUtcNow(), SceneCycleMove.Next, 3));
+        var status = await rig.Menu.GetNativeMenuStatusAsync();
+        status.Active.Should().BeFalse(); status.State.Should().Be("Unavailable");
+        rig.Host.Calls.Should().BeEmpty();
+        rig.Menu.Trace.Should().Contain("press #2 Toggle ignored: not Guangyu page");
+    }
+
     [Fact]
     public async Task Default_composition_has_no_source_starts_off_and_a_request_alone_is_unavailable_and_never_acts()
     {
@@ -199,7 +216,7 @@ public sealed class NativeMenuServiceIntegrationTests : IAsyncLifetime
                 "press #7 EnsureOn ignored: preference off", "preference saved: on", "armed context 1 as 2 after #7 (enabled)");
             loaded.Should().Match<NativeMenuStatusDto>(s => s.State == "Unavailable" && s.DesiredEnabled && s.SourcePresent && !s.Active
                 && s.LastOutcome == null);
-            loaded.Detail.Should().Contain("没有经验证的连接");
+            loaded.Detail.Should().Contain("菜单连接当前未就绪");
             rearmed.State.Should().Be("Active");
             restarted.Menu.Trace.Should().Equal("preference loaded: on", "source connected", "context 1 profile 3 floor 0",
                 "armed context 1 as 1 after #0 (context began)");
@@ -730,7 +747,7 @@ public sealed class NativeMenuPanelIntegrationTests : IDisposable
             attached.Buttons.Should().ContainKey("关闭原生菜单联动").WhoseValue.Enabled.Should().BeTrue();
             attached.Buttons["关闭原生菜单联动"].ToolTip.Should().Contain("只保存本机偏好（默认关闭）").And.Contain("不进入或退出外设配置");
             attached.Buttons["关闭原生菜单联动"].Help.Should().Be(native.Message);
-            attached.Buttons.Should().ContainKeys("全机熄灯", "恢复当前场景", "重连键盘灯光");
+            attached.Buttons.Should().ContainKeys("全机熄灯", "恢复当前场景", "恢复键盘通信");
             attached.Native.Should().Contain([NativeMenuViewModel.Guide, native.StateTitle, native.StatusLine, native.Detail, native.Message]);
             foreach (var text in attached.Native) text.Should().NotContain("已上线").And.NotContain("运行");
             detached.Native.Should().BeEmpty();

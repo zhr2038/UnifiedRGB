@@ -33,7 +33,12 @@ public interface IUsbEnumerator
 /// <summary>SetupAPI enumeration of present device interfaces of one class (read-only).</summary>
 public sealed unsafe class SetupApiEnumerator : IUsbEnumerator
 {
-    public IReadOnlyList<UsbDeviceInfo> Enumerate(Guid interfaceClass)
+    public IReadOnlyList<UsbDeviceInfo> Enumerate(Guid interfaceClass) => EnumerateCore(interfaceClass, false);
+
+    /// <summary>Complete present-interface enumeration; metadata or iteration failures throw instead of resembling absence.</summary>
+    public static IReadOnlyList<UsbDeviceInfo> EnumerateComplete(Guid interfaceClass) => EnumerateCore(interfaceClass, true);
+
+    private static List<UsbDeviceInfo> EnumerateCore(Guid interfaceClass, bool requireComplete)
     {
         var set = WinUsbNative.SetupDiGetClassDevs(interfaceClass, null, IntPtr.Zero, WinUsbNative.DigcfPresent | WinUsbNative.DigcfDeviceInterface);
         if (set == new IntPtr(-1))
@@ -50,12 +55,19 @@ public sealed unsafe class SetupApiEnumerator : IUsbEnumerator
                 var data = new SpDeviceInterfaceData { Size = (uint)sizeof(SpDeviceInterfaceData) };
                 if (!WinUsbNative.SetupDiEnumDeviceInterfaces(set, IntPtr.Zero, interfaceClass, i, ref data))
                 {
+                    var error = Marshal.GetLastPInvokeError();
+                    if (requireComplete && error != 259)
+                        throw new InvalidOperationException($"SetupDiEnumDeviceInterfaces failed before completion ({error})");
                     break; // ERROR_NO_MORE_ITEMS
                 }
 
-                WinUsbNative.SetupDiGetDeviceInterfaceDetail(set, ref data, null, 0, out var required, IntPtr.Zero);
+                var sizeSucceeded = WinUsbNative.SetupDiGetDeviceInterfaceDetail(set, ref data, null, 0, out var required, IntPtr.Zero);
+                var sizeError = Marshal.GetLastPInvokeError();
+                if (requireComplete && (sizeSucceeded || sizeError != 122))
+                    throw new InvalidOperationException($"Device interface detail size query failed ({sizeError})");
                 if (required < 8 || required > 64 * 1024)
                 {
+                    if (requireComplete) throw new InvalidOperationException("Device interface detail size is unavailable or invalid.");
                     continue;
                 }
 
@@ -70,6 +82,7 @@ public sealed unsafe class SetupApiEnumerator : IUsbEnumerator
                     *(uint*)b = 8; // sizeof(SP_DEVICE_INTERFACE_DETAIL_DATA_W) on x64
                     if (!WinUsbNative.SetupDiGetDeviceInterfaceDetail(set, ref data, b, required, out _, IntPtr.Zero))
                     {
+                        if (requireComplete) throw new InvalidOperationException($"SetupDiGetDeviceInterfaceDetail failed ({Marshal.GetLastPInvokeError()})");
                         continue;
                     }
 

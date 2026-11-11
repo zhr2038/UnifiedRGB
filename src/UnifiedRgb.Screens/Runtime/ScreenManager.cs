@@ -120,7 +120,6 @@ public sealed partial class ScreenManager : IScreenService, IScreenSceneBinding,
     private readonly Dictionary<string, ScreenWorker> _retiringWorkers = new(StringComparer.Ordinal);
     private readonly Dictionary<string, WorkerRecovery> _workerRecovery = new(StringComparer.Ordinal);
     private int _mutationWaiters;
-    private ScreenCompositor? _previewCompositor;
     private ScreenSceneDto? _scene;
     private bool _paused;
     private IReadOnlyList<ScreenDeviceInfo> _present = [];
@@ -353,15 +352,16 @@ public sealed partial class ScreenManager : IScreenService, IScreenSceneBinding,
         var rotation = _options.TurzxLandscapeRotation;
         var (png, note) = await _previewThread.Value.InvokeAsync(() =>
         {
-            _previewCompositor ??= new ScreenCompositor(_assets, PreviewCacheBytes);
-            _previewCompositor.ClearCache();
+            // A preview is a single frame. Release decoded rasters and sequence source leases on this
+            // STA before returning, so previewing alone never prevents deletion of an unused asset.
+            using var compositor = new ScreenCompositor(_assets, PreviewCacheBytes);
             var video = encoding.Quality == Encoding.ScreenEncodingPolicies.NativeH264IntraV1 || videoTrial is not null;
             // the worker's own mode rule: a baked preview is the decoded access unit of the canvas WITH its overlay, no PNG layer
             var videoTelemetry = video
                 ? ScreenWorker.TelemetryModeOf(_options, family.Family, shownAssignment, videoTrial, NativeVideoVerified(assignment.ScreenId))
                 : VideoTelemetry.PngLayer;
             var separate = video && family.Family == ScreenFamily.Turzx && videoTelemetry == VideoTelemetry.PngLayer;
-            var composed = _previewCompositor.Compose(family, separate ? shownAssignment with { Overlay = "none", OverlayLayout = null } : shownAssignment, 0, telemetry, now);
+            var composed = compositor.Compose(family, separate ? shownAssignment with { Overlay = "none", OverlayLayout = null } : shownAssignment, 0, telemetry, now);
             if (video)
             {
                 // the worker's own slicing rule too: a trial's own SingleSlice, else TurzxSingleSlice of a verified TURZX
@@ -570,7 +570,6 @@ public sealed partial class ScreenManager : IScreenService, IScreenSceneBinding,
         _sampler.Dispose();
         if (_previewThread.IsValueCreated)
         {
-            await _previewThread.Value.InvokeAsync(() => { _previewCompositor?.Dispose(); _previewCompositor = null; return true; }, CancellationToken.None).ConfigureAwait(false);
             _previewThread.Value.Dispose();
         }
 

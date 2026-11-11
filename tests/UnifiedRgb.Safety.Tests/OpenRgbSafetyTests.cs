@@ -191,13 +191,7 @@ public sealed class OpenRgbSupervisorTests : IDisposable
     [Fact]
     public void Shipped_hash_file_pins_nothing_until_the_owner_records_a_hash()
     {
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "src", "UnifiedRgb.sln")))
-        {
-            dir = dir.Parent;
-        }
-
-        var text = File.ReadAllText(Path.Combine(dir!.FullName, "tools", "openrgb", "SHA256SUMS"));
+        var text = File.ReadAllText(Path.Combine(RepositoryPaths.Root(), "tools", "openrgb", "SHA256SUMS"));
         OpenRgbProcessSupervisor.PinnedHash(text, "OpenRGB.exe").Should().BeNull();
     }
 

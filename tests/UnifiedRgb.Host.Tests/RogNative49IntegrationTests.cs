@@ -12,9 +12,21 @@ namespace UnifiedRgb.Host.Tests;
 
 public sealed partial class RogNativeMenuSourceTests
 {
+    [Fact]
+    public void Native_capability_build_tags_and_optional_flags_are_diagnostic()
+    {
+        using var stream = typeof(RogNativeMenuSourceTests).Assembly.GetManifestResourceStream("Actual25Producer.json")!;
+        using var data = JsonDocument.Parse(stream);
+        var bytes = Convert.FromHexString(data.RootElement.GetProperty("cases")[0].GetProperty("capability65").GetString()!);
+        var before = RogNativeMenuCodec.ParseCapability(bytes, 0x12, 1);
+        Array.Clear(bytes, 29, 4);
+        bytes[14] |= 0x80;
+        RogNativeMenuCodec.ParseCapability(bytes, 0x12, 1).Should().Be(before);
+    }
+
     [Theory]
-    [InlineData("proto1")] [InlineData("build48")] [InlineData("missing32")]
-    [InlineData("unknownflag")] [InlineData("transport")] [InlineData("profile6")]
+    [InlineData("proto1")] [InlineData("magic")] [InlineData("missing32")]
+    [InlineData("capacity")] [InlineData("transport")] [InlineData("profile6")]
     [InlineData("cookie")] [InlineData("sequence")] [InlineData("epoch0")]
     [InlineData("size")] [InlineData("padding")]
     public void Native49_codec_negatives_use_actual_compiled_producer_CAP(string fault)
@@ -28,9 +40,9 @@ public sealed partial class RogNativeMenuSourceTests
         switch (fault)
         {
             case "proto1": bytes[9] = 1; break;
-            case "build48": bytes[29] = 0x48; break;
+            case "magic": bytes[5] = 0; break;
             case "missing32": bytes[14] &= unchecked((byte)~32); break;
-            case "unknownflag": bytes[14] |= 64; break;
+            case "capacity": bytes[36] = 59; break;
             case "transport": bytes[13] = 2; break;
             case "profile6": bytes[12] = 6; break;
             case "cookie": bytes[19] = 1; break;
@@ -62,7 +74,9 @@ public sealed partial class RogNativeMenuSourceTests
             _ => policy with { ConnectionKind = "bluetooth" },
         };
         var unchanged = policy;
-        for (var n = 0; n < 3; n++) new RogNative49PresentationCapability(policy).Evaluate(scope).Should().Be(KeyboardNativePresentationSupport.Unavailable);
+        var expected = fault is "d79" or "dcf" or "contract" or "header24"
+            ? KeyboardNativePresentationSupport.Available : KeyboardNativePresentationSupport.Unavailable;
+        for (var n = 0; n < 3; n++) new RogNative49PresentationCapability(policy).Evaluate(scope).Should().Be(expected);
         policy.Should().BeSameAs(unchanged, "pure evaluation supplies no timestamps, I/O or caller-supplied expected hashes");
     }
 
@@ -157,10 +171,10 @@ public sealed partial class RogNativeMenuSourceTests
 
     [Theory]
     [InlineData(false)] [InlineData(true)]
-    public async Task Native49_only_route_opens25_without_inheriting_legacy24_lighting_or_CAP_fallback(bool legacyVerified)
+    public async Task Native_route_uses_neutral_label_and_only_explicit_verified_lighting_when_CAP_is_unsupported(bool legacyVerified)
     {
         var data = Path.Combine(Path.GetTempPath(), "SolNative49Route-" + Guid.NewGuid().ToString("N"));
-        var time = new SourceClock(); using var input = new Input(time, 1); using var control = new Connection(time, 1) { Input = input, BadBuild = true };
+        var time = new SourceClock(); using var input = new Input(time, 1); using var control = new Connection(time, 1) { Input = input, BadCapability = true };
         var policy = Policy(); var source = new RogNativeMenuSource(policy, input, input, time); source.RequestEnabled(true);
         var factory = new LegacyPageFactory(control, false); var bridge = new RogWiredLightingBridge();
         var legacy = legacyVerified ? new KeyboardDisplayOptions { ControlVerified = true, LightingVerified = true, DeviceKey = control.DeviceKey, FirmwareHeader = "001200000024000100" } : new();
@@ -175,8 +189,10 @@ public sealed partial class RogNativeMenuSourceTests
             await owner.StartAsync(default); await Until(() => control.Writes.Contains("12/7D")); await Task.Delay(100);
             factory.Opens.Should().Be(1); control.Arms.Should().Be(0); control.ImageBegins.Should().Be(0); input.Opens.Should().Be(0);
             wireless.Calls.Should().Be(0);
-            factory.RequestedScopes.Should().ContainSingle().Which.Should().Be(new KeyboardNativePresentationScope(control.DeviceKey, "001200000025000100", "wired"));
-            bridge.Available.Should().BeFalse(); control.Packets.Should().NotContain(p => p[1] == 0x25 || p[1] == 0x51);
+            factory.RequestedScopes.Should().ContainSingle().Which.Should().Be(new KeyboardNativePresentationScope(control.DeviceKey, RogRuntimeCompatibility.NativeFamilyAnchor("wired")!, "wired"));
+            bridge.Available.Should().Be(legacyVerified, "only explicit verification for this same device admits the independent RGB route");
+            control.Packets.Should().NotContain(p => p[1] == 0x51, "unsupported CAP never triggers an RGB write");
+            control.Packets.Any(p => p[1] == 0x25).Should().Be(legacyVerified, "only an admitted RGB owner snapshots its original bank");
             source.OwnsDisplayOutput.Should().BeTrue("failed live CAP does not authorize legacy image output");
             legacy.ControlVerified.Should().Be(legacyVerified); legacy.FirmwareHeader.Should().Be(legacyVerified ? "001200000024000100" : "");
         }
@@ -184,10 +200,10 @@ public sealed partial class RogNativeMenuSourceTests
     }
 
     [Theory]
-    [InlineData("header")] [InlineData("kind")] [InlineData("missing-key")] [InlineData("default-off")]
+    [InlineData("malformed-key")] [InlineData("kind")] [InlineData("missing-key")] [InlineData("default-off")]
     public async Task Native49_invalid_or_default_off_route_never_opens_any_factory(string fault)
     {
-        var policy = fault switch { "header" => Policy() with { FirmwareHeader = "001200000024000100" },
+        var policy = fault switch { "malformed-key" => Policy() with { DeviceKey = new string('G', 64) },
             "kind" => Policy() with { ConnectionKind = "bluetooth" }, "missing-key" => Policy() with { DeviceKey = "" }, _ => new() };
         var data = Path.Combine(Path.GetTempPath(), "SolNative49NoOpen-" + Guid.NewGuid().ToString("N"));
         var source = new RogNativeMenuSource(policy); source.RequestEnabled(true);
@@ -254,7 +270,7 @@ public sealed partial class RogNativeMenuSourceTests
         var time = new SourceClock(); using var input = new Input(time, 1); using var control = new Connection(time, 1) { Input = input };
         var source = new RogNativeMenuSource(Policy(), input, input, time); source.RequestEnabled(false);
         var bytes = JsonSerializer.SerializeToUtf8Bytes(new { Schema = 2, DeviceKey = fault == "device" ? new string('b', 64) : control.DeviceKey,
-            FirmwareHeader = fault == "header" ? "001200000024000100" : control.FirmwareHeader, Brightness = 100, ProfileToken = fault == "profile" ? 1 : 6 });
+            FirmwareHeader = fault == "header" ? "001300000024000100" : control.FirmwareHeader, Brightness = 100, ProfileToken = fault == "profile" ? 1 : 6 });
         File.WriteAllBytes(journal, bytes);
         var rgb = DispatchProxy.Create<IRgbService, KeyboardDisplayServiceTests.ReadProxy>(); var screens = DispatchProxy.Create<IScreenService, KeyboardDisplayServiceTests.ReadProxy>();
         using var owner = new KeyboardDisplayService(new() { DataDirectory = data }, rgb, screens, new LegacyPageFactory(control, false), new MutationClearGuard(), nativeMenu: source);

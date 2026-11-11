@@ -10,6 +10,28 @@ public sealed class SceneCycleRegressionTests
 {
     private static readonly TimeSpan Patience = TimeSpan.FromSeconds(10);
 
+    [Fact]
+    public async Task Page_admission_revoked_after_selection_prevents_final_scene_write_and_stale_explicit_apply()
+    {
+        var rgb = SceneCycleRgbProxy.Create();
+        var state = (SceneCycleRgbProxy)rgb;
+        state.Profiles.Add("A", new("A", Color("#FF0000")));
+        state.Profiles.Add("B", new("B", Color("#0000FF")));
+        state.Scene = state.Profiles["A"].Scene;
+        var admitted = true;
+        using var cycle = Cycle(rgb, SceneCyclePackageProxy.Create(state), [SceneCycleEntry.Profile("A"), SceneCycleEntry.Profile("B")]);
+        await cycle.RefreshAsync();
+        await cycle.MoveAsync(SceneCycleMove.Next, _ => admitted = false, () => admitted, default);
+        await cycle.Settled;
+        state.Applied.Should().BeEmpty("a mode9 selection cannot write after its control admission ended");
+        await cycle.ApplySelectedAsync();
+        state.Applied.Should().BeEmpty("a late center outcome cannot revive a stale page selection");
+        admitted = true;
+        await cycle.MoveAsync(SceneCycleMove.Next, null, () => admitted, default);
+        await cycle.Settled;
+        state.Applied.Should().ContainSingle("a fresh mode9 selection still works");
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -202,6 +224,24 @@ public sealed class SceneCycleRegressionTests
         state.Applied.Should().Equal("B");
         if (unavailable) bridge.Summary.Should().Contain("键盘提示发送延迟");
         else bridge.Trace.Should().Contain(t => t.Contains("transmission completed before scene apply", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Paused_Host_artwork_keeps_scene_control_without_waiting_for_a_caption_ack()
+    {
+        var rgb = SceneCycleRgbProxy.Create();
+        var state = (SceneCycleRgbProxy)rgb;
+        state.Profiles.Add("A", new("A", Color("#FF0000")));
+        state.Profiles.Add("B", new("B", Color("#0000FF")));
+        state.Scene = state.Profiles["A"].Scene;
+        var time = new ManualTimeProvider();
+        await using var bridge = new KeyboardSceneCycleBridge(new() { DataDirectory = EmptyDataDirectory(),
+            KeyboardDisplay = new() { HostArtworkEnabled = false } }, () => rgb,
+            () => SceneCyclePackageProxy.Create(state), new KeyboardSceneCycleOverlay(), time,
+            cycleOptions: new(TimeSpan.Zero));
+        bridge.Browse(SceneCycleMove.Next).Should().BeTrue();
+        await Until(() => state.Applied.Contains("B")); // no fake-clock advance and no transmitted frame
+        bridge.Trace.Should().Contain(t => t.Contains("without waiting", StringComparison.Ordinal));
     }
 
     private static SceneCycleCoordinator Cycle(IRgbService rgb, IScenePackageService packages, SceneCycleEntry[] entries) =>

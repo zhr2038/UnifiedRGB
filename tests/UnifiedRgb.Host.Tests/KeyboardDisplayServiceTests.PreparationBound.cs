@@ -169,7 +169,7 @@ public sealed partial class KeyboardDisplayServiceTests
         await service.StartAsync(default);
         try
         {
-            await WaitAsync(service, "Running");
+            await rig.CompleteEntryAsync(service);
             for (var i = 0; i < 8; i++) await service.SetKeyboardDisplayAnimationAsync(Enable(i % 2 == 0 ? AssetA : AssetB));
             await UntilAsync(() => rig.Media.Prepares >= 1, "first preparation");
             await Task.Delay(300);

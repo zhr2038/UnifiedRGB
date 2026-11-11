@@ -23,16 +23,7 @@ public sealed class PreviewTests
         ("Point", ZoneLayout.Point),
     ];
 
-    internal static string RepoRoot()
-    {
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "src", "UnifiedRgb.sln")))
-        {
-            dir = dir.Parent;
-        }
-
-        return dir?.FullName ?? throw new InvalidOperationException("repo root not found");
-    }
+    internal static string RepoRoot() => RepositoryPaths.Root();
 
     [Fact]
     public void Preview_frames_equal_the_golden_fixtures()

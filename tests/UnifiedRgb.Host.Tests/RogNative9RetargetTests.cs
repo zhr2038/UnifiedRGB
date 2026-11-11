@@ -66,7 +66,7 @@ public sealed partial class RogNativeMenuSourceTests
 
     [Theory]
     [InlineData("old-build")] [InlineData("old-image")] [InlineData("old-contract")]
-    public async Task Old_native5_installation_identity_is_ineligible_before_any_native_IO(string mutation)
+    public async Task Historical_installation_diagnostics_do_not_override_valid_live_native_grammar(string mutation)
     {
         var policy = Policy();
         policy = mutation switch
@@ -78,7 +78,8 @@ public sealed partial class RogNativeMenuSourceTests
         var time = new ManualTimeProvider(); var input = new Input(time, 1); using var io = new Connection(time, 1);
         var source = new RogNativeMenuSource(policy, input, input, time); source.RequestEnabled(true);
         source.IsPresent.Should().BeFalse(); await using var actor = source.Attach(io);
-        (await actor.StepAsync(Pixels, default)).Should().BeFalse();
-        io.Writes.Should().BeEmpty(); input.Opens.Should().Be(0); input.Enumerations.Should().Be(0);
+        (await actor.StepAsync(Pixels, default)).Should().BeTrue();
+        source.IsPresent.Should().BeTrue();
+        io.Writes.Should().Contain("12/7D").And.Contain("71/7D"); input.Opens.Should().Be(1); input.Enumerations.Should().Be(1);
     }
 }

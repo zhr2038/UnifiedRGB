@@ -14,6 +14,7 @@
   </ItemGroup>
   <ItemGroup>
     <EmbeddedResource Include="Fixtures/ScenePackages/generic-region-v2.zip" LogicalName="GenericRegionFixtureV2.zip" />
+    <EmbeddedResource Include="Fixtures/HA-LINKED-VECTORS.json" LogicalName="HA-LINKED-VECTORS.json" />
     <ProjectReference Include="../../src/UnifiedRgb.Host/UnifiedRgb.Host.csproj" />
     <ProjectReference Include="../../src/UnifiedRgb.Contracts/UnifiedRgb.Contracts.csproj" />
     <ProjectReference Include="../../src/UnifiedRgb.Cli/UnifiedRgb.Cli.csproj" />

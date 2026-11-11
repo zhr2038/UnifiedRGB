@@ -49,11 +49,17 @@ public sealed class CenterToggleCoordinatorTests
     }
 
     [Fact]
-    public async Task Center_actual_owner_profile_fixtures_parse_and_classify_as_ordinary_data_without_theme_rules()
+    public async Task Center_saved_profile_fixtures_parse_and_classify_as_ordinary_data_without_theme_rules()
     {
-        var folder = Path.GetFullPath(Path.Combine(PreviewTests.RepoRoot(), "..", "owner-profile-fixtures"));
-        var active = JsonSerializer.Deserialize(File.ReadAllBytes(Path.Combine(folder, "active.json")), ContractsJsonContext.Default.ProfileDto)!;
-        var backup = JsonSerializer.Deserialize(File.ReadAllBytes(Path.Combine(folder, "Before Lights Off.json")), ContractsJsonContext.Default.ProfileDto)!;
+        // Portable schema fixtures, independent of private profiles beside a developer's checkout.
+        const string activeJson = """
+            {"Name":"active","Scene":{"Assignments":[{"Targets":[{"ControllerId":"lianli:1","ZoneId":0}],"EffectId":"StaticColor","Colors":["#000000"],"Brightness":0}]},"SchemaVersion":1}
+            """;
+        const string backupJson = """
+            {"Name":"Before Lights Off","Scene":{"Assignments":[{"Targets":[{"ControllerId":"lianli:1","ZoneId":0}],"EffectId":"StaticColor","Colors":["#FF8000"],"Brightness":1}],"Package":{"ContentId":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","BindingId":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","PlaybackContract":"scene-package-playback-v1"}},"SchemaVersion":1}
+            """;
+        var active = JsonSerializer.Deserialize(activeJson, ContractsJsonContext.Default.ProfileDto)!;
+        var backup = JsonSerializer.Deserialize(backupJson, ContractsJsonContext.Default.ProfileDto)!;
         CaseStatusSummary.IsBlackout(active.Scene).Should().BeTrue(); CaseStatusSummary.IsBlackout(backup.Scene).Should().BeFalse();
         var host = new MenuHostFake(active.Scene); host.Profiles[CasePowerCoordinator.BackupProfileName] = backup;
         using var c = new CasePowerCoordinator(host.Connection.Rgb);

@@ -14,12 +14,13 @@ internal static class PreparedOverlayKit
         NativeWorkerHarness.NewTrial(id, t => t with { PreparedOverlay = true, MeasureQueueAfterOverlay = measure, SimpleOverlayPng = simple });
 
     public static Task<NativeWorkerHarness> StartAsync(NativeVideoTrial trial, OverlayEncoder? encoder, string overlay = "dashboard",
-        Func<ScreenWorkerContext, ScreenWorkerContext>? customize = null, Func<byte, uint, int, byte[]?>? reply = null) =>
+        Func<ScreenWorkerContext, ScreenWorkerContext>? customize = null, Func<byte, uint, int, byte[]?>? reply = null,
+        Func<ScreenAssignmentDto, ScreenAssignmentDto>? initialAssignment = null) =>
         NativeWorkerHarness.StartAsync(trial, overlay, c =>
         {
             if (encoder is not null) c = c with { PrepareOverlayForTest = encoder.Encode };
             return customize is null ? c : customize(c);
-        }, reply);
+        }, reply, initialAssignment);
 
     public static int[] Commands(IEnumerable<byte[]> writes) => [.. writes.Select(p => (int)NativeWorkerHarness.Command(p))];
 
@@ -64,11 +65,45 @@ internal static class PreparedOverlayKit
     /// <summary>Advances one period and waits until that one picture (its access unit AND its overlay step) has completed.</summary>
     public static async Task PictureAsync(NativeWorkerHarness h)
     {
+        // A raw 121 write is visible before its overlay reply, next-due update and performance sample.
+        // Finish that picture before advancing the frozen clock; otherwise its late completion can
+        // satisfy the wait for the NEXT picture and consume the clock advance meant for that picture.
+        var previous = await CompletedSubmittedPicturesAsync(h);
         var data = h.DataWrites;
-        var units = h.Worker.Performance.NativeVideo?.AccessUnits ?? 0;
+        var units = previous.NativeVideo?.AccessUnits ?? 0;
         h.Time.Advance(TimeSpan.FromMilliseconds(NativeWorkerHarness.PeriodMs));
-        await Wait.UntilAsync(() => h.Worker.Performance.NativeVideo is { } v && v.AccessUnits > units, "one more native picture");
+        await Wait.UntilAsync(() =>
+        {
+            var p = h.Worker.Performance;
+            return p.NativeVideo is { } v && v.AccessUnits > units && p.FramesWritten > previous.FramesWritten
+                && (p.SourceSelection?.Submissions ?? 0) > (previous.SourceSelection?.Submissions ?? 0);
+        }, "one more native picture, including its completed performance sample");
         h.DataWrites.Should().Be(data + 1, "a frozen clock admits exactly one picture per period");
+    }
+
+    /// <summary>Completes currently submitted pictures without advancing time or awaiting an intentionally gated preparer.</summary>
+    public static async Task<ScreenPerformanceDto> CompletedSubmittedPicturesAsync(NativeWorkerHarness h)
+    {
+        ScreenPerformanceDto? completed = null;
+        await Wait.UntilAsync(() =>
+        {
+            var submitted = 0;
+            var native = false;
+            foreach (var packet in h.Writes)
+            {
+                var command = NativeWorkerHarness.Command(packet);
+                if (command == 41) native = true; // includes Begin's transparent PNG, never a content picture
+                else if (command is 111 or 123) native = false;
+                // The harness's tiny access units fit one data packet (PictureAsync keeps asserting exactly one).
+                // Count ordinary images too, so a completed image between native sessions cannot mask an in-flight frame.
+                else if (command == TurzxVideoProtocol.DataCommand || command == ScreenProtocol.PushPngCommand && !native) submitted++;
+            }
+            var p = h.Worker.Performance;
+            if (submitted == 0 || p.FramesWritten < submitted || (p.SourceSelection?.Submissions ?? 0) < submitted) return false;
+            completed = p;
+            return true;
+        }, "all currently submitted pictures to finish pacing and performance publication");
+        return completed!;
     }
 
     /// <summary>Waits until the preparer has neither an in-flight nor a pending request (its result, if any, is held).</summary>
@@ -118,6 +153,7 @@ internal sealed class OverlayEncoder : IDisposable
     public int Calls => Volatile.Read(ref _calls);
 
     public ConcurrentQueue<(OverlayPreparationRequest Request, string LayerSha)> Seen { get; } = new();
+    public Action<OverlayPreparationRequest, byte[], string>? Encoded { get; set; }
 
     public OverlayPreparationRequest Last => Seen.Last().Request;
 
@@ -127,7 +163,9 @@ internal sealed class OverlayEncoder : IDisposable
         Interlocked.Increment(ref _calls);
         if (Gated && !_release.Wait(TimeSpan.FromSeconds(30))) throw new TimeoutException("the test never released the encoder");
         if (Fail) throw new InvalidOperationException("fake WIC failure");
-        return ScreenWorker.PrepareOverlayPng(request.Layer, request.Assignment, request.InternalRotation, request.SimplePng);
+        var result = ScreenWorker.PrepareOverlayPng(request.Layer, request.Assignment, request.InternalRotation, request.SimplePng);
+        Encoded?.Invoke(request, result.Bytes, result.Note);
+        return result;
     }
 
     public Task WaitCallsAsync(int count) => Wait.UntilAsync(() => Calls >= count, $"{count} encoder call(s)");

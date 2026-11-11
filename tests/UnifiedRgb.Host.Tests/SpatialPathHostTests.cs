@@ -202,18 +202,7 @@ public sealed class SpatialPathHostTests
         }
     }
 
-    private static string RepoRoot()
-    {
-        for (var d = new DirectoryInfo(AppContext.BaseDirectory); d is not null; d = d.Parent)
-        {
-            if (File.Exists(Path.Combine(d.FullName, "src", "UnifiedRgb.sln")))
-            {
-                return d.FullName;
-            }
-        }
-
-        throw new DirectoryNotFoundException("repository root");
-    }
+    private static string RepoRoot() => RepositoryPaths.Root();
 
     [Fact]
     public async Task Taking_a_zone_into_another_assignment_unbinds_it_and_drops_its_empty_stage()

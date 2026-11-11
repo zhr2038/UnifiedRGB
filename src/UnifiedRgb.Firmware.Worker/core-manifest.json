@@ -1,0 +1,27 @@
+{
+  "Schema": 1,
+  "Classification": "UNIFIEDRGB_REUSED_R6_CORE_SOURCES_V1",
+  "BinaryIdenticalToHistoricalWriter": false,
+  "AdmissionAdapter": "FunctionalImageAdmission.cs; one immutable reviewed release per process; no old Root approvals",
+  "Sources": {
+    "Core/AppTransaction.cs": "5f51d568c71474927a42b4437e22b22939b6ad64e569609a25887daeb0d51d20",
+    "Core/BootWriteWire.cs": "819c8ad161e3e74c4df5f684acc59f40aaed83d7953da58544d7d48e0d649444",
+    "Core/LedgerState.cs": "779bf10eeeb705c209adc05070c1218149a990a5679a5691709fbe64ac4faabe",
+    "Core/WriterBudget.cs": "12c9f7c84a5381d24e563efdd073478001b77c7035ac3631799325749667b555",
+    "Core/r4/NativeIo.cs": "c28eb1551abde86bf4860f49f73822ec7bb08db9f7c54cec0255379605965982",
+    "Core/r4/Pin.cs": "48681a1e726cae4cf4808598fad4820fa3d4a89e38edf3a067339e62e73a9e41",
+    "Core/r4/Inventory.cs": "20aa74073dc23d1afe74501ba0e63be3187c5d9501307fc37feb777a96d93bdd",
+    "Core/r4/Protocol.cs": "5b010b646259b3085b5e6609b982ac7c2e72414f161e3333d935b18bace384a0"
+  },
+  "OriginSources": {
+    "AppTransaction.cs": "5f51d568c71474927a42b4437e22b22939b6ad64e569609a25887daeb0d51d20",
+    "BootWriteWire.cs": "819c8ad161e3e74c4df5f684acc59f40aaed83d7953da58544d7d48e0d649444",
+    "LedgerState.cs": "779bf10eeeb705c209adc05070c1218149a990a5679a5691709fbe64ac4faabe",
+    "WriterBudget.cs": "12c9f7c84a5381d24e563efdd073478001b77c7035ac3631799325749667b555",
+    "r4/NativeIo.cs": "c28eb1551abde86bf4860f49f73822ec7bb08db9f7c54cec0255379605965982",
+    "r4/Pin.cs": "48681a1e726cae4cf4808598fad4820fa3d4a89e38edf3a067339e62e73a9e41",
+    "r4/Inventory.cs": "20aa74073dc23d1afe74501ba0e63be3187c5d9501307fc37feb777a96d93bdd",
+    "r4/Protocol.cs": "5b010b646259b3085b5e6609b982ac7c2e72414f161e3333d935b18bace384a0"
+  },
+  "TestFakeSha256": "3e688760acc1b6d052534c64003b55495d4e3a197111194b2b3491d2b947e126"
+}

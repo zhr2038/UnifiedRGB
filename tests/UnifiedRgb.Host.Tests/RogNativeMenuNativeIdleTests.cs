@@ -192,7 +192,7 @@ public sealed partial class RogNativeMenuSourceTests
     public async Task NativeIdle_owner_host_logo_then_device_idle_disarms_restores_and_rearms_without_host_artwork()
     {
         await using var rig = new PresentationRig(new DeclaredPresentation(KeyboardNativePresentationSupport.Available),
-            mode: RogNativeMenuCodec.NativeMode, animation: false);
+            mode: RogNativeMenuCodec.NativeMode, animation: false, blackout: true);
         await rig.Owner.StartAsync(default);
         await Until(() => rig.Control.ImageBegins == 1 && rig.Shows(rig.Logo));
         await rig.NextTick();
@@ -206,9 +206,9 @@ public sealed partial class RogNativeMenuSourceTests
         rig.Control.RejectedImages.Should().Be(0); rig.Source!.IsPresent.Should().BeTrue();
         rig.Events.OfType<NativeMenuContextBegun>().Should().HaveCount(2);
         rig.Timeline.Reads.Should().Be(0);
-        (await rig.Owner.GetKeyboardDisplayStatusAsync()).Detail.Should().Contain("待机：键盘动画偏好为关，请求键盘自带原动画")
+        (await rig.Owner.GetKeyboardDisplayStatusAsync()).Detail.Should().Contain("待机：机箱已熄灯，请求键盘原厂动画")
             .And.Contain("主机不能确认其已重新加载或可见").And.NotContain("原动画已恢复");
-        (await rig.Owner.GetKeyboardDisplayAnimationAsync()).Detail.Should().StartWith("自定义键盘动画未开启");
+        (await rig.Owner.GetKeyboardDisplayAnimationAsync()).Detail.Should().Contain("键盘动画未开启");
 
         // The display seam alone (as the native-menu owner calls it) pops up the status in the live context, then re-arms.
         rig.Owner.NativeInteractionBegan(awaitsCompletion: true);
@@ -228,7 +228,7 @@ public sealed partial class RogNativeMenuSourceTests
         await using var rig = new NativeIdleMenuRig(sceneCycle: false);
         await rig.StartAsync();
         await rig.NextTick(); await rig.NextTick();
-        rig.Control.ImageBegins.Should().Be(0, "device Logo and device idle: control is armed without any Host upload");
+        rig.Control.ImageBegins.Should().Be(1, "the case is ON with no scene artwork: its status card is the current native idle");
         rig.Source.IsPresent.Should().BeTrue();
         var restores = rig.Control.NativeRestores;
 
@@ -279,7 +279,7 @@ public sealed partial class RogNativeMenuSourceTests
         public Input Input { get; }
         public Connection Control { get; }
         public RogNativeMenuSource Source { get; }
-        public MenuHostFake Host { get; } = new(new([new([new("lianli:1", 0), new("lianli:1", 1)], "Rainbow", ["#FF0000", "#00FF00"])]));
+        public MenuHostFake Host { get; }
         public KeyboardSceneCycleOverlay Overlay { get; } = new();
         public KeyboardSceneCycleBridge? Scenes { get; }
         public KeyboardDisplayService Owner { get; }
@@ -287,6 +287,9 @@ public sealed partial class RogNativeMenuSourceTests
 
         public NativeIdleMenuRig(bool sceneCycle)
         {
+            Host = new(sceneCycle
+                ? new([new([new("lianli:1", 0), new("lianli:1", 1)], "StaticColor", ["#000000"], Brightness: 0)])
+                : new([new([new("lianli:1", 0), new("lianli:1", 1)], "Rainbow", ["#FF0000", "#00FF00"])]));
             Directory.CreateDirectory(Path.Combine(Data, "peripherals"));
             Input = new(Time, 1);
             Control = new(Time, 1) { Input = Input, Mode = RogNativeMenuCodec.NativeMode };

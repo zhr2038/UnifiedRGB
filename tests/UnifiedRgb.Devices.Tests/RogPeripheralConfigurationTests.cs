@@ -49,13 +49,14 @@ public sealed class RogPeripheralConfigurationTests
         var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var unblock = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var hid = new RogPeripheralTests.FakeDevices { ReadStarted = started, ReadRelease = unblock };
-        var adapter = new RogAdapter(hid, MouseOptions(hid));
+        // This verifies lifecycle ordering with an explicitly gated read, not a command-timeout threshold. Leave room for
+        // scheduler delay under a full parallel suite; timeout behavior has its own bounded-restoration test below.
+        var adapter = new RogAdapter(hid, MouseOptions(hid) with { HidTimeoutMs = 2000 });
         var mouse = (await adapter.DiscoverAsync(default)).Single(d => d.DeviceType == DeviceType.Mouse);
         var opening = adapter.OpenAsync(mouse.Id, default);
         await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
         var releasing = adapter.ReleaseForConfigurationAsync(default);
         adapter.ReleaseForConfigurationAsync(default).Should().BeSameAs(releasing);
-        await Task.Delay(30);
         releasing.IsCompleted.Should().BeFalse();
         hid.Disposes.Should().Be(0);
         unblock.SetResult();

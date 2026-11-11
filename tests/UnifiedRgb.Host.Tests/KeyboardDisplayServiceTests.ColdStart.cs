@@ -148,15 +148,14 @@ public sealed partial class KeyboardDisplayServiceTests
         File.Exists(journal).Should().BeFalse();
     }
 
-    // A receiver whose firmware differs from the configured pin (e.g. after an owner-side update) is a deliberate version gate,
-    // not a lifecycle fault: neither explicit lifecycle action adopts the new header, replays the journal or attaches lighting.
+    // A valid live identity on another profile must keep the saved journal intact even after an explicit retry or handoff.
     [Theory]
     [InlineData("reassert-disabled")]
     [InlineData("peripheral-handoff")]
-    public async Task Rf_cold_start_with_changed_firmware_is_a_deliberate_version_rejection_that_no_lifecycle_recovery_bypasses(string recovery)
+    public async Task Rf_cold_start_with_a_different_profile_rejects_recovery_even_after_an_explicit_retry(string recovery)
     {
         var (journal, journalBytes) = WriteRfJournal();
-        var wireless = new WirelessFactory { BadFirmwareEveryOpen = true };
+        var wireless = new WirelessFactory { Prepare = (_, io) => io.ProfileToken = 5 };
         await using var rig = new RfRig(_directory, wireless, guardRescanSeconds: 1);
         rig.SaveStartupScene("#FF0000");
         await rig.StartEngineAsync();
@@ -164,8 +163,8 @@ public sealed partial class KeyboardDisplayServiceTests
 
         await WaitAsync(rig.Keyboard, "Error");
         var rejected = await rig.Keyboard.GetKeyboardDisplayStatusAsync();
-        _output?.WriteLine($"version gate: {rejected}");
-        rejected.Enabled.Should().BeFalse(); rejected.LastError.Should().NotBeNullOrEmpty();
+        _output?.WriteLine($"profile gate: {rejected}");
+        rejected.Enabled.Should().BeFalse(); rejected.LastError.Should().Contain("different keyboard profile");
         if (recovery == "reassert-disabled")
         {
             await rig.Keyboard.SetKeyboardDisplayEnabledAsync(false);

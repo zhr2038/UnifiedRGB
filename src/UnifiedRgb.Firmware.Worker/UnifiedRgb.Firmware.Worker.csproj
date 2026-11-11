@@ -1,0 +1,8 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType><AssemblyName>UnifiedRgb.Firmware.Worker</AssemblyName></PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../UnifiedRgb.Firmware/UnifiedRgb.Firmware.csproj" />
+    <ProjectReference Include="../UnifiedRgb.Devices.AsusRog/UnifiedRgb.Devices.AsusRog.csproj" />
+    <Content Include="core-manifest.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

@@ -24,38 +24,31 @@ public partial class ForbiddenIdentifierScanTests
     [GeneratedRegex("FwErase|FwUpload|FwVerify|FwReboot|UpdatePre|UpdateData|UpdateAio|UpdateFW|FWRescue")]
     private static partial Regex Forbidden();
 
-    internal static string RepoRoot()
-    {
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "src", "UnifiedRgb.sln")))
-        {
-            dir = dir.Parent;
-        }
-
-        return dir?.FullName ?? throw new InvalidOperationException("repo root not found");
-    }
+    internal static string RepoRoot() => RepositoryPaths.Root();
 
     /// <summary>
     /// Output folders of the build under test: with an isolated <c>--artifacts-path</c> build (this assembly under
-    /// <c>&lt;root&gt;/&lt;artifacts&gt;/bin/&lt;project&gt;/&lt;config&gt;/</c>) the product projects of that same build; otherwise
-    /// <c>src/*/bin</c>. So a new product assembly is scanned in the build that produced it, not a stale src output.
+    /// <c>&lt;artifacts&gt;/bin/&lt;project&gt;/&lt;config&gt;/</c>) the product projects of that same build, including an artifacts
+    /// directory outside the checkout. Default outputs likewise select only this test's configuration and target framework.
     /// </summary>
     internal static IReadOnlyList<string> ProductBinFolders()
     {
         var root = RepoRoot();
-        var bin = new DirectoryInfo(AppContext.BaseDirectory).Parent?.Parent;
-        if (bin is { Name: "bin" } && bin.Parent?.Parent is { } top
-            && string.Equals(top.FullName.TrimEnd(Path.DirectorySeparatorChar), root.TrimEnd(Path.DirectorySeparatorChar), StringComparison.OrdinalIgnoreCase))
+        var output = new DirectoryInfo(AppContext.BaseDirectory);
+        var projects = Directory.EnumerateDirectories(Path.Combine(root, "src"))
+            .Where(d => Directory.EnumerateFiles(d, "*.csproj").Any()).ToArray();
+        if (output.Parent is { Name: "UnifiedRgb.Safety.Tests", Parent.Name: "bin" } testProject)
         {
-            return Directory.EnumerateDirectories(bin.FullName)
-                .Where(d => Path.GetFileName(d).StartsWith("UnifiedRgb.", StringComparison.Ordinal) && !Path.GetFileName(d).Contains(".Tests", StringComparison.Ordinal))
+            return projects.Select(project => Path.Combine(testProject.Parent.FullName, Path.GetFileName(project), output.Name))
+                .Where(Directory.Exists)
                 .ToList();
         }
 
-        return Directory.EnumerateDirectories(Path.Combine(root, "src"))
-            .Select(d => Path.Combine(d, "bin"))
-            .Where(Directory.Exists)
-            .ToList();
+        if (output.Parent is { Parent.Name: "bin", Parent.Parent.Name: "UnifiedRgb.Safety.Tests" } configuration)
+            return projects.Select(project => Path.Combine(project, "bin", configuration.Name, output.Name))
+                .Where(Directory.Exists).ToList();
+
+        throw new DirectoryNotFoundException("Cannot identify the current Safety build output layout; stale outputs are not a fallback.");
     }
 
     private static List<string> ProductAssemblies()

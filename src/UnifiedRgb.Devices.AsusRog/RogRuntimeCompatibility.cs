@@ -10,7 +10,7 @@ namespace UnifiedRgb.Devices.AsusRog;
 public static class RogRuntimeCompatibility
 {
     /// <summary>Capability flag bits this grammar defines; other bits are optional and ignored.</summary>
-    public const byte KnownCapabilityFlags = 63;
+    public const byte KnownCapabilityFlags = 127;
     private static readonly byte[] IdentityPrefix = [0, 0x12, 0, 0, 0];
     private const string WiredLabelPrefix = "0012000000";
 

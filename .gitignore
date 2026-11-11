@@ -27,6 +27,8 @@
 !/design/MANAGED-RF-CODEC-20261020.zh-CN.md
 !/design/SCREEN-PILOT-VALIDATION.zh-CN.md
 !/design/UI-V3-NATIVE-WORKBENCH-20261022.md
+!/design/KEYBOARD-FIRMWARE-DEVELOPMENT.zh-CN.md
+!/design/FUNCTIONAL-AUDIT-20261102.zh-CN.md
 /docs/*
 !/docs/ui/
 /docs/ui/*
@@ -47,6 +49,13 @@
 !/tools/branding/
 !/tools/installation/
 !/tools/codegen/
+!/tools/firmware/
+/tools/firmware/*
+!/tools/firmware/integration/
+/tools/firmware/integration/*
+!/tools/firmware/integration/FirmwareWorker.Packaging.targets
+!/tools/firmware/firmware-installed.defaults.json
+!/tools/firmware/AUTOMATIC-ENTRY.zh-CN.md
 /tools/codegen/*
 !/tools/codegen/gen_effects.py
 !/tools/codegen/README.md

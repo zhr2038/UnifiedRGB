@@ -240,16 +240,7 @@ public sealed class EneHostTests
         bus.Sent.Should().BeEmpty("Host stop sends nothing more (hold-black defers; daytime already sent direct off)");
     }
 
-    private static string RepoRoot()
-    {
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "src", "UnifiedRgb.sln")))
-        {
-            dir = dir.Parent;
-        }
-
-        return dir?.FullName ?? throw new DirectoryNotFoundException("repository root (src/UnifiedRgb.sln) not found");
-    }
+    private static string RepoRoot() => RepositoryPaths.Root();
 
     /// <summary>One AUMA0-E6K5-0104 module with 8 LEDs at 0x70 on port 0; every other address NACKs. Records what is sent.</summary>
     private sealed class ScriptedEneBus : IPawnIoPort

@@ -356,6 +356,8 @@ public sealed class RogReceiverSession : IAsyncDisposable
         var channel = Channel(request[0]);
         using var bound = CancellationTokenSource.CreateLinkedTokenSource(ct);
         bound.CancelAfter(_timeoutMs);
+        var receivedReports = 0;
+        string? lastHeader = null;
         try
         {
             await channel.SendAsync(request, bound.Token).ConfigureAwait(false);
@@ -365,6 +367,8 @@ public sealed class RogReceiverSession : IAsyncDisposable
             for (var received = 0; received < maximumReports; received++)
             {
                 var length = await channel.ReadAsync(reply, bound.Token).ConfigureAwait(false);
+                receivedReports++;
+                lastHeader = Convert.ToHexString(reply.AsSpan(0, Math.Min(3, Math.Max(0, length))));
                 if (length != reply.Length) throw new InvalidDataException("ROG returned a short vendor report.");
                 if (rejectStatus && RogLeverProtocol.IsRefusal(reply, request[0]))
                     throw new InvalidDataException("The lever getter returned FFAA without a valid echo; no retry.");
@@ -376,7 +380,7 @@ public sealed class RogReceiverSession : IAsyncDisposable
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
-            throw new TimeoutException("ROG command echo deadline expired; no command was resent.");
+            throw new TimeoutException($"ROG command echo deadline expired; request={Convert.ToHexString(request.AsSpan(0, 3))}; received={receivedReports}; lastHeader={lastHeader ?? "none"}; no command was resent.");
         }
     }
 

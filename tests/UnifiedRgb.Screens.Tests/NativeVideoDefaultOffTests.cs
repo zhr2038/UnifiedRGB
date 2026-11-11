@@ -1,21 +1,23 @@
+using System.Buffers.Binary;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using UnifiedRgb.Contracts;
 using UnifiedRgb.Contracts.Dto;
+using UnifiedRgb.Screens.Encoding;
 using UnifiedRgb.Screens.Protocol;
 
 namespace UnifiedRgb.Screens.Tests;
 
 /// <summary>
 /// Default-off compatibility, pinned against the pre-S1b build: the exact JSON of the default trial request/result and native facts,
-/// and a deterministic frozen-clock TURZX native transcript (commands, stamp-free headers, payload bytes, selected source indices and
-/// counters). Set S1B_CAPTURE_DIR to also write the captured text for review.
+/// and a frozen-clock TURZX native transcript with fixed wire parameters, source selections and counters. Encoded media bytes are
+/// compared on the same platform: Windows' H.264/WIC encoders and Segoe UI rasterization are not a cross-OS byte contract.
+/// Set S1B_CAPTURE_DIR to also write the complete media/header hashes for review.
 /// </summary>
 public sealed class NativeVideoDefaultOffTests
 {
     private const string ExpectedJsonSha = "D1A8680AA8AD19167952AF6192CA82F4661BB40B5F9C3E7855FADC7646D7355F";
-    private const string ExpectedTranscriptSha = "4C8C54D3E0275152AE763FFC3AE099DF56AE10BF30DD1B37EF72178379313AE3";
 
     [Fact]
     public void Default_trial_and_native_fact_JSON_is_byte_identical_to_the_pre_S1b_contract()
@@ -53,7 +55,7 @@ public sealed class NativeVideoDefaultOffTests
     {
         var text = await TranscriptAsync(null);
         Capture("default-wire-transcript.txt", text);
-        Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(text))).Should().Be(ExpectedTranscriptSha);
+        text.Split('\n').Count(line => line.StartsWith("# ", StringComparison.Ordinal)).Should().Be(17);
     }
 
     /// <summary>
@@ -64,15 +66,19 @@ public sealed class NativeVideoDefaultOffTests
     internal static async Task<string> TranscriptAsync(Func<NativeVideoTrialDto, NativeVideoTrialDto>? flags,
         Func<UnifiedRgb.Screens.Runtime.ScreenWorkerContext, UnifiedRgb.Screens.Runtime.ScreenWorkerContext>? customize = null)
     {
-        using var h = await NativeWorkerHarness.StartAsync(NativeWorkerHarness.NewTrial("wire", flags), customize: customize);
+        var trial = NativeWorkerHarness.NewTrial("wire", flags);
+        using var h = await NativeWorkerHarness.StartAsync(trial, customize: customize);
         var text = new StringBuilder();
         var written = 0;
         async Task StepAsync(string name, int expectedPictures)
         {
             var p = await CompletedPictureAsync(() => h.Worker.Performance, expectedPictures);
             var writes = h.Writes;
+            var stepWrites = writes.Skip(written).ToArray();
+            foreach (var packet in stepWrites) AssertWirePacket(packet);
+            if (!trial.Info.BakeTelemetry) AssertDefaultStep(expectedPictures, p, stepWrites);
             text.Append("# ").Append(name).Append('\n');
-            foreach (var packet in writes.Skip(written)) text.Append(NativeWorkerHarness.Line(packet)).Append('\n');
+            foreach (var packet in stepWrites) text.Append(NativeWorkerHarness.Line(packet)).Append('\n');
             written = writes.Length;
             var v = p.NativeVideo;
             text.Append("facts ").Append(v is null ? "null" : $"{v.AccessUnits} {v.OverlayWrites} {v.DeviceBufferStatus} {v.SourcePositionMs} {v.SourceFrameIndex} {v.SourceClock} {v.LoopWraps} {v.EncodingNote} | {v.OverlayEncodingNote}")
@@ -115,6 +121,78 @@ public sealed class NativeVideoDefaultOffTests
             && NativeWorkerHarness.Command(all[before + 3]) == ScreenProtocol.PushPngCommand, "stop controls, then the normal image path");
         await StepAsync("trial ended", 17);
         return text.ToString();
+    }
+
+    private static void AssertWirePacket(byte[] packet)
+    {
+        var header = ScreenProtocol.DecryptHeader(ScreenFamily.Turzx, packet.AsSpan(0, 512));
+        var command = header[0];
+        command.Should().BeOneOf((byte)111, (byte)112, (byte)41, (byte)15, (byte)121, (byte)102, (byte)123, (byte)114);
+        var expected = new byte[500];
+        expected[0] = command; expected[2] = 0x1A; expected[3] = 0x6D;
+        header.AsSpan(4, 4).CopyTo(expected.AsSpan(4)); // session stamps are checked for uniqueness/order separately
+        if (command is 121 or 102)
+        {
+            var size = packet.Length - 512;
+            size.Should().BeGreaterThan(0);
+            BinaryPrimitives.WriteInt32BigEndian(expected.AsSpan(8), size);
+            if (command == 121)
+            {
+                size.Should().BeLessThanOrEqualTo(202752, "one complete fixture access unit fits the unchanged native chunk budget");
+                var kinds = H264AnnexB.Types(packet.AsSpan(512));
+                kinds.Should().Contain(7).And.Contain(8).And.Contain(5);
+                kinds.Should().NotContain(t => t >= 1 && t <= 4, "every source picture remains independently decodable IDR");
+            }
+            else
+            {
+                ScreenProtocol.IsPng(packet.AsSpan(512)).Should().BeTrue();
+                BinaryPrimitives.ReadInt32BigEndian(packet.AsSpan(528)).Should().Be(480, "native TURZX width");
+                BinaryPrimitives.ReadInt32BigEndian(packet.AsSpan(532)).Should().Be(1920, "native TURZX height");
+            }
+        }
+        else
+        {
+            packet.Should().HaveCount(512, "controls have no image payload");
+            if (command == 15) expected[8] = 60; // host-selected pictures, unchanged consume-available cadence
+        }
+        header.Should().Equal(expected, "all wire fields except the independently checked stamp have a platform-independent contract");
+    }
+
+    private static void AssertDefaultStep(int picture, ScreenPerformanceDto performance, byte[][] writes)
+    {
+        byte[] commands = picture switch
+        {
+            1 => [111, 112, 41, 102, 15, 121, 102],
+            4 or 7 or 11 or 13 or 14 or 15 => [121, 102],
+            17 => [123, 111, 114, 102],
+            _ => [121],
+        };
+        writes.Select(NativeWorkerHarness.Command).Should().Equal(commands, "picture {0}: controls, data and overlay order", picture);
+        performance.FramesWritten.Should().Be(picture);
+        performance.Samples.Should().Be(picture);
+        performance.Dropped.Should().Be(0);
+        if (picture == 17)
+        {
+            performance.NativeVideo.Should().BeNull();
+            performance.TrialId.Should().BeNull();
+            return;
+        }
+
+        int[] overlays = [2, 2, 2, 3, 3, 3, 4, 4, 4, 4, 5, 5, 6, 7, 8, 8];
+        var facts = performance.NativeVideo!;
+        var position = picture <= 10 ? (picture - 1) * 100 : (picture - 11) % 2 * 100;
+        var sourceIndex = picture <= 10 ? (picture - 1) % 4 : (picture - 11) % 2;
+        var generation = picture <= 10 ? 1 : 2 + (picture - 11) / 2;
+        (facts.AccessUnits, facts.OverlayWrites, facts.DeviceBufferStatus, facts.SourcePositionMs, facts.SourceFrameIndex, facts.SourceClock, facts.LoopWraps)
+            .Should().Be(((long)picture, (long)overlays[picture - 1], 0, (long)position, sourceIndex, "local-epoch", 0L));
+        performance.TrialId.Should().Be("wire");
+        var slices = H264AnnexB.Types(writes.Single(p => NativeWorkerHarness.Command(p) == 121).AsSpan(512)).Count(t => t == 5);
+        facts.EncodingNote.Should().Be($"H.264 all-IDR Baseline Q95, {slices} slices; host/shared-clock-selected picture; live PNG overlay");
+        facts.OverlayEncodingNote.Should().Be(picture is 11 or 12 ? null : "RGBA8 WIC PNG");
+        performance.SourceFrames.Should().HaveCount(picture);
+        var source = performance.SourceFrames![^1];
+        (source.Sequence, source.Generation, source.Selection, source.SourceIndex, source.SourcePositionMs, source.CacheHit)
+            .Should().Be(((long)picture, (long)generation, picture is 1 or 11 or 13 or 15 ? "start" : "advance", sourceIndex, (long)position, picture is >= 5 and <= 10));
     }
 
     private static async Task<ScreenPerformanceDto> CompletedPictureAsync(Func<ScreenPerformanceDto> snapshot, int expectedPictures)

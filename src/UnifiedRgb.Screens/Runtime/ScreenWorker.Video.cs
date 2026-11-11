@@ -12,7 +12,7 @@ internal sealed partial class ScreenWorker
     private MfH264IntraEncoder? _videoEncoder;
     private (bool SingleSlice, int Quality)? _videoEncoderVariant;
     private INativeVideoSession? _videoSession;
-    private readonly OverlayRenderer _videoOverlay = new();
+    private readonly OverlayRenderer _videoOverlay;
     private PixelFrame? _lastVideoOverlay;
     private ScreenAssignmentDto? _lastVideoOverlayAssignment;
     private byte[]? _transparentVideoLayer;
