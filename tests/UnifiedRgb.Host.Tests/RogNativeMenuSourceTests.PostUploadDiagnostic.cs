@@ -64,10 +64,7 @@ public sealed partial class RogNativeMenuSourceTests
         actor.RecoveryBlocked.Should().Be(!transportTimeout);
         actor.Armed.Should().BeFalse(); source.IsPresent.Should().BeFalse();
         var writes = rig.Io.Packets.Count;
-        if (transportTimeout)
-            (await step()).Should().BeFalse("the old owner cannot send anything after an ephemeral failure");
-        else
-            await step.Should().ThrowAsync<IOException>();
+        await step.Should().ThrowAsync<IOException>("the old owner cannot send anything after the failure");
         rig.Io.Packets.Should().HaveCount(writes);
     }
 

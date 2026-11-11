@@ -596,15 +596,8 @@ public sealed partial class RogNativeMenuSourceTests
                         }
                         return Task.FromResult(changed);
                     case (0x67, 2):
-                        if (Mode == 10 && (!ImageScopeMatches || !_imageReady || _imageReceiving || _remainingChunks != 0))
-                            throw new InvalidDataException("Codex renewal before same-scope full6656B READY");
-                        if (FailStage == "renew") throw new IOException("Injected unknown renewal outcome.");
                         if (FailStage == "renew-ack") { b[5] = 1; break; }
-                        if (_frameAwaitingRenewal && _image.Count == 6656)
-                        {
-                            Volatile.Write(ref _lastCommittedImage, _image.ToArray());
-                            ImageCommits++; _frameAwaitingRenewal = false;
-                        }
+                        AcceptRenewal();
                         break;
                     case (0x67, 0):
                         ImageBegins++; if (FailStage == "begin") throw new IOException("Injected unknown BEGIN outcome.");
@@ -654,6 +647,18 @@ public sealed partial class RogNativeMenuSourceTests
             if (BadCapability) p[9] = 0;
             BinaryPrimitives.WriteUInt16LittleEndian(p.AsSpan(33), 208); p[35] = 64; p[36] = (byte)PixelPayloadCapacity; p[37] = 3; return p;
         }
+        private void AcceptRenewal()
+        {
+            if (FailStage == "renew") throw new IOException("Injected unknown renewal outcome.");
+            if (Mode == 10 && (!ImageScopeMatches || !_imageReady || _imageReceiving || _remainingChunks != 0))
+                throw new InvalidDataException("Codex renewal before same-scope full6656B READY");
+            if (!_frameAwaitingRenewal || _image.Count != 6656) return;
+
+            Volatile.Write(ref _lastCommittedImage, _image.ToArray());
+            ImageCommits++;
+            _frameAwaitingRenewal = false;
+        }
+
         public async Task LeaseAsync(Func<bool> changed, Action renewed, CancellationToken ct)
         {
             PendingLeaseReaders++;
@@ -662,8 +667,8 @@ public sealed partial class RogNativeMenuSourceTests
                 for (var n = 0; n < 20 && !changed(); n++)
                 {
                     ct.ThrowIfCancellationRequested();
-                    if (_frameAwaitingRenewal)
-                        RogWiredOledProtocol.RequireRenewalReply(await ExchangeAsync(RogWiredOledProtocol.Renew(), true, ct));
+                    if (FailStage == "renew-ack") throw new InvalidDataException("Injected invalid optional renewal reply.");
+                    if (_frameAwaitingRenewal) AcceptRenewal();
                     renewed();
                     if (changed()) break;
                     await Task.Delay(10, ct);

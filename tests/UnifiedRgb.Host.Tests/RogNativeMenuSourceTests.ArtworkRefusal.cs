@@ -58,24 +58,51 @@ public sealed partial class RogNativeMenuSourceTests
         await Until(() => rig.Events.OfType<NativeMenuPress>().Count() == 1);
     }
 
-    [Fact]
-    public async Task ArtworkRefusal_unknown_nonimage_faults_failed_join_and_changed_profile_remain_terminal()
+    [Theory]
+    [InlineData("arm")] [InlineData("brightness")] [InlineData("software")]
+    [InlineData("join")] [InlineData("profile")] [InlineData("malformed")]
+    public async Task ArtworkRefusal_unknown_nonimage_faults_failed_join_and_changed_profile_remain_terminal(string operation)
     {
-        foreach (var operation in new[] { "cap", "arm", "brightness", "software", "join", "profile", "malformed", "replacement-cap" })
+        await using var rig = new ArtworkRefusalRig(operation);
+        if (operation == "join") rig.Factory.OnRefusal = () =>
         {
-            await using var rig = new ArtworkRefusalRig(operation);
-            if (operation == "join") rig.Factory.OnRefusal = () =>
-            {
-                var actor = typeof(RogNativeMenuSource).GetField("_actor", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(rig.Source)!;
-                typeof(RogNativeMenuSource.Actor).GetField("_joinFailed", BindingFlags.NonPublic | BindingFlags.Instance)!.SetValue(actor, true);
-            };
-            if (operation == "profile") rig.Factory.OnRefusal = () => rig.Control.Profile = 1;
-            await rig.StartAsync();
-            await Until(() => rig.Owner.GetKeyboardDisplayStatusAsync().GetAwaiter().GetResult().State == "Error");
-            rig.Factory.Channels.Should().ContainSingle();
-            if (operation is "cap" or "arm" or "brightness" or "software" or "malformed") rig.Factory.Channels[0].AfterFaultWrites.Should().Be(0);
-            File.Exists(rig.Journal).Should().BeTrue(); File.ReadAllBytes(rig.Preference).Should().Equal(rig.PreferenceBefore);
+            var actor = typeof(RogNativeMenuSource).GetField("_actor", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(rig.Source)!;
+            typeof(RogNativeMenuSource.Actor).GetField("_joinFailed", BindingFlags.NonPublic | BindingFlags.Instance)!.SetValue(actor, true);
+        };
+        if (operation == "profile") rig.Factory.OnRefusal = () => rig.Control.Profile = 1;
+        await rig.StartAsync();
+        await Until(() => rig.Owner.GetKeyboardDisplayStatusAsync().GetAwaiter().GetResult().State == "Error");
+        rig.Factory.Channels.Should().ContainSingle();
+        if (operation is "arm" or "brightness" or "software" or "malformed") rig.Factory.Channels[0].AfterFaultWrites.Should().Be(0);
+        File.Exists(rig.Journal).Should().BeTrue(); File.ReadAllBytes(rig.Preference).Should().Equal(rig.PreferenceBefore);
+    }
+
+    [Theory]
+    [InlineData("cap")]
+    [InlineData("replacement-cap")]
+    public async Task ArtworkRefusal_read_only_CAP_retires_the_owner_and_waits_if_the_replacement_is_unavailable(string operation)
+    {
+        await using var rig = new ArtworkRefusalRig(operation);
+        await rig.StartAsync();
+        await Until(() => rig.Factory.Channels.Count >= 2 && rig.Factory.Channels[0].Disposed);
+        if (operation == "cap")
+        {
+            await Until(() => rig.Source.IsPresent);
+            (await rig.Owner.GetKeyboardDisplayStatusAsync()).LastError.Should().BeNull();
+            rig.Factory.Channels[0].AfterFaultWrites.Should().Be(0);
         }
+        else
+        {
+            await Until(() => rig.Factory.Channels[1].Disposed
+                && rig.Owner.GetKeyboardDisplayStatusAsync().GetAwaiter().GetResult().State == "Waiting");
+            rig.Factory.Channels[1].Requests.Should().NotContain(p => IsPersistentSetting(p) || p[1] == 0x71);
+            rig.Source.IsPresent.Should().BeFalse();
+        }
+
+        rig.Factory.OpenWhilePreviousLive.Should().BeFalse();
+        rig.Factory.OpenWhileInputLive.Should().BeFalse();
+        File.Exists(rig.Journal).Should().BeTrue();
+        File.ReadAllBytes(rig.Preference).Should().Equal(rig.PreferenceBefore);
     }
 
     private sealed class ArtworkRefusalRig : IAsyncDisposable
