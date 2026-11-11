@@ -11,6 +11,8 @@ public sealed record KeyboardNativeMenuOptions
 {
     public bool Enabled { get; init; }
     public bool SourceControlNotifications { get; init; }
+    /// <summary>Verbose Codex commit/page logging only, default off. Full-frame Mode10 CAP readiness is always required.</summary>
+    public bool DiagnoseCodexPostUploadCapability { get; init; }
     /// <summary>Diagnostic build note only; blank, stale or mismatched values never admit or veto.</summary>
     public string NativeBuild { get; init; } = string.Empty;
     /// <summary>Diagnostic image receipt only; never a runtime pin, allow-list or deny-list.</summary>

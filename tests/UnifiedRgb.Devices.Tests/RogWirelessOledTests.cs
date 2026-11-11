@@ -143,6 +143,56 @@ public sealed class RogWirelessOledTests
     }
 
     [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(2)]
+    public async Task Lease_discards_only_bounded_exact_replies_completed_on_this_owner(int variant)
+    {
+        using var io = new LateReplyChannel();
+        using var connection = new RogWirelessOledConnection(new RogReceiver(new string('A', 64), 0x1ACE,
+            new Dictionary<byte, HidCollectionInfo>()), io, Header, () => true);
+        var request = RogWiredOledProtocol.Query(0x12, 0);
+        await connection.ExchangeAsync(request, false, default);
+        var late = (byte[])io.Identity.Clone();
+        if (variant == 1) late[6] ^= 1; // same opcode, unseen payload must still poison
+        for (var i = 0; i < (variant == 2 ? 9 : 1); i++) io.Replies.Writer.TryWrite((byte[])late.Clone());
+        var renewals = 0;
+        var lease = () => connection.LeaseAsync(() => renewals > 0, () => renewals++, default);
+        if (variant == 0)
+        {
+            await lease();
+            renewals.Should().Be(1);
+            io.Writes.Should().Be(2); // original query + renewal; never replay a query
+        }
+        else
+        {
+            await lease.Should().ThrowAsync<InvalidDataException>();
+            await ((Func<Task>)(() => connection.ExchangeAsync(request, false, default)))
+                .Should().ThrowAsync<IOException>().WithMessage("*poisoned*");
+        }
+        io.PendingReads.Should().Be(0);
+    }
+
+    private sealed class LateReplyChannel : IHidReportChannel
+    {
+        public System.Threading.Channels.Channel<byte[]> Replies { get; } = System.Threading.Channels.Channel.CreateUnbounded<byte[]>();
+        public byte[] Identity { get; } = MakeIdentity();
+        public int Writes { get; private set; }
+        public int PendingReads { get; private set; }
+        private static byte[] MakeIdentity()
+        { var reply = new byte[64]; reply[0] = 2; reply[1] = 0x12; reply[5] = 8; reply[7] = 7; reply[9] = 1; reply[12] = 0x24; reply[14] = 1; return reply; }
+        public ValueTask WriteAsync(ReadOnlyMemory<byte> report, CancellationToken ct)
+        {
+            ct.ThrowIfCancellationRequested(); Writes++;
+            if (report.Span[1] == 0x12) Replies.Writer.TryWrite((byte[])Identity.Clone());
+            return ValueTask.CompletedTask;
+        }
+        public async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct)
+        { PendingReads++; try { var reply = await Replies.Reader.ReadAsync(ct); reply.CopyTo(buffer); return reply.Length; } finally { PendingReads--; } }
+        public void Dispose() => Replies.Writer.TryComplete();
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task Changed_content_joins_the_lease_reader_before_the_next_transaction(bool wireless)

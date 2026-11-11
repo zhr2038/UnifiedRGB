@@ -26,6 +26,45 @@ public sealed class KeyboardLocalIdleTests : IDisposable
         new KeyboardDisplayOptions { AnimationAdmitted = true }, _data, _media, _timeline, _time, _clock, duration);
 
     [Fact]
+    public void Case_power_policy_requests_original_only_after_confirmed_blackout_even_without_an_asset()
+    {
+        using var animation = Make();
+        var off = false;
+        var status = new byte[6656];
+        var presentation = new KeyboardNativePresentation(animation, null, _time, caseBlackout: () => off);
+        presentation.Native(status).Should().BeSameAs(status);
+        presentation.IdleChoice.Should().Be(KeyboardNativeArtwork.StatusPage);
+        off = true;
+        presentation.Native(status).Should().BeNull();
+        presentation.IdleChoice.Should().Be(KeyboardNativeArtwork.DeviceAnimation);
+        presentation.InteractionBegan(false);
+        presentation.Native(status).Should().BeSameAs(status);
+        _time.Advance(TimeSpan.FromMilliseconds(2600));
+        presentation.Native(status).Should().BeNull();
+        off = false;
+        presentation.Native(status).Should().BeSameAs(status);
+    }
+
+    [Fact]
+    public async Task Case_power_policy_preserves_custom_preference_and_resumes_current_phase_after_blackout()
+    {
+        using var animation = Make(); var screens = KeyboardAnimationScreens.Create(_media);
+        await animation.SaveAsync(Settings(KeyboardDisplayAnimation.LocalTimelineId(Asset)), screens, true, false, default);
+        await Ready(animation);
+        var off = false;
+        var presentation = new KeyboardNativePresentation(animation, null, _time, caseBlackout: () => off);
+        var status = new byte[6656];
+        presentation.Native(status).Should().Equal(FakeKeyboardOledMedia.Bytes(Asset)[1]);
+        presentation.Acknowledge(); off = true;
+        presentation.Native(status).Should().BeNull();
+        animation.Status(true, false).Settings.Enabled.Should().BeTrue();
+        animation.Status(true, false).State.Should().NotBe(KeyboardDisplayAnimationStates.Playing);
+        _clock.Now = 5.5; off = false;
+        presentation.Native(status).Should().Equal(FakeKeyboardOledMedia.Bytes(Asset)[2]);
+        _media.Scene = new([]);
+    }
+
+    [Fact]
     public async Task LocalIdle_empty_screen_scene_lists_library_assets_and_uses_master_epoch_without_scene_reads()
     {
         using var animation = Make(); var screens = KeyboardAnimationScreens.Create(_media);

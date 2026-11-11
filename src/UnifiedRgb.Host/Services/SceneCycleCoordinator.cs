@@ -274,7 +274,9 @@ public sealed partial class SceneCycleCoordinator : IDisposable
     /// </summary>
     public SceneCycleStatus Move(SceneCycleMove move) => Move(move, null);
 
-    private SceneCycleStatus Move(SceneCycleMove move, Action<SceneCycleStatus>? selectionReady)
+    private Func<bool>? _selectionAdmission;
+
+    private SceneCycleStatus Move(SceneCycleMove move, Action<SceneCycleStatus>? selectionReady, Func<bool>? admission = null)
     {
         var step = move switch
         {
@@ -286,6 +288,7 @@ public sealed partial class SceneCycleCoordinator : IDisposable
         lock (_sync)
         {
             ObjectDisposedException.ThrowIf(_closed, this);
+            if (admission?.Invoke() == false) return SnapshotLocked();
             if (!_hasList)
             {
                 return SnapshotLocked();
@@ -294,6 +297,7 @@ public sealed partial class SceneCycleCoordinator : IDisposable
             var count = _entries.Length;
             _cursor = _cursor < 0 ? (step > 0 ? 0 : count - 1) : (_cursor + step + count) % count;
             _generation++;
+            _selectionAdmission = admission;
             _halted = false;
             _held = false;
             var selection = SelectionLocked()!;
@@ -322,7 +326,11 @@ public sealed partial class SceneCycleCoordinator : IDisposable
     /// <summary>Starts an idle browse from the actual running scene, including ordinary saved RGB scenes. Pending steps keep their order.</summary>
     public Task<SceneCycleStatus> MoveAsync(SceneCycleMove move, CancellationToken ct = default) => MoveAsync(move, null, ct);
 
-    internal async Task<SceneCycleStatus> MoveAsync(SceneCycleMove move, Action<SceneCycleStatus>? selectionReady, CancellationToken ct = default)
+    internal Task<SceneCycleStatus> MoveAsync(SceneCycleMove move, Action<SceneCycleStatus>? selectionReady, CancellationToken ct = default)
+        => MoveAsync(move, selectionReady, null, ct);
+
+    internal async Task<SceneCycleStatus> MoveAsync(SceneCycleMove move, Action<SceneCycleStatus>? selectionReady,
+        Func<bool>? admission, CancellationToken ct = default)
     {
         if (!Enum.IsDefined(move))
         {
@@ -361,7 +369,7 @@ public sealed partial class SceneCycleCoordinator : IDisposable
         }
 
         ct.ThrowIfCancellationRequested();
-        return Move(move, selectionReady);
+        return Move(move, selectionReady, admission);
     }
 
     private async Task<int> RunningIndexAsync(IReadOnlyList<SceneCycleEntry> entries, SceneDto? running, CancellationToken ct)
@@ -1095,7 +1103,7 @@ public sealed partial class SceneCycleCoordinator : IDisposable
                 return Stopped;
             }
 
-            if (_generation != target.Selection.Generation)
+            if (_generation != target.Selection.Generation || _selectionAdmission?.Invoke() == false)
             {
                 return Superseded;
             }

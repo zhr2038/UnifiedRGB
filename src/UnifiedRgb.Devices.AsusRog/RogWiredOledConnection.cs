@@ -40,7 +40,16 @@ public sealed class RogWiredOledConnection : IRogOledConnection
     public string ConnectionKind => "wired";
     public int PixelPayloadCapacity => 60;
     public bool SameDevice() => _sameDevice();
-
+    /// <summary>Optional positive absence probe set by the factory; unknown/custom connections default to false.</summary>
+    public Func<bool>? RouteAbsentProbe { get; init; }
+    public bool PhysicalRouteAbsent
+    {
+        get
+        {
+            try { return RouteAbsentProbe?.Invoke() == true; }
+            catch (Exception ex) when (ex is not OutOfMemoryException) { return false; }
+        }
+    }
     /// <summary>First identity accepted on this connection (diagnostic); null before the first accepted reply.</summary>
     public string? ObservedFirmwareHeader { get { lock (_state) return _observed is null ? null : Convert.ToHexString(_observed); } }
 
@@ -79,8 +88,7 @@ public sealed class RogWiredOledConnection : IRogOledConnection
                     stage = "read"; ordinal = n + 1; length = 0; Array.Clear(b);
                     length = await Read(b, timeout.Token).ConfigureAwait(false);
                     stage = "envelope"; RequireNotEof(length);
-                    if (length != 65 || b[0] != 0 || b[1] == 0xFF && b[2] == 0xAA)
-                        throw new InvalidDataException("Keyboard OLED refused or changed its envelope; no retry.");
+                    RequireEnvelope(b, length);
                     var perKey = RogPerKeyLighting.IsFrameRequest(request);
                     if (perKey ? RogPerKeyLighting.MatchesReplyHeader(b, request) : b.AsSpan(0, 5).SequenceEqual(request.AsSpan(0, 5)))
                     {
@@ -120,6 +128,7 @@ public sealed class RogWiredOledConnection : IRogOledConnection
                 {
                     length = 0; Array.Clear(b); ordinal++;
                     length = await Read(b, stop.Token).ConfigureAwait(false); RequireNotEof(length);
+                    RequireEnvelope(b, length);
                     RogWiredOledProtocol.RequireRenewalReply(b.AsSpan(0, length));
                 }
             }
@@ -176,7 +185,9 @@ public sealed class RogWiredOledConnection : IRogOledConnection
         var detail = $"stage={stage}; request={Convert.ToHexString(request.AsSpan(0, 5))}; reply={header}; length={length}; read={ordinal}; zeroAck={zeroAck}; nonzeroAckBody={nonzero}; connection poisoned; no retry.";
         Exception fault = ex is OperationCanceledException && expired
             ? new RogOledTimeoutException("Wired keyboard OLED command timed out; " + detail, ex)
-            : ex is RogOledConnectionLostException || ex is IOException && Disappeared()
+            : ex is RogOledEnvelopeRefusedException
+                ? new RogOledEnvelopeRefusedException("Wired OLED negative envelope; " + detail, ex)
+            : ex is RogOledConnectionLostException || ex is IOException && PhysicalRouteAbsent
                 ? new RogOledConnectionLostException("Pinned wired keyboard interface disappeared or ended; " + detail, ex)
                 : ex is InvalidDataException ? new InvalidDataException("Wired OLED protocol response invalid; " + detail, ex)
                 : new IOException("Wired OLED I/O outcome is unknown; " + detail, ex);
@@ -189,10 +200,14 @@ public sealed class RogWiredOledConnection : IRogOledConnection
         if (length == 0) throw new RogOledConnectionLostException("Wired keyboard OLED stream ended.", new EndOfStreamException());
     }
 
-    private bool Disappeared()
+    private static void RequireEnvelope(byte[] reply, int length)
     {
-        try { return !_sameDevice(); }
-        catch (Exception ex) when (ex is not OutOfMemoryException) { return false; }
+        if (length != 65 || reply[0] != 0)
+            throw new InvalidDataException("Keyboard OLED changed its envelope; no retry.");
+        if (reply[1] != 0xFF || reply[2] != 0xAA) return;
+        if (reply.AsSpan(3).ContainsAnyExcept((byte)0))
+            throw new InvalidDataException("Wired keyboard OLED refusal envelope changed; no retry.");
+        throw new RogOledEnvelopeRefusedException("Wired keyboard OLED refused an envelope; originating opcode is unavailable; no packet retry.");
     }
 
     public void Dispose() { lock (_state) { if (_disposed) return; _disposed = true; _channel.Dispose(); } }
@@ -232,6 +247,10 @@ public sealed class RogWiredOledFactory : IRogWiredOledFactory
         {
             var fresh = devices.Enumerate(0x0B05, 0x1C24).SingleOrDefault(x => x.Path == c.Path && RogWiredOledProtocol.Matches(x));
             return fresh is not null && resolver.Resolve(fresh).Container is { } current && current.SameContainer(container);
-        }, () => deviceKey, () => label) { NativeControlBinding = new([c], null, 0) };
+        }, () => deviceKey, () => label)
+        {
+            NativeControlBinding = new([c], null, 0),
+            RouteAbsentProbe = () => RogHidRoutePresence.Probe(devices, 0x0B05, 0x1C24, c.Path),
+        };
     }
 }

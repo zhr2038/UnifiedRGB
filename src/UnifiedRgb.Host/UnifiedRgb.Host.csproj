@@ -8,6 +8,8 @@
   <ItemGroup>
     <ProjectReference Include="../UnifiedRgb.Core/UnifiedRgb.Core.csproj" />
     <ProjectReference Include="../UnifiedRgb.Contracts/UnifiedRgb.Contracts.csproj" />
+    <ProjectReference Include="../UnifiedRgb.Firmware.ProtectedRuntime/UnifiedRgb.Firmware.ProtectedRuntime.csproj" />
+    <ProjectReference Include="../UnifiedRgb.Firmware.Worker/UnifiedRgb.Firmware.Worker.csproj" />
     <ProjectReference Include="../UnifiedRgb.Transports.Win/UnifiedRgb.Transports.Win.csproj" />
     <ProjectReference Include="../UnifiedRgb.Devices.Virtual/UnifiedRgb.Devices.Virtual.csproj" />
     <ProjectReference Include="../UnifiedRgb.Devices.LianLi/UnifiedRgb.Devices.LianLi.csproj" />
@@ -37,4 +39,5 @@
     <EmbeddedResource Include="../UnifiedRgb.App/Assets/Brand/Brand.xaml" LogicalName="UnifiedRgb.KeyboardBrand.xaml" />
     <None Update="appsettings.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
+  <Import Project="../../tools/firmware/integration/FirmwareWorker.Packaging.targets" />
 </Project>

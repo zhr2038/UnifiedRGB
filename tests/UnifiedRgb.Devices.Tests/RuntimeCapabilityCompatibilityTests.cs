@@ -195,9 +195,9 @@ public sealed partial class RuntimeCapabilityCompatibilityTests
     public void Unknown_optional_capability_bits_are_ignored_and_not_surfaced(byte unknown)
     {
         var idle = RogNativeMenuCodec.ParseCapability(Capability(flags: (byte)(48 | unknown)), 0x12, 1);
-        idle.Flags.Should().Be(48);
+        idle.Flags.Should().Be((byte)(48 | (unknown & RogNativeMenuCodec.DedicatedPageFlag)), "0x40 now declares the dedicated physical page; only 0x80 remains unknown");
         var armed = RogNativeMenuCodec.ParseCapability(Capability(status: 1, flags: (byte)(49 | unknown), command: 0x71), 0x71, 1);
-        armed.Flags.Should().Be(49);
+        armed.Flags.Should().Be((byte)(49 | (unknown & RogNativeMenuCodec.DedicatedPageFlag)));
         var state = new RogNativeMenuState();
         state.Arm(idle, armed, armed.Cookie);
         state.Matches(armed).Should().BeTrue();

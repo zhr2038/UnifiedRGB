@@ -10,7 +10,7 @@ internal interface IPeripheralConfigurationResources
     Task ResumeAsync(CancellationToken ct);
 }
 
-public sealed class PeripheralConfigurationService : IPeripheralConfigurationService
+public sealed partial class PeripheralConfigurationService : IPeripheralConfigurationService
 {
     private readonly TimeSpan _operationTimeout;
     private readonly PeripheralConfigurationGate _gate;
@@ -31,7 +31,7 @@ public sealed class PeripheralConfigurationService : IPeripheralConfigurationSer
         _journalPath = Path.Combine(options.ResolvedDataDirectory, "peripherals", "keyboard-display-session.json");
         _operationTimeout = operationTimeout ?? TimeSpan.FromSeconds(30);
         if (_operationTimeout <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(operationTimeout));
-        var recoveryPending = !gate.RogAcquisitionAllowed && File.Exists(_journalPath);
+        var recoveryPending = !gate.RogAcquisitionAllowed && KeyboardRecoveryJournals.Any(_journalPath);
         const string recoveryError = "A keyboard recovery journal remains after restart; matching recorded-transport restoration requires an explicit Enter reattempt.";
         _status = gate.InitialError is { } error
             ? new(true, "Error", error, false, DateTimeOffset.UtcNow, error)
@@ -40,6 +40,7 @@ public sealed class PeripheralConfigurationService : IPeripheralConfigurationSer
                 : gate.RogAcquisitionAllowed
                     ? new(false, "Active", "ROG peripherals use fresh current settings; no configuration handoff is requested.", false, DateTimeOffset.UtcNow, null)
                     : new(true, "Ready", "Persistent handoff was loaded before any ROG session was opened.", true, DateTimeOffset.UtcNow, null);
+        InitializeFirmwareLease(options.ResolvedDataDirectory);
     }
 
     public Task<PeripheralConfigurationStatusDto> GetPeripheralConfigurationStatusAsync(CancellationToken ct = default)
@@ -52,7 +53,8 @@ public sealed class PeripheralConfigurationService : IPeripheralConfigurationSer
         _gate.RunExclusiveAsync(async _ =>
         {
             ct.ThrowIfCancellationRequested();
-            if (Volatile.Read(ref _status) is { ConfigurationMode: true, State: "Ready" } ready) return ready;
+            _firmwareLease?.RejectManualChange();
+            if (Volatile.Read(ref _status) is { ConfigurationMode: true, State: "Ready" } ready && !KeyboardRecoveryJournals.Any(_journalPath)) return ready;
             var previouslyAllowed = _gate.RogAcquisitionAllowed;
             _gate.BlockRogAcquisition();
             _resumeReadyToCommit = false;
@@ -67,6 +69,7 @@ public sealed class PeripheralConfigurationService : IPeripheralConfigurationSer
             try
             {
                 await ObserveReleaseAsync().ConfigureAwait(false);
+                if (KeyboardRecoveryJournals.Any(_journalPath)) throw new IOException("Keyboard recovery obligations remain; handoff is not Ready.");
                 return Publish(new(true, "Ready", "ROG keyboard OLED/lighting, mouse and receiver sessions are disposed; further reports and reacquisition are stopped.", true, DateTimeOffset.UtcNow, null));
             }
             catch (Exception ex) when (ex is not OutOfMemoryException)
@@ -79,8 +82,9 @@ public sealed class PeripheralConfigurationService : IPeripheralConfigurationSer
         _gate.RunExclusiveAsync(async _ =>
         {
             ct.ThrowIfCancellationRequested();
+            _firmwareLease?.RejectManualChange();
             if (Volatile.Read(ref _status) is { ConfigurationMode: false, State: "Active" } active) return active;
-            if (File.Exists(_journalPath))
+            if (KeyboardRecoveryJournals.Any(_journalPath))
             {
                 if (Volatile.Read(ref _status) is { State: "Error", ConfigurationMode: true } pending) return pending;
                 const string error = "A keyboard recovery journal requires verified matching restoration before normal resume.";

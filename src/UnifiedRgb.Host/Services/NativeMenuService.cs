@@ -15,7 +15,7 @@ public abstract record NativeMenuSourceEvent
 }
 
 /// <summary>The source established a verified context; presses and neutral observations at or below the floor came before it.</summary>
-public sealed record NativeMenuContextBegun(string SessionId, long ContextGeneration, long ProfileGeneration, long SequenceFloor)
+public sealed record NativeMenuContextBegun(string SessionId, long ContextGeneration, long ProfileGeneration, long SequenceFloor, byte Mode = 9)
     : NativeMenuSourceEvent;
 
 /// <summary>The context ended (unavailable, asleep, firmware/profile/build change, fault); Disconnected ends its session for good.</summary>
@@ -94,6 +94,7 @@ public sealed class NativeMenuService : IHostedService, IAsyncDisposable, INativ
     private SourceContext? _context; // the source's latest context, active or ended
     private Armed? _armed;
     private long _generation; // coordinator context generations: increasing for this owner's lifetime
+    private long _controlRevision;
     private long _admitted, _reported;
     private string? _lastOutcome, _lastError, _lastContextEndReason;
     private DateTimeOffset? _updatedAt;
@@ -168,6 +169,7 @@ public sealed class NativeMenuService : IHostedService, IAsyncDisposable, INativ
             _registration = null;
             _stopped = true;
             _armed = null;
+            Interlocked.Increment(ref _controlRevision);
             Record("stopping");
         }
         if (_gate is not null) _gate.RogAcquisitionChanged -= OnAcquisitionChanged;
@@ -275,7 +277,7 @@ public sealed class NativeMenuService : IHostedService, IAsyncDisposable, INativ
         Disarm($"context {begun.ContextGeneration} began");
         // A superseded session never comes back, armed or not; the coordinator remembers it.
         if (_context is { } previous && previous.Session != begun.SessionId) _menu.Invalidate(previous.Session, previous.Generation, disconnected: true);
-        _context = new(begun.SessionId, begun.ContextGeneration, begun.ProfileGeneration) { HighWater = begun.SequenceFloor };
+        _context = new(begun.SessionId, begun.ContextGeneration, begun.ProfileGeneration, begun.Mode) { HighWater = begun.SequenceFloor };
         _lastContextEndReason = null;
         Record($"context {begun.ContextGeneration} profile {begun.ProfileGeneration} floor {begun.SequenceFloor}");
         TryArm("context began");
@@ -309,6 +311,7 @@ public sealed class NativeMenuService : IHostedService, IAsyncDisposable, INativ
         if (rejection is not null) { Record($"{press} rejected: {rejection}"); return; }
         // In the source's current context: remember the press, so a later arm starts after it.
         _context!.HighWater = Math.Max(_context.HighWater, intent.Sequence);
+        if (_context.Mode != 9) { Disarm("not Guangyu page"); Record($"{press} ignored: not Guangyu page"); return; }
         if (!_desired) { Record($"{press} ignored: preference off"); return; }
         if (!AcquisitionAllowed)
         {
@@ -349,6 +352,7 @@ public sealed class NativeMenuService : IHostedService, IAsyncDisposable, INativ
         if (rejection is not null) { Record($"{step} rejected: {rejection}"); return; }
         var previous = _context!.HighWater;
         _context.HighWater = browse.Sequence;
+        if (_context.Mode != 9) { Disarm("not Guangyu page"); Record($"{step} ignored: not Guangyu page"); return; }
         if (!_desired) { Record($"{step} ignored: preference off"); return; }
         if (!AcquisitionAllowed)
         {
@@ -366,7 +370,8 @@ public sealed class NativeMenuService : IHostedService, IAsyncDisposable, INativ
         if (browse.Timestamp > now + NativeMenuCaseActionCoordinator.MaxClockSkew) { Record($"{step} rejected: future timestamp"); return; }
         if (now - browse.Timestamp > NativeMenuCaseActionCoordinator.MaxIntentAge) { Record($"{step} rejected: expired"); return; }
         if (_sceneCycle is null) { Record($"{step} ignored: no scene cycle"); return; }
-        var queued = _sceneCycle.Browse(browse.Move);
+        var revision = Interlocked.Read(ref _controlRevision);
+        var queued = _sceneCycle.Browse(browse.Move, () => revision == Interlocked.Read(ref _controlRevision));
         Record(queued ? $"{step} accepted" : $"{step} dropped: scene cycle busy or stopped");
         // Notification only: a valid browse step briefly pops up the status and the scene caption (kept while it is shown).
         if (queued) _display?.NativeInteractionBegan(awaitsCompletion: false);
@@ -375,7 +380,7 @@ public sealed class NativeMenuService : IHostedService, IAsyncDisposable, INativ
     // Under _sync. Arming acts on nothing; only a later fresh press can.
     private void TryArm(string reason)
     {
-        if (_stopped || _armed is not null || !_desired || _context is not { Active: true } context || !AcquisitionAllowed) return;
+        if (_stopped || _armed is not null || !_desired || _context is not { Active: true, Mode: 9 } context || !AcquisitionAllowed) return;
         var generation = ++_generation;
         var change = _menu.Begin(context.Session, generation, context.Profile, context.HighWater);
         if (!change.Applied) { Record("arm refused: " + change.Message); return; }
@@ -386,6 +391,7 @@ public sealed class NativeMenuService : IHostedService, IAsyncDisposable, INativ
     // Under _sync.
     private void Disarm(string reason)
     {
+        Interlocked.Increment(ref _controlRevision);
         if (_armed is not { } armed) return;
         _armed = null;
         var change = _menu.Invalidate(armed.Session, armed.Generation, disconnected: false);
@@ -485,11 +491,12 @@ public sealed class NativeMenuService : IHostedService, IAsyncDisposable, INativ
     private sealed record Preference(int Schema, bool Enabled);
     private sealed record Armed(string Session, long Generation);
 
-    private sealed class SourceContext(string session, long generation, long profile)
+    private sealed class SourceContext(string session, long generation, long profile, byte mode)
     {
         public string Session { get; } = session;
         public long Generation { get; } = generation;
         public long Profile { get; } = profile;
+        public byte Mode { get; } = mode;
         public long HighWater { get; set; }
         public bool Active { get; set; } = true;
     }

@@ -69,6 +69,7 @@ public sealed class KeyboardAnimationViewModel : ObservableObject
         _service = service ?? throw new ArgumentNullException(nameof(service));
         _ui = ui ?? throw new ArgumentNullException(nameof(ui));
         _error = error ?? throw new ArgumentNullException(nameof(error));
+        Codex = new KeyboardCodexUsageViewModel(service, ui, error, now, timeout);
         _screens = screens;
         _chooseFile = chooseFile;
         _now = now ?? (() => DateTimeOffset.UtcNow);
@@ -85,6 +86,7 @@ public sealed class KeyboardAnimationViewModel : ObservableObject
     }
 
     public AsyncCommand ReadCommand { get; }
+    public KeyboardCodexUsageViewModel Codex { get; }
     public AsyncCommand EnableCommand { get; }
     public AsyncCommand DisableCommand { get; }
     public AsyncCommand PreviewCommand { get; }
@@ -352,6 +354,7 @@ public sealed class KeyboardAnimationViewModel : ObservableObject
 
     public void SetConnected(bool connected)
     {
+        Codex.SetConnected(connected);
         _connected = connected;
         Interlocked.Increment(ref _epoch);
         _status = null; _observedAt = null; _unsupported = false; _dirty = false; _preview = [];
@@ -361,6 +364,7 @@ public sealed class KeyboardAnimationViewModel : ObservableObject
 
     public void ExpireObservation()
     {
+        Codex.ExpireObservation();
         if (_observedAt is not { } at || Fresh(at)) return;
         _status = null; _observedAt = null;
         _message = ExpiredMessage;
