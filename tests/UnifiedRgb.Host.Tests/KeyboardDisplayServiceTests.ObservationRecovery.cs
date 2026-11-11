@@ -181,7 +181,7 @@ public sealed partial class KeyboardDisplayServiceTests
     }
 
     [Theory] [InlineData(false)] [InlineData(true)]
-    public async Task ObservationRecovery_changed_or_missing_journal_and_changed_profile_do_not_write_recovery_setters(bool unexpected)
+    public async Task ObservationRecovery_checks_the_exact_journal_profile_and_peer_before_writing_settings(bool unexpected)
     {
         foreach (var change in new[] { "missing", "changed", "profile", "open-notready" })
         {
@@ -193,9 +193,15 @@ public sealed partial class KeyboardDisplayServiceTests
             try
             {
                 await WaitAsync(service, "Recovering");
+                var recorded = File.ReadAllBytes(ObservationJournal);
                 if (change == "missing") File.Delete(ObservationJournal);
                 if (change == "changed") File.AppendAllText(ObservationJournal, " "); // even validJSON byte drift is not adopted
-                await WaitAsync(service, "Error");
+                await WaitAsync(service, change == "open-notready" ? "Waiting" : "Error");
+                if (change == "open-notready")
+                {
+                    File.ReadAllBytes(ObservationJournal).Should().Equal(recorded);
+                    factory.Channels[0].WritesAfterFault.Should().Be(0);
+                }
                 if (change == "profile") { factory.Channels.Should().HaveCount(2); factory.Channels[1].Inner.Mutations.Should().Be(0); factory.Channels[1].Inner.NativeWrites.Should().Be(0); }
                 else factory.Channels.Should().ContainSingle();
             }

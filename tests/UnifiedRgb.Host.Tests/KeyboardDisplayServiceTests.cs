@@ -426,7 +426,9 @@ public sealed partial class KeyboardDisplayServiceTests : IDisposable
         {
             await WaitAsync(service, "Running"); bridge.Available.Should().BeFalse();
             wireless.Channels.Single().Inner.NativeWrites.Should().Be(0);
-            await service.SetKeyboardDisplayEnabledAsync(false); await WaitAsync(service, "Stopped");
+            await service.SetKeyboardDisplayEnabledAsync(false);
+            await WaitAsync(service, "Waiting"); // the approved wired lighting route is absent
+            bridge.Available.Should().BeFalse();
             wireless.Channels.Single().Inner.Brightness.Should().Be(25);
         }
         finally { await service.StopAsync(default); }
