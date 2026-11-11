@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Collections.Concurrent;
 using System.Text.Json;
 using UnifiedRgb.Contracts.Dto;
+using UnifiedRgb.Screens.Composition;
 using UnifiedRgb.Screens.Media;
 using UnifiedRgb.Screens.Protocol;
 using UnifiedRgb.Screens.Runtime;
@@ -52,8 +53,10 @@ public sealed class PreparedOverlayWorkerTests(ITestOutputHelper output)
     [MediaFoundationFact]
     public async Task Prepared_overlays_are_the_inline_bytes_and_a_static_layer_makes_no_request()
     {
-        var inline = await ScenarioAsync(prepared: false);
-        var prepared = await ScenarioAsync(prepared: true);
+        var raster = new OverlayRasterFixture();
+        var inline = await ScenarioAsync(prepared: false, raster.Record());
+        var prepared = await ScenarioAsync(prepared: true, raster.Replay());
+        raster.AssertAllReplayed();
         prepared.Pngs.Select(Sha).Should().Equal(inline.Pngs.Select(Sha));
         prepared.Pngs.Should().HaveCount(3);
         prepared.Data.Should().Equal(inline.Data, "data pictures, pacing, cache and encoder are untouched");
@@ -65,10 +68,11 @@ public sealed class PreparedOverlayWorkerTests(ITestOutputHelper output)
 
     private sealed record ScenarioRun(List<byte[]> Pngs, string[] Data, int[] Indices, string? Note, double WorkerOverlayEncodeMax);
 
-    private static async Task<ScenarioRun> ScenarioAsync(bool prepared)
+    private static async Task<ScenarioRun> ScenarioAsync(bool prepared, OverlayRenderer renderer)
     {
         using var encoder = new OverlayEncoder();
-        using var h = await StartAsync(prepared ? Prepared("scenario") : NativeWorkerHarness.NewTrial("scenario"), prepared ? encoder : null);
+        using var h = await StartAsync(prepared ? Prepared("scenario") : NativeWorkerHarness.NewTrial("scenario"), prepared ? encoder : null,
+            customize: context => context with { NativeVideoOverlayForTest = renderer });
         await CompletedSubmittedPicturesAsync(h);
         foreach (var cpu in new[] { 20, 30 })
         {
@@ -114,8 +118,10 @@ public sealed class PreparedOverlayWorkerTests(ITestOutputHelper output)
         var summary = new List<string>();
         foreach (var simple in new[] { false, true })
         {
-            var inline = await OverlaysAsync(prepared: false, simple);
-            var prepared = await OverlaysAsync(prepared: true, simple);
+            var raster = new OverlayRasterFixture();
+            var inline = await OverlaysAsync(prepared: false, simple, raster.Record());
+            var prepared = await OverlaysAsync(prepared: true, simple, raster.Replay());
+            raster.AssertAllReplayed();
             inline.Pngs.Should().HaveCount(36);
             prepared.Cases.Select(c => c.Input).Should().Equal(inline.Cases.Select(c => c.Input), "the compared cases have exactly the same telemetry, timestamps, assignment and clock");
             prepared.Cases.Select(c => c.PixelSha).Should().Equal(inline.Cases.Select(c => c.PixelSha), "decoded wire pixels must match before comparing PNG compression bytes");
@@ -138,6 +144,30 @@ public sealed class PreparedOverlayWorkerTests(ITestOutputHelper output)
             Directory.CreateDirectory(dir);
             File.WriteAllLines(Path.Combine(dir, "s1b-36-overlay-wire-benchmark.txt"), summary);
         }
+    }
+
+    // WPF text on independent cold workers can rasterize differently even with identical inputs.
+    // Compare encoding and handover using a copy of each actual inline raster, including all layout variants.
+    private sealed class OverlayRasterFixture
+    {
+        private readonly List<PixelFrame> _recorded = [];
+        private int _replayed;
+
+        public OverlayRenderer Record() => new((visual, width, height) =>
+        {
+            var raster = OverlayRenderer.Rasterize(visual, width, height);
+            _recorded.Add(new PixelFrame(width, height, (byte[])raster.Pixels.Clone()));
+            return raster;
+        });
+
+        public OverlayRenderer Replay() => new((_, width, height) =>
+        {
+            var raster = _recorded[_replayed++];
+            (raster.Width, raster.Height).Should().Be((width, height));
+            return raster;
+        });
+
+        public void AssertAllReplayed() => _replayed.Should().Be(_recorded.Count);
     }
 
     private sealed record OverlayRun(List<byte[]> Pngs, List<string?> Notes, string[] Data, List<double> WorkerOverlayEncodeMs,
@@ -185,7 +215,7 @@ public sealed class PreparedOverlayWorkerTests(ITestOutputHelper output)
         new(HeadlessProbe.Now, 57, (long)(21.3 * (1L << 30)), 64L << 30, 88, 74, (long)(11.2 * (1L << 30)), 24L << 30, "bench", null),
     ];
 
-    private static async Task<OverlayRun> OverlaysAsync(bool prepared, bool simple)
+    private static async Task<OverlayRun> OverlaysAsync(bool prepared, bool simple, OverlayRenderer renderer)
     {
         var telemetry = new TelemetryBox();
         var encoded = new ConcurrentQueue<EncodedOverlay>();
@@ -197,7 +227,7 @@ public sealed class PreparedOverlayWorkerTests(ITestOutputHelper output)
         {
             clock = c.Time;
             telemetry.Set(0, States[0] is { } first ? first with { Timestamp = c.Time.GetUtcNow() } : null, c.Time.GetUtcNow());
-            return c with { Telemetry = () => telemetry.Read(c.Time) };
+            return c with { Telemetry = () => telemetry.Read(c.Time), NativeVideoOverlayForTest = renderer };
         }, initialAssignment: Layouts[0].Layout);
         await CompletedSubmittedPicturesAsync(h);
         var notes = new List<string?>();

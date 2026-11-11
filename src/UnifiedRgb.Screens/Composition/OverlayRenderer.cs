@@ -162,7 +162,7 @@ internal sealed class OverlayRenderer(Func<DrawingVisual, int, int, PixelFrame>?
         return _cache;
     }
 
-    private static PixelFrame Rasterize(DrawingVisual visual, int width, int height)
+    internal static PixelFrame Rasterize(DrawingVisual visual, int width, int height)
     {
         var rtb = new RenderTargetBitmap(width, height, 96, 96, PixelFormats.Pbgra32);
         rtb.Render(visual);
