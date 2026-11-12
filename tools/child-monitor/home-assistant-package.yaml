@@ -1,0 +1,27 @@
+input_boolean:
+  unifiedrgb_child_monitor_lights:
+    name: 看护指示灯
+    icon: mdi:keyboard-outline
+
+script:
+  unifiedrgb_child_monitor_lights:
+    alias: 看护指示灯
+    icon: mdi:keyboard-outline
+    mode: single
+    sequence:
+      - condition: template
+        value_template: "{{ states('input_boolean.unifiedrgb_child_monitor_lights') in ['on', 'off'] }}"
+      - variables:
+          wanted: >-
+            {{ 'on' if (enabled if enabled is defined and enabled is boolean
+                        else is_state('input_boolean.unifiedrgb_child_monitor_lights', 'off')) else 'off' }}
+      - action: "input_boolean.turn_{{ wanted }}"
+        target:
+          entity_id: input_boolean.unifiedrgb_child_monitor_lights
+      - variables:
+          outcome: >-
+            {{ {'enabled': is_state('input_boolean.unifiedrgb_child_monitor_lights', 'on'),
+                'unconfirmed': [] if is_state('input_boolean.unifiedrgb_child_monitor_lights', wanted)
+                                  else ['看护指示灯']} }}
+      - stop: 已读取看护指示灯开关
+        response_variable: outcome

@@ -29,7 +29,7 @@ public interface IConnectionScope : IAsyncDisposable
 /// </summary>
 public sealed class RgbService(
     LightingEngine engine, ProfileStore profiles, IWriterGuard guard, RgbNotifier notifier, string owner, IScreenSceneBinding? screens = null)
-    : IRgbService, IConnectionScopedService
+    : IRgbService, IConnectionScopedService, IKeyboardLightOverlayService
 {
     public const string LocalOwner = "local";
 
@@ -209,7 +209,24 @@ public sealed class RgbService(
     public IConnectionScope ForConnection(string owner)
     {
         ArgumentException.ThrowIfNullOrEmpty(owner);
-        return new ConnectionScope(new RgbService(engine, profiles, guard, notifier, owner, screens), () => engine.Bringup.DisconnectAsync(owner));
+        return new ConnectionScope(new RgbService(engine, profiles, guard, notifier, owner, screens), () =>
+        {
+            foreach (var entry in engine.Adapters.Controllers)
+                if (entry.Adapter is WiredKeyboardAdapter keyboard) keyboard.ReleaseOverlay(owner);
+            return engine.Bringup.DisconnectAsync(owner);
+        });
+    }
+
+    public Task<string> SetKeyboardLightOverlayAsync(string controllerId, int start, string[] colors,
+        string[]? expectedKeys = null, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(colors);
+        if (colors.Length > WiredKeyboardAdapter.MaximumOverlayKeys)
+            throw new ArgumentException("Too many keyboard overlay colors.", nameof(colors));
+        var entry = engine.Adapters.Controllers.SingleOrDefault(item => item.Descriptor.Id.Value == controllerId);
+        if (entry is not { IsActive: true, Adapter: WiredKeyboardAdapter keyboard } || !engine.Adapters.RogAcquisitionAllowed)
+            throw new DeviceBlockedException("The verified keyboard controller is unavailable.");
+        return keyboard.SetOverlayAsync(owner, start, Array.ConvertAll(colors, DtoMapper.ParseColor), ct, expectedKeys);
     }
 
     /// <summary>

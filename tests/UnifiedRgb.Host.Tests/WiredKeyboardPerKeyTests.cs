@@ -192,6 +192,51 @@ public sealed class WiredKeyboardPerKeyTests
     }
 
     [Theory]
+    [InlineData(Wired)]
+    [InlineData(Wireless)]
+    public async Task An_overlay_retracts_into_the_current_base_frame_on_each_verified_route(string route)
+    {
+        var bridge = new RogWiredLightingBridge();
+        var usb = Map(Wired);
+        var rf = Map(Wireless);
+        rf = rf with { Keys = rf.Keys.Reverse().Select(key => key with { LedId = 255 - key.LedId }).ToArray() };
+        using var adapter = new WiredKeyboardAdapter(bridge, BothRoutes, new() { Enabled = true, Maps = [usb, rf] });
+        var id = (await adapter.DiscoverAsync(default)).Single().Id;
+        var owner = bridge.Attach();
+        owner.AcceptKeyFrames(route);
+        await adapter.OpenAsync(id, default);
+        var routeMap = route == Wired ? usb : rf;
+        var logical = usb.Keys.Select((key, index) => (key, index))
+            .ToDictionary(pair => (pair.key.Key, pair.key.Row, pair.key.Column), pair => pair.index);
+        var baseColors = Distinct(81);
+        Rgb[] colors = [new(0, 200, 0), new(255, 176, 0), new(255, 0, 0)];
+        var expectedKeys = usb.Keys.Skip(13).Take(colors.Length).Select(key => key.Key).ToArray();
+        await ((Func<Task>)(() => adapter.SetOverlayAsync("test", 13, colors, default, ["wrong"])))
+            .Should().ThrowAsync<ArgumentException>();
+        owner.HasWork.Should().BeFalse();
+        foreach (var bar in new[] { colors, colors[..2], Array.Empty<Rgb>() })
+        {
+            var alert = adapter.SetOverlayAsync("test", 13, bar, default, expectedKeys);
+            await ((Func<Task>)(() => adapter.SetOverlayAsync("another-client", 13, [], default, expectedKeys)))
+                .Should().ThrowAsync<InvalidOperationException>();
+            adapter.ReleaseOverlay("another-client");
+            var write = Task.Run(() => adapter.WriteFrame(id, [baseColors]));
+            SpinWait.SpinUntil(() => owner.HasWork, TimeSpan.FromSeconds(5)).Should().BeTrue();
+            owner.TryTakeKeys(out var frame).Should().BeTrue();
+            frame!.Keys.Should().Equal(routeMap.Keys.Select(key =>
+            {
+                var index = logical[(key.Key, key.Row, key.Column)];
+                return new RogKeyColor((byte)key.LedId, index >= 13 && index - 13 < bar.Length
+                    ? bar[index - 13] : baseColors[index]);
+            }));
+            alert.IsCompleted.Should().BeFalse();
+            frame.Completion.TrySetResult();
+            (await alert).Should().Be(route);
+            (await write).Should().BeTrue();
+        }
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task A_raw_led_marker_uses_the_same_owner_and_release_restores_the_captured_normal_frame(bool mapped)
