@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Http;
 using System.Text;
+using System.Text.Json;
 using UnifiedRgb.Host.Services;
 
 namespace UnifiedRgb.Host.Tests;
@@ -96,6 +97,66 @@ public sealed class KeyboardHomeAssistantPageTests
         using var timeout = new CancellationTokenSource(Deadline);
         while (page.Pixels is not { } pixels || !pixels.AsSpan().SequenceEqual(expected))
             await Task.Delay(25, timeout.Token);
+    }
+
+    [Fact]
+    public async Task Child_monitor_entry_uses_the_acknowledged_switch_state_and_reads_back_each_change()
+    {
+        var options = new KeyboardHomeAssistantOptions
+        {
+            Url = "http://192.168.10.7",
+            Scenes = [new() { EntityId = "script.child_monitor", Label = "看护指示灯", ReadScriptResult = true,
+                SwitchEntityId = "input_boolean.child_monitor" }],
+        };
+        using var handler = new SwitchHa();
+        using var client = new HomeAssistantSceneClient(options, handler, _ => "fake-token");
+        using var page = new KeyboardHomeAssistantPage(options, client, TimeProvider.System);
+        await page.StartAsync(CancellationToken.None);
+        page.ObservePage(true);
+        try
+        {
+            var home = KeyboardHomeAssistantPage.Render(new("1 个场景可用", "↑↓ 场景　中按打开网页", ConnectionBadge: "在线"));
+            await WaitForFrame(page, home);
+            page.Interact(4, home, () => true);
+            var on = KeyboardHomeAssistantPage.Render(new("看护指示灯", "当前开　中按关闭", 1, 1));
+            await WaitForFrame(page, on);
+            page.Interact(2, on, () => true);
+            var confirmedOff = KeyboardHomeAssistantPage.Render(new("看护指示灯", "已关闭", 1, 1));
+            await WaitForFrame(page, confirmedOff);
+            page.Interact(2, on, () => true);
+            handler.Requests.Should().Equal(false);
+            page.Interact(2, confirmedOff, () => true);
+            await WaitForFrame(page, KeyboardHomeAssistantPage.Render(new("看护指示灯", "已开启", 1, 1)));
+            handler.Requests.Should().Equal(false, true);
+        }
+        finally { await page.StopAsync(CancellationToken.None); }
+    }
+
+    private sealed class SwitchHa : HttpMessageHandler
+    {
+        public ConcurrentQueue<bool> Requests { get; } = new();
+        private int _enabled = 1;
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            if (request.Method == HttpMethod.Get)
+            {
+                var id = request.RequestUri!.Segments[^1];
+                var state = id.StartsWith("input_boolean.", StringComparison.Ordinal) && Volatile.Read(ref _enabled) == 1 ? "on" : "off";
+                return Reply(JsonSerializer.Serialize(new { entity_id = id, state, attributes = new { } }));
+            }
+            request.RequestUri!.PathAndQuery.Should().Be("/api/services/script/child_monitor?return_response");
+            using var doc = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(cancellationToken));
+            var enabled = doc.RootElement.GetProperty("enabled").GetBoolean();
+            Requests.Enqueue(enabled);
+            Volatile.Write(ref _enabled, enabled ? 1 : 0);
+            return Reply(JsonSerializer.Serialize(new { service_response = new { enabled, unconfirmed = Array.Empty<string>() } }));
+        }
+
+        private static HttpResponseMessage Reply(string value) => new(HttpStatusCode.OK)
+        {
+            Content = new StringContent(value, Encoding.UTF8, "application/json"),
+        };
     }
 
     private sealed class FakeHa : HttpMessageHandler

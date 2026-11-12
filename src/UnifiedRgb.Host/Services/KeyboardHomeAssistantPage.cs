@@ -25,6 +25,7 @@ internal sealed class KeyboardHomeAssistantPage : BackgroundService
     private PublishedFrame? _frame;
     private int _selected; // Home is zero; the configured scenes follow in order.
     private long _entry;
+    private long _sceneRevision;
     private bool _visible;
     private string? _connectionStatus = "正在连接";
     private string? _result;
@@ -77,7 +78,8 @@ internal sealed class KeyboardHomeAssistantPage : BackgroundService
                 && (_selected == 0 || _connectionStatus is null && _states[_selected - 1].Available)
                 && acknowledged.AsSpan().SequenceEqual(frame.Pixels))
             {
-                _pending = new(_selected == 0 ? null : _states[_selected - 1].Scene, _entry, stillAdmitted);
+                var state = _selected == 0 ? null : _states[_selected - 1];
+                _pending = new(state?.Scene, _entry, stillAdmitted, !state?.SwitchEnabled);
                 _busy = true;
                 _result = null;
             }
@@ -112,6 +114,12 @@ internal sealed class KeyboardHomeAssistantPage : BackgroundService
                         {
                             _result = result;
                             _resultUntil = _time.GetUtcNow() + TimeSpan.FromSeconds(4);
+                            if (pending.DesiredSwitch is bool desired && result is "已开启" or "已关闭"
+                                && _selected > 0 && _states[_selected - 1].Scene == pending.Scene)
+                            {
+                                _states[_selected - 1] = _states[_selected - 1] with { SwitchEnabled = desired };
+                                _sceneRevision++;
+                            }
                         }
                     }
                     PublishFrame();
@@ -135,11 +143,14 @@ internal sealed class KeyboardHomeAssistantPage : BackgroundService
     {
         try
         {
+            long revision;
+            lock (_sync) revision = _sceneRevision;
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
             timeout.CancelAfter(TimeSpan.FromSeconds(5));
             var states = await Task.WhenAll(_scenes.Select(scene => _client.ReadAsync(scene, timeout.Token))).ConfigureAwait(false);
             lock (_sync)
             {
+                if (revision != _sceneRevision) return;
                 if (_connectionStatus is not null)
                     Serilog.Log.Information("HA keyboard scenes loaded: configured={Configured}, available={Available}", states.Length, states.Count(s => s.Available));
                 _states = states;
@@ -170,7 +181,7 @@ internal sealed class KeyboardHomeAssistantPage : BackgroundService
             if (!pending.StillAdmitted() || _endpoint is null) return "已取消";
             return await _openBrowser(_endpoint, pending.StillAdmitted, ct).ConfigureAwait(false) ? "已请求打开网页" : "无法打开网页";
         }
-        try { return await _client.ActivateAsync(pending.Scene, pending.StillAdmitted, ct).ConfigureAwait(false); }
+        try { return await _client.ActivateAsync(pending.Scene, pending.StillAdmitted, ct, pending.DesiredSwitch).ConfigureAwait(false); }
         catch (HomeAssistantCredentialMissingException) { return "未配置 HA 凭据"; }
         catch (Exception ex) when (IsIntegrationFailure(ex)) { return "结果未知"; }
     }
@@ -200,7 +211,13 @@ internal sealed class KeyboardHomeAssistantPage : BackgroundService
             {
                 var state = _states[selected - 1];
                 canActivate = state.Available && _connectionStatus is null && !_busy;
-                var detail = _busy ? "执行中…" : _result ?? _connectionStatus ?? (canActivate ? "↑↓ 选择　中按执行" : "场景暂不可用");
+                var hint = state.SwitchEnabled switch
+                {
+                    true => "当前开　中按关闭",
+                    false => "当前关　中按开启",
+                    null => "↑↓ 选择　中按执行",
+                };
+                var detail = _busy ? "执行中…" : _result ?? _connectionStatus ?? (canActivate ? hint : "场景暂不可用");
                 view = new(state.Name, detail, selected, _states.Length);
             }
             if (_frame is { } old && old.View == view && old.Selection == selected && old.CanActivate == canActivate) return;
@@ -247,6 +264,6 @@ internal sealed class KeyboardHomeAssistantPage : BackgroundService
     }
 
     private bool _disposed;
-    private sealed record PendingAction(KeyboardHomeAssistantScene? Scene, long Entry, Func<bool> StillAdmitted);
+    private sealed record PendingAction(KeyboardHomeAssistantScene? Scene, long Entry, Func<bool> StillAdmitted, bool? DesiredSwitch);
     private sealed record PublishedFrame(HomeAssistantPageView View, int Selection, bool CanActivate, byte[] Pixels);
 }

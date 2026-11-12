@@ -7,7 +7,7 @@ using System.Text.Json;
 
 namespace UnifiedRgb.Host.Services;
 
-internal sealed record HomeAssistantSceneState(KeyboardHomeAssistantScene Scene, string Name, bool Available);
+internal sealed record HomeAssistantSceneState(KeyboardHomeAssistantScene Scene, string Name, bool Available, bool? SwitchEnabled = null);
 
 internal sealed class HomeAssistantSceneClient : IDisposable
 {
@@ -45,15 +45,32 @@ internal sealed class HomeAssistantSceneClient : IDisposable
         var value = root.GetProperty("state").GetString();
         // A native scene with no previous activation can legitimately have state "unknown".
         var available = scene.IsScript ? value == "off" : value is not (null or "" or "unavailable");
-        return new(scene, CleanLabel(label, fallback), available);
+        var switchEnabled = scene.SwitchEntityId is { } id ? await ReadSwitchAsync(id, ct).ConfigureAwait(false) : null;
+        return new(scene, CleanLabel(label, fallback), available && (scene.SwitchEntityId is null || switchEnabled.HasValue),
+            switchEnabled);
     }
 
-    public async Task<string> ActivateAsync(KeyboardHomeAssistantScene scene, Func<bool> stillAdmitted, CancellationToken ct)
+    private async Task<bool?> ReadSwitchAsync(string id, CancellationToken ct)
     {
+        using var request = Request(HttpMethod.Get, "api/states/" + id);
+        using var response = await _http.SendAsync(request, ct).ConfigureAwait(false);
+        if (response.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.Forbidden) return null;
+        response.EnsureSuccessStatusCode();
+        using var state = JsonDocument.Parse(await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false));
+        var root = state.RootElement;
+        if (root.GetProperty("entity_id").GetString() != id) throw new InvalidDataException("Unexpected HA switch entity.");
+        return root.GetProperty("state").GetString() switch { "on" => true, "off" => false, _ => null };
+    }
+
+    public async Task<string> ActivateAsync(KeyboardHomeAssistantScene scene, Func<bool> stillAdmitted, CancellationToken ct,
+        bool? desiredSwitch = null)
+    {
+        if (scene.SwitchEntityId is not null && !desiredSwitch.HasValue) return "状态未确认";
         var path = scene.ReadScriptResult ? "script/" + scene.EntityId[7..] + "?return_response"
             : scene.IsScript ? "script/turn_on" : "scene/turn_on";
         using var request = Request(HttpMethod.Post, "api/services/" + path);
-        request.Content = scene.ReadScriptResult ? JsonContent.Create(new { }) : JsonContent.Create(new { entity_id = scene.EntityId });
+        request.Content = scene.SwitchEntityId is not null ? JsonContent.Create(new { enabled = desiredSwitch })
+            : scene.ReadScriptResult ? JsonContent.Create(new { }) : JsonContent.Create(new { entity_id = scene.EntityId });
         ct.ThrowIfCancellationRequested();
         if (!stillAdmitted()) return "已取消";
         using var response = await _http.SendAsync(request, ct).ConfigureAwait(false);
@@ -63,6 +80,13 @@ internal sealed class HomeAssistantSceneClient : IDisposable
         using var result = JsonDocument.Parse(await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false));
         if (!result.RootElement.TryGetProperty("service_response", out var service) || service.ValueKind != JsonValueKind.Object
             || !service.TryGetProperty("unconfirmed", out var pending) || pending.ValueKind != JsonValueKind.Array) return "结果未知";
+        if (scene.SwitchEntityId is not null)
+        {
+            if (pending.GetArrayLength() != 0 || !service.TryGetProperty("enabled", out var value)
+                || value.ValueKind is not (JsonValueKind.True or JsonValueKind.False)
+                || value.GetBoolean() != desiredSwitch) return "状态未确认";
+            return value.GetBoolean() ? "已开启" : "已关闭";
+        }
         return pending.GetArrayLength() == 0 ? "执行完成" : "部分设备未确认";
     }
 

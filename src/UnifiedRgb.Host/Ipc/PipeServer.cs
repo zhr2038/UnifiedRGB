@@ -140,6 +140,8 @@ public sealed partial class PipeServer(
         {
             using var rpc = new JsonRpc(new HeaderDelimitedMessageHandler(pipe, pipe, CreateFormatter()));
             rpc.AddLocalRpcTarget<IRgbService>(scope?.Service ?? service, null);
+            if (scope?.Service is IKeyboardLightOverlayService overlay)
+                rpc.AddLocalRpcTarget<IKeyboardLightOverlayService>(overlay, null);
             if (performance is not null) rpc.AddLocalRpcTarget<IScreenPerformanceService>(performance, null);
             if (video is not null) rpc.AddLocalRpcTarget<IScreenVideoService>(video, null);
             if (keyboardDisplay is not null) rpc.AddLocalRpcTarget<IKeyboardDisplayService>(keyboardDisplay, null);

@@ -1,0 +1,5 @@
+*
+!Dockerfile
+!monitor.py
+!yamnet.tflite
+!yamnet_class_map.csv

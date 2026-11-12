@@ -26,10 +26,15 @@ public sealed class KeyboardHomeAssistantScene
     public string EntityId { get; set; } = "";
     public string? Label { get; set; }
     public bool ReadScriptResult { get; set; }
+    public string? SwitchEntityId { get; set; }
 
     internal bool IsScript => EntityId.StartsWith("script.", StringComparison.Ordinal);
     internal bool IsValid => EntityId is { Length: > 0 and <= 100 }
         && (IsScript || !ReadScriptResult && EntityId.StartsWith("scene.", StringComparison.Ordinal))
-        && EntityId.Length > EntityId.IndexOf('.') + 1
-        && EntityId[(EntityId.IndexOf('.') + 1)..].All(c => c is >= 'a' and <= 'z' or >= '0' and <= '9' or '_');
+        && ValidSuffix(EntityId)
+        && (SwitchEntityId is null || IsScript && ReadScriptResult && SwitchEntityId.Length <= 100
+            && SwitchEntityId.StartsWith("input_boolean.", StringComparison.Ordinal) && ValidSuffix(SwitchEntityId));
+
+    private static bool ValidSuffix(string entity) => entity.Length > entity.IndexOf('.') + 1
+        && entity[(entity.IndexOf('.') + 1)..].All(c => c is >= 'a' and <= 'z' or >= '0' and <= '9' or '_');
 }

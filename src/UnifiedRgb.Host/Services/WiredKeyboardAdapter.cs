@@ -12,7 +12,7 @@ namespace UnifiedRgb.Host.Services;
 /// only reports why; a Ready local route makes the zone one record per physical key. Complete C0 81 frames use the current
 /// owner's independently verified route map; another route's missing scan never substitutes guessed LED ids.
 /// </summary>
-public sealed class WiredKeyboardAdapter : IWholeFrameAdapter, INativeBringup, IRogPeripheralConfigurationLifetime, IPerKeyFrameSource, IDisposable
+public sealed partial class WiredKeyboardAdapter : IWholeFrameAdapter, INativeBringup, IRogPeripheralConfigurationLifetime, IPerKeyFrameSource, IDisposable
 {
     // NativeMarker.Channel is numeric in the existing RPC contract; status names this channel "per-key-led".
     public const int PerKeyLedMarkerChannel = 1;
@@ -176,18 +176,33 @@ public sealed class WiredKeyboardAdapter : IWholeFrameAdapter, INativeBringup, I
         if (cells.Count != geometry.Count || cells.Any(cell => !indices.ContainsKey((cell.Key, cell.Row, cell.Column))))
             throw new DeviceBlockedException("The active route map has different physical keys or geometry; rediscover it with that route selected.");
         var colors = zones[0];
+        var overlay = CurrentOverlay();
         var keys = new RogKeyColor[cells.Count];
+        var output = overlay is { Colors.Length: > 0 } ? new RogKeyColor[cells.Count] : keys;
         var frame = new PerKeyFrameCell[cells.Count];
         for (var i = 0; i < keys.Length; i++)
         {
             var cell = cells[i];
-            var color = colors[indices[(cell.Key, cell.Row, cell.Column)]];
+            var logicalIndex = indices[(cell.Key, cell.Row, cell.Column)];
+            var color = colors[logicalIndex];
             keys[i] = new((byte)cell.LedId, color);
+            if (!ReferenceEquals(output, keys))
+            {
+                var offset = logicalIndex - overlay!.Start;
+                output[i] = (uint)offset < (uint)overlay.Colors.Length
+                    ? new((byte)cell.LedId, overlay.Colors[offset])
+                    : keys[i];
+            }
             frame[i] = new((byte)cell.LedId, cell.Key, cell.Row, cell.Column, color);
         }
         var previous = Volatile.Read(ref _lastNormalFrame);
         var enqueued = Stopwatch.GetTimestamp();
-        _bridge.WriteKeysAsync(keys, transport, CancellationToken.None).GetAwaiter().GetResult();
+        _bridge.WriteKeysAsync(output, transport, CancellationToken.None).GetAwaiter().GetResult();
+        if (overlay is not null)
+        {
+            if (overlay.Colors.Length == 0) Interlocked.CompareExchange(ref _keyOverlay, null, overlay);
+            overlay.Written.TrySetResult(transport);
+        }
         var completion = Stopwatch.GetTimestamp() - enqueued;
         // Counting only: every frame is still written, in order, with its own colours.
         var unique = previous?.Keys is not { } prior || previous.Transport != transport || !prior.SequenceEqual(keys);
