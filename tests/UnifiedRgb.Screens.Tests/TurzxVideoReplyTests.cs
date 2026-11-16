@@ -100,9 +100,57 @@ public sealed class TurzxVideoReplyTests
         session.SendFrame(Picture);
         channel.Writes.Should().OnlyContain(w => !w.Fast);
         channel.Writes.Count(w => w.Command == 122).Should().Be(1);
-        session.Work.QueueSleep.Should().BeGreaterThanOrEqualTo(20);
+        session.Work.QueueSleep.Should().BeGreaterThan(0);
         session.LastQueueDepth.Should().Be(0);
         session.Work.Matched.Should().Be(channel.Writes.Count);
+    }
+
+    [Fact]
+    public void Backpressure_polls_at_5ms_up_to_40_iterations_before_ReplyBacklog()
+    {
+        var channel = new Channel();
+        var session = Session(channel, allowFast: false);
+        session.Begin(Png);
+        channel.PacketsForNextData = (c, t) => [Ack(c, t, 4), []];
+        channel.QueueStatusDepth = () => 3; // stays above low-water mark (<= 2) for all 40 polls
+
+        var send = () => session.SendFrame(Picture);
+        send.Should().Throw<ScreenTransferException>().Which.Kind.Should().Be(ScreenTransferError.ReplyBacklog);
+        channel.Writes.Count(w => w.Command == 122).Should().Be(TurzxVideoSession.BackpressureMaxPolls);
+        session.Work.QueueSleep.Should().BeGreaterThanOrEqualTo(50); // 40 x 5 ms bounded wait
+    }
+
+    [Fact]
+    public void Backpressure_recovers_in_one_5ms_poll_when_queue_drains()
+    {
+        var channel = new Channel();
+        var session = Session(channel, allowFast: false);
+        session.Begin(Png);
+        var polls = 0;
+        channel.PacketsForNextData = (c, t) => [Ack(c, t, 4), []];
+        channel.QueueStatusDepth = () => Interlocked.Increment(ref polls) == 1 ? (byte)2 : (byte)4;
+
+        session.SendFrame(Picture);
+        polls.Should().Be(1);
+        channel.Writes.Count(w => w.Command == 122).Should().Be(1);
+        session.LastQueueDepth.Should().Be(2);
+    }
+
+    [Fact]
+    public void Backpressure_aborts_immediately_when_waitForCommand_signals_during_5ms_poll()
+    {
+        var channel = new Channel();
+        var waitObserved = new List<int>();
+        var fixedTime = new DateTime(2026, 10, 22, 12, 0, 0);
+        var session = new TurzxVideoSession(channel, new ScreenTimestamp(ScreenFamily.Turzx, () => fixedTime, () => fixedTime),
+            () => false, allowCorrelatedReplies: false, waitForCommand: ms => { waitObserved.Add(ms); return true; });
+        session.Begin(Png);
+        channel.PacketsForNextData = (c, t) => [Ack(c, t, 4), []];
+
+        var send = () => session.SendFrame(Picture);
+        send.Should().Throw<ScreenTransferException>().Which.Kind.Should().Be(ScreenTransferError.Aborted);
+        waitObserved.Should().Equal(TurzxVideoSession.BackpressurePollDelayMs);
+        channel.Writes.Count(w => w.Command == 122).Should().Be(0);
     }
 
     [Fact]
@@ -160,6 +208,7 @@ public sealed class TurzxVideoReplyTests
         public List<WriteFact> Writes { get; } = [];
         public List<byte[]> Packets { get; } = [];
         public Func<byte, uint, byte[][]>? PacketsForNextData { get; set; }
+        public Func<byte>? QueueStatusDepth { get; set; }
         public bool AbortNextRead { get; set; }
         public bool IoFailureNextRead { get; set; }
         public byte OutEndpoint => 1;
@@ -176,7 +225,9 @@ public sealed class TurzxVideoReplyTests
             var header = ScreenProtocol.DecryptHeader(ScreenFamily.Turzx, bytes[..512]);
             var command = header[0]; var timestamp = BinaryPrimitives.ReadUInt32LittleEndian(header.AsSpan(4));
             Writes.Add(new(command, timestamp, CorrelatedReplies == true, ExactReplyPair));
-            var replies = command == 121 && PacketsForNextData is { } next ? next(command, timestamp) : [Ack(command, timestamp), []];
+            var replies = command == 121 && PacketsForNextData is { } next
+                ? next(command, timestamp)
+                : [Ack(command, timestamp, command == 122 && QueueStatusDepth is { } depth ? depth() : (byte)0), []];
             if (command == 121) PacketsForNextData = null;
             foreach (var reply in replies) _packets.Enqueue(reply);
         }

@@ -10,6 +10,36 @@ namespace UnifiedRgb.Screens.Composition;
 internal sealed record ComposeResult(PixelFrame Canvas, string? Warning);
 
 /// <summary>
+/// Single-thread reusable compose workspace (content + assignment-rotated canvas) to avoid LOH churn at 60 FPS.
+/// Callers must never retain a <see cref="ComposeResult.Canvas"/> across subsequent calls using the same workspace.
+/// </summary>
+internal sealed class ScreenComposeBuffers
+{
+    private PixelFrame? _content;
+    private PixelFrame? _rotated;
+
+    public PixelFrame AcquireContent(int width, int height)
+    {
+        if (_content is null || _content.Width != width || _content.Height != height)
+        {
+            _content = new PixelFrame(width, height);
+        }
+
+        return _content;
+    }
+
+    public PixelFrame AcquireRotated(int width, int height)
+    {
+        if (_rotated is null || _rotated.Width != width || _rotated.Height != height)
+        {
+            _rotated = new PixelFrame(width, height);
+        }
+
+        return _rotated;
+    }
+}
+
+/// <summary>
 /// Composes one assignment into its device canvas (STA thread only): background colour, asset fitted by cover/contain and
 /// centred, telemetry overlay (round layout inside the visible circle on TL-LCD/H2, see <see cref="OverlayShape"/>), clockwise
 /// rotation (content is laid out at the swapped size for 90/270; an overlay region is placed on that content canvas, so it turns
@@ -58,7 +88,10 @@ internal sealed class ScreenCompositor(AssetStore assets, long cacheBytes, Overl
         ClearCache();
     }
 
-    public ComposeResult Compose(ScreenFamilyInfo family, ScreenAssignmentDto a, long elapsedMs, PcTelemetryDto? telemetry, DateTimeOffset now)
+    public OverlayRenderer Overlay => _overlay;
+
+    public ComposeResult Compose(ScreenFamilyInfo family, ScreenAssignmentDto a, long elapsedMs, PcTelemetryDto? telemetry, DateTimeOffset now,
+        ScreenComposeBuffers? buffers = null)
     {
         ArgumentNullException.ThrowIfNull(family);
         ArgumentNullException.ThrowIfNull(a);
@@ -86,11 +119,19 @@ internal sealed class ScreenCompositor(AssetStore assets, long cacheBytes, Overl
                 var pixels = fitted.Pixels;
                 if (fitted.Opaque && pixels.Width == cw && pixels.Height == ch)
                 {
-                    content = pixels.Clone(); // exact full-canvas replacement; no solid fill or per-pixel alpha blend
+                    if (buffers is not null)
+                    {
+                        content = buffers.AcquireContent(cw, ch);
+                        content.CopyFrom(pixels);
+                    }
+                    else
+                    {
+                        content = pixels.Clone(); // exact full-canvas replacement; no solid fill or per-pixel alpha blend
+                    }
                 }
                 else
                 {
-                    content = PixelFrame.Solid(cw, ch, r, g, b);
+                    content = AcquireSolid(buffers, cw, ch, r, g, b);
                     PixelOps.BlendOver(content, pixels, (cw - pixels.Width) / 2, (ch - pixels.Height) / 2);
                 }
             }
@@ -105,7 +146,7 @@ internal sealed class ScreenCompositor(AssetStore assets, long cacheBytes, Overl
             }
         }
 
-        content ??= PixelFrame.Solid(cw, ch, r, g, b);
+        content ??= AcquireSolid(buffers, cw, ch, r, g, b);
         var shape = OverlayRenderer.ShapeOf(family.Family);
         if (a.OverlayLayout is not null && (shape != OverlayShape.Rectangle || a.Overlay != OverlayLayouts.RegionOverlay))
         {
@@ -119,7 +160,15 @@ internal sealed class ScreenCompositor(AssetStore assets, long cacheBytes, Overl
             // the region is in content-canvas fractions (before the local rotation below)
             if (_overlay.Render(cw, ch, shape, a.Overlay, Color.FromRgb(ar, ag, ab), telemetry, now, a.OverlayLayout) is { } layer)
             {
-                PixelOps.BlendOver(content, layer, 0, 0);
+                if (a.OverlayLayout is { } layout)
+                {
+                    var rgn = OverlayLayouts.Pixels(layout, cw, ch);
+                    PixelOps.BlendOverRegion(content, layer, rgn.X, rgn.Y, rgn.Width, rgn.Height);
+                }
+                else
+                {
+                    PixelOps.BlendOver(content, layer, 0, 0);
+                }
             }
             else
             {
@@ -128,9 +177,30 @@ internal sealed class ScreenCompositor(AssetStore assets, long cacheBytes, Overl
             }
         }
 
-        var canvas = a.Rotation == 0 ? content : PixelOps.Rotate(content, a.Rotation);
+        PixelFrame canvas;
+        if (a.Rotation == 0)
+        {
+            canvas = content;
+        }
+        else if (buffers is not null)
+        {
+            canvas = buffers.AcquireRotated(family.Width, family.Height);
+            PixelOps.RotateInto(content, canvas, a.Rotation);
+        }
+        else
+        {
+            canvas = PixelOps.Rotate(content, a.Rotation);
+        }
         PixelOps.ApplyBrightness(canvas, a.Brightness);
         return new ComposeResult(canvas, warning);
+
+        static PixelFrame AcquireSolid(ScreenComposeBuffers? buffers, int width, int height, byte r, byte g, byte b)
+        {
+            if (buffers is null) return PixelFrame.Solid(width, height, r, g, b);
+            var frame = buffers.AcquireContent(width, height);
+            frame.FillSolid(r, g, b);
+            return frame;
+        }
     }
 
     private FittedFrame Fitted(StoredAsset asset, int frame, int cw, int ch, string fit)

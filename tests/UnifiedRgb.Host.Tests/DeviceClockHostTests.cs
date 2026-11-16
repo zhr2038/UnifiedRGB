@@ -97,7 +97,10 @@ public sealed class DeviceClockHostTests
         while (deadline.Elapsed < TimeSpan.FromSeconds(10))
         {
             clock = host.Engine.BuildStatus(true).RfClock!.Assignments.SingleOrDefault(a => a.Assignment == "g");
-            if (clock?.UploadedFrames is not null && adapter.Uploads > 0)
+            if (clock?.UploadedFrames is not null && adapter.Uploads > 0
+                && (decimated
+                    ? clock.FallbackReason?.Contains("differs from the compiled reference", StringComparison.Ordinal) == true
+                    : clock.Mode == "DeviceClock"))
             {
                 break;
             }

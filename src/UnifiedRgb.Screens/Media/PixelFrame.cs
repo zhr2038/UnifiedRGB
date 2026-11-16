@@ -36,9 +36,28 @@ internal sealed class PixelFrame
     public static PixelFrame Solid(int width, int height, byte r, byte g, byte b, byte a = 255)
     {
         var f = new PixelFrame(width, height);
-        var px = (uint)((a << 24) | ((r * a / 255) << 16) | ((g * a / 255) << 8) | (b * a / 255));
-        MemoryMarshal.Cast<byte, uint>(f.Pixels.AsSpan()).Fill(px);
+        f.FillSolid(r, g, b, a);
         return f;
+    }
+
+    public void FillSolid(byte r, byte g, byte b, byte a = 255)
+    {
+        var px = (uint)((a << 24) | ((r * a / 255) << 16) | ((g * a / 255) << 8) | (b * a / 255));
+        MemoryMarshal.Cast<byte, uint>(Pixels.AsSpan()).Fill(px);
+    }
+
+    public void CopyFrom(PixelFrame source)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        if (source.Width != Width || source.Height != Height)
+        {
+            throw new ArgumentException($"PixelFrame dimensions mismatch: {source.Width}x{source.Height} != {Width}x{Height}.", nameof(source));
+        }
+
+        if (!ReferenceEquals(source, this))
+        {
+            Buffer.BlockCopy(source.Pixels, 0, Pixels, 0, Pixels.Length);
+        }
     }
 
     public PixelFrame Clone() => new(Width, Height, (byte[])Pixels.Clone());
@@ -110,29 +129,85 @@ internal static class PixelOps
         var y0 = Math.Max(0, y);
         var x1 = Math.Min(dst.Width, x + src.Width);
         var y1 = Math.Min(dst.Height, y + src.Height);
+        BlendOverRect(dst, src, x, y, x0, y0, x1, y1);
+    }
+
+    /// <summary>
+    /// Source-over of premultiplied <paramref name="src"/> at (0, 0), restricting scanning strictly to the caller-known
+    /// non-transparent bounding region (<paramref name="rx"/>, <paramref name="ry"/>, <paramref name="rw"/>, <paramref name="rh"/>).
+    /// </summary>
+    public static void BlendOverRegion(PixelFrame dst, PixelFrame src, int rx, int ry, int rw, int rh)
+    {
+        var x0 = Math.Max(0, rx);
+        var y0 = Math.Max(0, ry);
+        var x1 = Math.Min(Math.Min(dst.Width, src.Width), rx + rw);
+        var y1 = Math.Min(Math.Min(dst.Height, src.Height), ry + rh);
+        BlendOverRect(dst, src, 0, 0, x0, y0, x1, y1);
+    }
+
+    private static void BlendOverRect(PixelFrame dst, PixelFrame src, int x, int y, int x0, int y0, int x1, int y1)
+    {
+        if (x0 >= x1 || y0 >= y1)
+        {
+            return;
+        }
+
         var d = dst.Pixels;
         var s = src.Pixels;
+        var d32 = BitConverter.IsLittleEndian ? MemoryMarshal.Cast<byte, uint>(d.AsSpan()) : default;
+        var s32 = BitConverter.IsLittleEndian ? MemoryMarshal.Cast<byte, uint>(s.AsSpan()) : default;
         for (var yy = y0; yy < y1; yy++)
         {
-            var di = ((yy * dst.Width) + x0) * 4;
-            var si = (((yy - y) * src.Width) + (x0 - x)) * 4;
-            for (var xx = x0; xx < x1; xx++, di += 4, si += 4)
+            if (BitConverter.IsLittleEndian)
             {
-                int a = s[si + 3];
+                var di32 = (yy * dst.Width) + x0;
+                var si32 = ((yy - y) * src.Width) + (x0 - x);
+                for (var xx = x0; xx < x1; xx++, di32++, si32++)
+                {
+                    var px = s32[si32];
+                    var a = px >> 24;
+                    if (a == 0)
+                    {
+                        continue;
+                    }
+
+                    if (a == 255)
+                    {
+                        d32[di32] = px;
+                        continue;
+                    }
+
+                    var di = di32 * 4;
+                    var si = si32 * 4;
+                    var inv = 255 - (int)a;
+                    d[di] = (byte)(s[si] + (((d[di] * inv) + 127) / 255));
+                    d[di + 1] = (byte)(s[si + 1] + (((d[di + 1] * inv) + 127) / 255));
+                    d[di + 2] = (byte)(s[si + 2] + (((d[di + 2] * inv) + 127) / 255));
+                    d[di + 3] = (byte)((int)a + (((d[di + 3] * inv) + 127) / 255));
+                }
+
+                continue;
+            }
+
+            var diB = ((yy * dst.Width) + x0) * 4;
+            var siB = (((yy - y) * src.Width) + (x0 - x)) * 4;
+            for (var xx = x0; xx < x1; xx++, diB += 4, siB += 4)
+            {
+                int a = s[siB + 3];
                 if (a == 255)
                 {
-                    d[di] = s[si];
-                    d[di + 1] = s[si + 1];
-                    d[di + 2] = s[si + 2];
-                    d[di + 3] = 255;
+                    d[diB] = s[siB];
+                    d[diB + 1] = s[siB + 1];
+                    d[diB + 2] = s[siB + 2];
+                    d[diB + 3] = 255;
                 }
                 else if (a != 0)
                 {
                     var inv = 255 - a;
-                    d[di] = (byte)(s[si] + (((d[di] * inv) + 127) / 255));
-                    d[di + 1] = (byte)(s[si + 1] + (((d[di + 1] * inv) + 127) / 255));
-                    d[di + 2] = (byte)(s[si + 2] + (((d[di + 2] * inv) + 127) / 255));
-                    d[di + 3] = (byte)(a + (((d[di + 3] * inv) + 127) / 255));
+                    d[diB] = (byte)(s[siB] + (((d[diB] * inv) + 127) / 255));
+                    d[diB + 1] = (byte)(s[siB + 1] + (((d[diB + 1] * inv) + 127) / 255));
+                    d[diB + 2] = (byte)(s[siB + 2] + (((d[diB + 2] * inv) + 127) / 255));
+                    d[diB + 3] = (byte)(a + (((d[diB + 3] * inv) + 127) / 255));
                 }
             }
         }
@@ -141,53 +216,76 @@ internal static class PixelOps
     /// <summary>Exact clockwise rotation by 0/90/180/270 degrees (90/270 swap the dimensions).</summary>
     public static PixelFrame Rotate(PixelFrame src, int degreesClockwise)
     {
+        var (w, h) = degreesClockwise switch
+        {
+            0 or 180 => (src.Width, src.Height),
+            90 or 270 => (src.Height, src.Width),
+            _ => throw new ArgumentOutOfRangeException(nameof(degreesClockwise), degreesClockwise, "0, 90, 180 or 270"),
+        };
+        var dst = new PixelFrame(w, h);
+        RotateInto(src, dst, degreesClockwise);
+        return dst;
+    }
+
+    /// <summary>Zero-allocation clockwise rotation by 0/90/180/270 degrees into an already allocated <paramref name="dst"/>.</summary>
+    public static void RotateInto(PixelFrame src, PixelFrame dst, int degreesClockwise)
+    {
+        ArgumentNullException.ThrowIfNull(src);
+        ArgumentNullException.ThrowIfNull(dst);
         var w = src.Width;
         var h = src.Height;
-        var s = MemoryMarshal.Cast<byte, uint>(src.Pixels.AsSpan());
         switch (degreesClockwise)
         {
             case 0:
-                return src.Clone();
+                if (dst.Width != w || dst.Height != h) throw new ArgumentException("Destination dimensions mismatch for 0° rotation.", nameof(dst));
+                dst.CopyFrom(src);
+                break;
             case 90:
             {
-                var dst = new PixelFrame(h, w);
+                if (dst.Width != h || dst.Height != w) throw new ArgumentException("Destination dimensions mismatch for 90° rotation.", nameof(dst));
+                var s = MemoryMarshal.Cast<byte, uint>(src.Pixels.AsSpan());
                 var d = MemoryMarshal.Cast<byte, uint>(dst.Pixels.AsSpan());
                 for (var y = 0; y < h; y++)
                 {
+                    var row = y * w;
+                    var colOffset = h - 1 - y;
                     for (var x = 0; x < w; x++)
                     {
-                        d[(x * h) + (h - 1 - y)] = s[(y * w) + x];
+                        d[(x * h) + colOffset] = s[row + x];
                     }
                 }
 
-                return dst;
+                break;
             }
 
             case 180:
             {
-                var dst = new PixelFrame(w, h);
+                if (dst.Width != w || dst.Height != h) throw new ArgumentException("Destination dimensions mismatch for 180° rotation.", nameof(dst));
+                var s = MemoryMarshal.Cast<byte, uint>(src.Pixels.AsSpan());
                 var d = MemoryMarshal.Cast<byte, uint>(dst.Pixels.AsSpan());
                 for (var i = 0; i < s.Length; i++)
                 {
                     d[s.Length - 1 - i] = s[i];
                 }
 
-                return dst;
+                break;
             }
 
             case 270:
             {
-                var dst = new PixelFrame(h, w);
+                if (dst.Width != h || dst.Height != w) throw new ArgumentException("Destination dimensions mismatch for 270° rotation.", nameof(dst));
+                var s = MemoryMarshal.Cast<byte, uint>(src.Pixels.AsSpan());
                 var d = MemoryMarshal.Cast<byte, uint>(dst.Pixels.AsSpan());
                 for (var y = 0; y < h; y++)
                 {
+                    var row = y * w;
                     for (var x = 0; x < w; x++)
                     {
-                        d[((w - 1 - x) * h) + y] = s[(y * w) + x];
+                        d[((w - 1 - x) * h) + y] = s[row + x];
                     }
                 }
 
-                return dst;
+                break;
             }
 
             default:

@@ -10,6 +10,7 @@ namespace UnifiedRgb.Screens.Protocol;
 /// </summary>
 internal static class TurzxVideoProtocol
 {
+    public const int HeaderBlockBytes = 512;
     public const byte DataCommand = 121;
     public const int MaxChunkBytes = 202752;
     public static byte[] StopPlayback(uint stamp) => Header(111, stamp);
@@ -23,27 +24,49 @@ internal static class TurzxVideoProtocol
     public static byte[] Data(ReadOnlySpan<byte> chunk, uint stamp)
     {
         if (chunk.IsEmpty || chunk.Length > MaxChunkBytes) throw new ArgumentOutOfRangeException(nameof(chunk));
-        var plain = Plain(DataCommand, stamp);
-        BinaryPrimitives.WriteInt32BigEndian(plain.AsSpan(8, 4), chunk.Length);
-        var packet = new byte[512 + chunk.Length]; Encrypt(plain).CopyTo(packet, 0); chunk.CopyTo(packet.AsSpan(512));
+        var packet = new byte[HeaderBlockBytes + chunk.Length];
+        WriteDataPacket(chunk, stamp, packet);
         return packet;
+    }
+
+    /// <summary>Writes a framed data packet into <paramref name="destination"/> with zero heap allocations.</summary>
+    public static int WriteDataPacket(ReadOnlySpan<byte> chunk, uint stamp, Span<byte> destination)
+    {
+        if (chunk.IsEmpty || chunk.Length > MaxChunkBytes) throw new ArgumentOutOfRangeException(nameof(chunk));
+        var total = HeaderBlockBytes + chunk.Length;
+        if (destination.Length < total) throw new ArgumentException("Packet destination buffer is too short.", nameof(destination));
+        Span<byte> plain = stackalloc byte[500];
+        InitPlain(plain, DataCommand, stamp);
+        BinaryPrimitives.WriteInt32BigEndian(plain.Slice(8, 4), chunk.Length);
+        ScreenProtocol.EncryptTurzxHeaderBlock(plain, destination[..HeaderBlockBytes]);
+        chunk.CopyTo(destination[HeaderBlockBytes..]);
+        return total;
+    }
+
+    /// <summary>Writes a 512-byte encrypted control header into <paramref name="destination"/> with zero heap allocations.</summary>
+    public static int WriteControlHeader(byte command, uint stamp, Span<byte> destination, byte value = 0)
+    {
+        if (destination.Length < HeaderBlockBytes) throw new ArgumentException("Header destination buffer is too short.", nameof(destination));
+        Span<byte> plain = stackalloc byte[500];
+        InitPlain(plain, command, stamp);
+        plain[8] = value;
+        ScreenProtocol.EncryptTurzxHeaderBlock(plain, destination[..HeaderBlockBytes]);
+        return HeaderBlockBytes;
     }
 
     private static byte[] Header(byte command, uint stamp, byte value = 0)
     {
-        var plain = Plain(command, stamp); plain[8] = value; return Encrypt(plain);
+        var block = new byte[HeaderBlockBytes];
+        WriteControlHeader(command, stamp, block, value);
+        return block;
     }
-    private static byte[] Plain(byte command, uint stamp)
+
+    private static void InitPlain(Span<byte> plain, byte command, uint stamp)
     {
-        var plain = new byte[500]; plain[0] = command; plain[2] = 0x1A; plain[3] = 0x6D;
-        BinaryPrimitives.WriteUInt32LittleEndian(plain.AsSpan(4, 4), stamp); return plain;
+        plain.Clear();
+        plain[0] = command;
+        plain[2] = 0x1A;
+        plain[3] = 0x6D;
+        BinaryPrimitives.WriteUInt32LittleEndian(plain.Slice(4, 4), stamp);
     }
-#pragma warning disable CA5351 // fixed device protocol obfuscation, not security
-    private static byte[] Encrypt(byte[] plain)
-    {
-        using var des = DES.Create(); var key = "slv3tuzx"u8.ToArray(); des.Key = key;
-        var block = new byte[512]; des.EncryptCbc(plain, key, PaddingMode.Zeros).CopyTo(block, 0);
-        block[510] = 0xA1; block[511] = 0x1A; return block;
-    }
-#pragma warning restore CA5351
 }

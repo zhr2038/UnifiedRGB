@@ -11,6 +11,8 @@ internal sealed partial class ScreenWorker
 {
     private MfH264IntraEncoder? _videoEncoder;
     private (bool SingleSlice, int Quality)? _videoEncoderVariant;
+    private PixelFrame? _nativeRotateBuffer;
+    private TurzxFrameLookahead? _frameLookahead;
     private INativeVideoSession? _videoSession;
     private readonly OverlayRenderer _videoOverlay;
     private PixelFrame? _lastVideoOverlay;
@@ -23,6 +25,8 @@ internal sealed partial class ScreenWorker
     private double _videoOverlayComposeMs, _videoOverlayEncodeMs;
     private bool _lastVideoOverlaySimplePng;
     private string? _videoOverlayEncodingNote;
+
+    internal LookaheadStats LookaheadStats => _frameLookahead?.Stats ?? default;
 
     /// <summary>
     /// The one slicing rule of worker and preview: an active explicit trial's own SingleSlice flag (false included, so a trial can A/B against
@@ -38,7 +42,24 @@ internal sealed partial class ScreenWorker
         var turzx = _device.Family.Family == ScreenFamily.Turzx;
         if (_device.Family.Family is not (ScreenFamily.Turzx or ScreenFamily.H2) || !_ctx.NativeVideoAllowed(_device.Id))
             throw new ScreenEncodeException("Native H.264 needs a verified H2/TURZX or an explicit bounded trial.");
-        var native = turzx ? PixelOps.Rotate(canvas, _ctx.Options.TurzxLandscapeRotation) : canvas;
+        PixelFrame native;
+        if (turzx)
+        {
+            var rotation = _ctx.Options.TurzxLandscapeRotation;
+            var rw = rotation is 90 or 270 ? canvas.Height : canvas.Width;
+            var rh = rotation is 90 or 270 ? canvas.Width : canvas.Height;
+            if (_nativeRotateBuffer is null || _nativeRotateBuffer.Width != rw || _nativeRotateBuffer.Height != rh)
+            {
+                _nativeRotateBuffer = new PixelFrame(rw, rh);
+            }
+
+            PixelOps.RotateInto(canvas, _nativeRotateBuffer, rotation);
+            native = _nativeRotateBuffer;
+        }
+        else
+        {
+            native = canvas;
+        }
         var trial = _ctx.VideoTrialOf(_device.Id)?.Info;
         var variant = (SingleSlice: SingleSliceOf(_ctx.Options, _device.Family.Family, trial, _ctx.NativeVideoAllowed(_device.Id)),
             Quality: turzx ? trial?.Quality ?? 95 : 95);
@@ -62,7 +83,7 @@ internal sealed partial class ScreenWorker
     /// BEFORE that access unit (never a drawn PNG across a baked picture). Every other picture keeps the access unit first.
     /// </param>
     private bool SendVideo(ScreenImage frame, ScreenAssignmentDto assignment, ScreenTimestamp stamp, bool allowCorrelatedReplies,
-        VideoTelemetry telemetry = VideoTelemetry.PngLayer)
+        VideoTelemetry telemetry = VideoTelemetry.PngLayer, Action<INativeVideoSession>? beforeSendDataFrame = null)
     {
         if (_channel is null) throw new InvalidOperationException("No video channel.");
         if (!_ctx.NativeVideoAllowed(_device.Id)) return false; // normal trial expiry/cancel is not a dropped/error frame
@@ -80,6 +101,7 @@ internal sealed partial class ScreenWorker
             OnVideoSessionBegan();
         }
         if (bakedTelemetry) VideoOverlayStep(_videoSession, null, assignment);
+        beforeSendDataFrame?.Invoke(_videoSession);
         _videoSession.SendFrame(frame.Image);
         if (!bakedTelemetry)
         {
@@ -141,9 +163,16 @@ internal sealed partial class ScreenWorker
         var session = _videoSession; _videoSession = null;
         Volatile.Write(ref _videoFacts, null); _previousVideoPosition = 0; _videoWraps = 0;
         _lastVideoOverlay = null; _lastVideoOverlayAssignment = null; _videoOverlayEncodingNote = null;
+        _frameLookahead?.Invalidate();
         ResetTelemetrySample(); // a new session starts with a fresh display reading
         StopPreparedOverlay(); // invalidates older prepared work before the stop controls; no join here
         session?.Stop();
+    }
+
+    private void DisposeLookahead()
+    {
+        _frameLookahead?.Dispose();
+        _frameLookahead = null;
     }
 
     internal static PixelFrame? RenderVideoOverlay(OverlayRenderer renderer, ScreenFamilyInfo family, ScreenAssignmentDto assignment,

@@ -71,30 +71,43 @@ public static class ScreenProtocol
     /// <summary>Encrypts a plain header into the 512-byte block sent first.</summary>
     public static byte[] EncryptHeader(ScreenFamily family, ReadOnlySpan<byte> plain)
     {
+        var block = new byte[HeaderBlockBytes];
+        EncryptHeaderInto(family, plain, block);
+        return block;
+    }
+
+    internal static void EncryptHeaderInto(ScreenFamily family, ReadOnlySpan<byte> plain, Span<byte> block)
+    {
         if (plain.Length != PlainHeaderBytes(family))
         {
             throw new ArgumentException($"{family} plain header must be {PlainHeaderBytes(family)} bytes.", nameof(plain));
         }
+        if (block.Length < HeaderBlockBytes)
+        {
+            throw new ArgumentException("Header destination block must be at least 512 bytes.", nameof(block));
+        }
 
         RequireAllowed(family, plain[0]);
-        using var des = CreateDes();
-        var block = new byte[HeaderBlockBytes];
         if (family == ScreenFamily.TlLcd)
         {
-            var n = des.EncryptCbc(plain, Key, block, PaddingMode.PKCS7); // 504 + a full 8-byte PKCS7 block = exactly 512
-            return n == HeaderBlockBytes ? block : throw new InvalidOperationException($"TL header encrypted to {n} bytes, expected 512.");
+            EncryptCbcZeroAlloc(plain, PaddingMode.PKCS7, block[..HeaderBlockBytes]); // 504 + a full 8-byte PKCS7 block = 512
+            return;
         }
 
-        var cipher = des.EncryptCbc(plain, Key, family == ScreenFamily.H2 ? PaddingMode.PKCS7 : PaddingMode.Zeros);
-        if (cipher.Length != 504)
-        {
-            throw new InvalidOperationException($"{family} header encrypted to {cipher.Length} bytes, expected 504.");
-        }
-
-        cipher.CopyTo(block, 0);
+        EncryptCbcZeroAlloc(plain, family == ScreenFamily.H2 ? PaddingMode.PKCS7 : PaddingMode.Zeros, block[..504]);
+        block[504..510].Clear();
         block[510] = 0xA1;
         block[511] = 0x1A;
-        return block;
+    }
+
+    internal static void EncryptTurzxHeaderBlock(ReadOnlySpan<byte> plain500, Span<byte> block512)
+    {
+        if (plain500.Length != 500) throw new ArgumentException("TURZX plain header must be 500 bytes.", nameof(plain500));
+        if (block512.Length < HeaderBlockBytes) throw new ArgumentException("Header destination block must be at least 512 bytes.", nameof(block512));
+        EncryptCbcZeroAlloc(plain500, PaddingMode.Zeros, block512[..504]);
+        block512[504..510].Clear();
+        block512[510] = 0xA1;
+        block512[511] = 0x1A;
     }
 
     /// <summary>Inverse of <see cref="EncryptHeader"/> (self-check and tests); verifies the padding and the A1 1A trailer.</summary>
@@ -105,10 +118,10 @@ public static class ScreenProtocol
             throw new ArgumentException("A header block is 512 bytes.", nameof(block));
         }
 
-        using var des = CreateDes();
+        var des = GetThreadState().CbcDes;
         if (family == ScreenFamily.TlLcd)
         {
-            return des.DecryptCbc(block[..HeaderBlockBytes], Key, PaddingMode.PKCS7);
+            return des.DecryptCbc(block[..HeaderBlockBytes], KeySpan, PaddingMode.PKCS7);
         }
 
         if (block[510] != 0xA1 || block[511] != 0x1A || block[504..510].IndexOfAnyExcept((byte)0) >= 0)
@@ -118,10 +131,10 @@ public static class ScreenProtocol
 
         if (family == ScreenFamily.H2)
         {
-            return des.DecryptCbc(block[..504], Key, PaddingMode.PKCS7);
+            return des.DecryptCbc(block[..504], KeySpan, PaddingMode.PKCS7);
         }
 
-        var plain = des.DecryptCbc(block[..504], Key, PaddingMode.None);
+        var plain = des.DecryptCbc(block[..504], KeySpan, PaddingMode.None);
         if (plain.AsSpan(500).IndexOfAnyExcept((byte)0) >= 0)
         {
             throw new CryptographicException("TURZX header zero padding is not zero.");
@@ -148,9 +161,15 @@ public static class ScreenProtocol
             throw new ArgumentException($"Command {command} needs a {(command == PushJpegCommand ? "JPEG" : "PNG")} image.", nameof(image));
         }
 
-        var header = EncryptHeader(family, BuildPlainHeader(family, command, timestamp, image.Length));
+        Span<byte> plain = stackalloc byte[PlainHeaderBytes(family)];
+        plain.Clear();
+        plain[0] = command;
+        plain[2] = 0x1A;
+        plain[3] = 0x6D;
+        BinaryPrimitives.WriteUInt32LittleEndian(plain.Slice(4, 4), timestamp);
+        BinaryPrimitives.WriteInt32BigEndian(plain.Slice(8, 4), image.Length);
         var packet = new byte[family == ScreenFamily.TlLcd ? TlFrameBytes : HeaderBlockBytes + image.Length];
-        header.CopyTo(packet, 0);
+        EncryptHeaderInto(family, plain, packet.AsSpan(0, HeaderBlockBytes));
         image.CopyTo(packet.AsSpan(HeaderBlockBytes));
         return packet;
     }
@@ -167,12 +186,73 @@ public static class ScreenProtocol
         }
     }
 
+    private static ReadOnlySpan<byte> KeySpan => "slv3tuzx"u8;
+
+    [ThreadStatic]
+    private static ThreadDesState? t_desState;
+
 #pragma warning disable CA5351 // DES is the devices' fixed obfuscation of the request header (vendor/reference protocol), not our security
-    private static DES CreateDes()
+    private sealed class ThreadDesState
     {
-        var des = DES.Create();
-        des.Key = Key;
-        return des;
+        public readonly DES CbcDes;
+        public readonly DES EcbDes;
+        public readonly ICryptoTransform EcbEncryptor;
+        public readonly byte[] BlockIn = new byte[8];
+        public readonly byte[] BlockOut = new byte[8];
+
+        public ThreadDesState()
+        {
+            CbcDes = DES.Create();
+            CbcDes.Key = Key;
+
+            EcbDes = DES.Create();
+            EcbDes.Key = Key;
+            EcbDes.Mode = CipherMode.ECB;
+            EcbDes.Padding = PaddingMode.None;
+            EcbEncryptor = EcbDes.CreateEncryptor();
+        }
+    }
+
+    private static ThreadDesState GetThreadState() => t_desState ??= new ThreadDesState();
+
+    private static void EncryptCbcZeroAlloc(ReadOnlySpan<byte> plain, PaddingMode padding, Span<byte> destination)
+    {
+        var totalBytes = padding == PaddingMode.PKCS7
+            ? ((plain.Length / 8) + 1) * 8
+            : ((plain.Length + 7) / 8) * 8;
+        if (destination.Length < totalBytes)
+        {
+            throw new ArgumentException("Destination buffer is too small for encrypted blocks.", nameof(destination));
+        }
+
+        var state = GetThreadState();
+        var blockIn = state.BlockIn;
+        var blockOut = state.BlockOut;
+        var prev = KeySpan;
+        for (var offset = 0; offset < totalBytes; offset += 8)
+        {
+            var rem = plain.Length - offset;
+            if (rem >= 8)
+            {
+                plain.Slice(offset, 8).CopyTo(blockIn);
+            }
+            else
+            {
+                var copy = Math.Max(0, rem);
+                if (copy > 0) plain.Slice(offset, copy).CopyTo(blockIn);
+                var pad = (byte)(padding == PaddingMode.PKCS7 ? 8 - copy : 0);
+                blockIn.AsSpan(copy).Fill(pad);
+            }
+
+            for (var b = 0; b < 8; b++)
+            {
+                blockIn[b] ^= prev[b];
+            }
+
+            state.EcbEncryptor.TransformBlock(blockIn, 0, 8, blockOut, 0);
+            blockOut.CopyTo(destination.Slice(offset, 8));
+            prev = blockOut;
+        }
     }
 #pragma warning restore CA5351
 }

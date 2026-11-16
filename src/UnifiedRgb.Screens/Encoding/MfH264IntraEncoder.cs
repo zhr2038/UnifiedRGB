@@ -19,6 +19,11 @@ internal sealed class MfH264IntraEncoder : IDisposable
     private readonly IMFTransform _encoder;
     private readonly object _codecOwner;
     private readonly IMfCodecApi _codec;
+    private readonly int _nv12Bytes;
+    private IMFSample? _inputSample;
+    private IMFMediaBuffer? _inputBuffer;
+    private IMFSample? _outputSample;
+    private IMFMediaBuffer? _outputBuffer;
     private long _index;
     private bool _disposed;
     public int LastSliceCount { get; private set; }
@@ -29,6 +34,7 @@ internal sealed class MfH264IntraEncoder : IDisposable
         if (width < 2 || height < 2 || (width & 1) != 0 || (height & 1) != 0 || (long)width * height > 1920L * 1920)
             throw new ArgumentOutOfRangeException(nameof(width), "H.264 needs an even, bounded raster.");
         _width = width; _height = height; _fullRange = fullRange; _singleSlice = singleSlice;
+        _nv12Bytes = checked(width * height * 3 / 2);
         MFStartup().CheckError();
         IMFTransform? transform = null; object? owner = null;
         try
@@ -55,29 +61,60 @@ internal sealed class MfH264IntraEncoder : IDisposable
             using var input = Type(VideoFormatGuids.NV12, width, height, fullRange);
             transform.SetInputType(0, input, 0);
             Start(transform);
+            _inputSample = MFCreateSample();
+            _inputBuffer = MFCreateMemoryBuffer(_nv12Bytes);
+            _inputSample.AddBuffer(_inputBuffer);
+            _outputSample = MFCreateSample();
+            _outputBuffer = MFCreateMemoryBuffer(MaxEncodedBytes);
+            _outputSample.AddBuffer(_outputBuffer);
             _encoder = transform; _codecOwner = owner; _codec = codec;
         }
         catch
         {
+            _inputBuffer?.Dispose(); _inputSample?.Dispose();
+            _outputBuffer?.Dispose(); _outputSample?.Dispose();
             if (owner is not null) Marshal.ReleaseComObject(owner);
             transform?.Dispose(); MFShutdown().CheckError(); throw;
         }
     }
 
-    public byte[] Encode(PixelFrame frame)
+    public unsafe byte[] Encode(PixelFrame frame)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         if (frame.Width != _width || frame.Height != _height) throw new ArgumentException("H.264 raster changed.", nameof(frame));
-        // The NV12 bytes are converted straight into the locked input buffer: identical bytes to ToNv12, without a managed copy.
-        using var sample = Sample(checked(_width * _height * 3 / 2), _index++,
-            target => Nv12Converter.Convert(frame.Pixels, _width, _height, _fullRange, target));
+        var inputBuffer = _inputBuffer!;
+        var inputSample = _inputSample!;
+        // The NV12 bytes are converted straight into the locked persistent input buffer: zero managed or native buffer churn.
+        inputBuffer.Lock(out var inPtr, out var inCap, out _);
+        try
+        {
+            if (inCap < _nv12Bytes) throw new InvalidDataException("Media Foundation input buffer is shorter than requested.");
+            Nv12Converter.Convert(frame.Pixels, _width, _height, _fullRange, new Span<byte>((void*)inPtr, _nv12Bytes));
+        }
+        finally { inputBuffer.Unlock(); }
+        inputBuffer.CurrentLength = _nv12Bytes;
+        var sampleIndex = _index++;
+        inputSample.SampleTime = sampleIndex * 10_000_000 / 60;
+        inputSample.SampleDuration = 10_000_000 / 60;
         Set(_codec, "398c1b98-8353-475a-9ef2-8f265d260345", (uint)1); // ForceKeyFrame is VT_UI4, NOT VT_BOOL
-        _encoder.ProcessInput(0, sample, 0);
-        var bytes = H264ColourMetadata.SpecifyCanvasColour(Output(_encoder, MaxEncodedBytes), _fullRange);
-        var kinds = H264AnnexB.Types(bytes);
-        if (!kinds.Contains(7) || !kinds.Contains(8) || !kinds.Contains(5) || kinds.Any(t => t is >= 1 and <= 4))
+        _encoder.ProcessInput(0, inputSample, 0);
+
+        var outputSample = _outputSample!;
+        var outputBuffer = _outputBuffer!;
+        outputBuffer.CurrentLength = 0;
+        MfCodecNative.ProcessOutput(_encoder.NativePointer, outputSample.NativePointer);
+        using var data = outputSample.ConvertToContiguousBuffer();
+        data.Lock(out var outPtr, out _, out var outLen);
+        byte[] bytes;
+        try
+        {
+            if (outLen < 1 || outLen > MaxEncodedBytes) throw new InvalidDataException("H.264 transform output exceeds its buffer.");
+            bytes = H264ColourMetadata.SpecifyCanvasColour(new ReadOnlySpan<byte>((void*)outPtr, outLen), _fullRange);
+        }
+        finally { data.Unlock(); }
+        if (!H264AnnexB.ValidateIdrAccessUnit(bytes, out var sliceCount))
             throw new InvalidDataException("H.264 encoder did not produce an independently decodable SPS/PPS/IDR access unit.");
-        LastSliceCount = kinds.Count(t => t == 5);
+        LastSliceCount = sliceCount;
         if (_singleSlice && LastSliceCount != 1) throw new InvalidDataException("The requested single-slice encoder did not emit one complete IDR slice; nothing may be sent.");
         return bytes;
     }
@@ -228,12 +265,35 @@ internal sealed class MfH264IntraEncoder : IDisposable
     {
         if (_disposed) return;
         _disposed = true;
+        _inputBuffer?.Dispose(); _inputBuffer = null;
+        _inputSample?.Dispose(); _inputSample = null;
+        _outputBuffer?.Dispose(); _outputBuffer = null;
+        _outputSample?.Dispose(); _outputSample = null;
         Marshal.ReleaseComObject(_codecOwner); _encoder.Dispose(); MFShutdown().CheckError();
     }
 }
 
 internal static class H264AnnexB
 {
+    public static bool ValidateIdrAccessUnit(ReadOnlySpan<byte> bytes, out int idrSliceCount)
+    {
+        bool hasSps = false, hasPps = false, hasIdr = false;
+        idrSliceCount = 0;
+        for (var i = 0; i + 3 < bytes.Length; i++)
+        {
+            if (bytes[i] != 0 || bytes[i + 1] != 0) continue;
+            var prefix = bytes[i + 2] == 1 ? 3 : i + 4 < bytes.Length && bytes[i + 2] == 0 && bytes[i + 3] == 1 ? 4 : 0;
+            if (prefix == 0) continue;
+            var nalType = bytes[i + prefix] & 31;
+            if (nalType is >= 1 and <= 4) return false;
+            if (nalType == 7) hasSps = true;
+            else if (nalType == 8) hasPps = true;
+            else if (nalType == 5) { hasIdr = true; idrSliceCount++; }
+            i += prefix;
+        }
+        return hasSps && hasPps && hasIdr;
+    }
+
     public static IReadOnlyList<int> Types(ReadOnlySpan<byte> bytes)
     {
         var types = new List<int>();

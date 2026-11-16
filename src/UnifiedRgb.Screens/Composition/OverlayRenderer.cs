@@ -61,8 +61,24 @@ internal sealed class OverlayRenderer(Func<DrawingVisual, int, int, PixelFrame>?
     private static readonly Reading[] Longest =
         [new("CPU", "100%", null), new("GPU", "100%", " 105°C"), new("RAM", "255.9", "/256 GB"), new("VRAM", "31.9", "/32 GB")];
 
-    private string? _cacheKey;
     private PixelFrame? _cache;
+    private int _cachedWidth;
+    private int _cachedHeight;
+    private OverlayShape _cachedShape;
+    private string? _cachedOverlay;
+    private Color _cachedAccent;
+    private ScreenOverlayLayoutDto? _cachedLayout;
+    private PcTelemetryDto? _cachedTelemetryRef;
+    private bool _cachedWasStale;
+    private readonly char[] _cachedSignature = new char[160];
+    private int _cachedSignatureLen;
+
+    internal long CacheHits { get; private set; }
+
+    internal long RenderCount { get; private set; }
+
+    internal static bool IsStale(PcTelemetryDto? t, DateTimeOffset now) =>
+        t is null || now - t.Timestamp > StaleAfter || t.Timestamp - now > StaleAfter;
 
     /// <summary>The overlay shape of a family: TL-LCD and H2 panels are round, TURZX is a wide rectangle.</summary>
     public static OverlayShape ShapeOf(ScreenFamily family) => family is ScreenFamily.TlLcd or ScreenFamily.H2 ? OverlayShape.Round : OverlayShape.Rectangle;
@@ -109,17 +125,32 @@ internal sealed class OverlayRenderer(Func<DrawingVisual, int, int, PixelFrame>?
             throw new ArgumentException(canvasProblem, nameof(layout));
         }
 
-        var readings = Readings(telemetry, now);
-        var key = string.Join('|', width, height, shape, overlay, accent, string.Join(';', readings));
-        if (layout is not null)
+        var stale = IsStale(telemetry, now);
+        var structuralMatch = _cache is not null
+            && _cachedWidth == width
+            && _cachedHeight == height
+            && _cachedShape == shape
+            && string.Equals(_cachedOverlay, overlay, StringComparison.Ordinal)
+            && _cachedAccent == accent
+            && Equals(_cachedLayout, layout);
+        if (structuralMatch && stale == _cachedWasStale && ReferenceEquals(telemetry, _cachedTelemetryRef))
         {
-            key += "|" + OverlayLayouts.Key(layout);
-        }
-        if (key == _cacheKey && _cache is not null)
-        {
+            CacheHits++;
             return _cache;
         }
 
+        Span<char> sigBuffer = stackalloc char[160];
+        var sigLen = FormatTelemetrySignature(stale ? null : telemetry, sigBuffer);
+        if (structuralMatch && sigLen >= 0 && sigLen == _cachedSignatureLen
+            && sigBuffer[..sigLen].SequenceEqual(_cachedSignature.AsSpan(0, _cachedSignatureLen)))
+        {
+            _cachedTelemetryRef = telemetry;
+            _cachedWasStale = stale;
+            CacheHits++;
+            return _cache;
+        }
+
+        var readings = Readings(telemetry, now);
         var visual = new DrawingVisual();
         using (var dc = visual.RenderOpen())
         {
@@ -153,13 +184,83 @@ internal sealed class OverlayRenderer(Func<DrawingVisual, int, int, PixelFrame>?
         if (!HasAnyAlpha(layer))
         {
             _cache = null;
-            _cacheKey = null;
+            _cachedSignatureLen = 0;
+            _cachedTelemetryRef = null;
             return null;
         }
 
         _cache = layer;
-        _cacheKey = key;
+        _cachedWidth = width;
+        _cachedHeight = height;
+        _cachedShape = shape;
+        _cachedOverlay = overlay;
+        _cachedAccent = accent;
+        _cachedLayout = layout;
+        _cachedTelemetryRef = telemetry;
+        _cachedWasStale = stale;
+        if (sigLen >= 0)
+        {
+            sigBuffer[..sigLen].CopyTo(_cachedSignature);
+            _cachedSignatureLen = sigLen;
+        }
+        else
+        {
+            _cachedSignatureLen = -1;
+        }
+        RenderCount++;
         return _cache;
+    }
+
+    private static int FormatTelemetrySignature(PcTelemetryDto? t, Span<char> dst)
+    {
+        var pos = 0;
+        if (!WriteDouble(dst, ref pos, t?.CpuUsagePercent, "0")) return -1;
+        if (pos >= dst.Length) return -1;
+        dst[pos++] = '|';
+        if (!WriteDouble(dst, ref pos, t?.GpuUsagePercent, "0")) return -1;
+        if (pos >= dst.Length) return -1;
+        dst[pos++] = '|';
+        if (!WriteDouble(dst, ref pos, t?.GpuTemperatureC, "0")) return -1;
+        if (pos >= dst.Length) return -1;
+        dst[pos++] = '|';
+        if (!WriteGb(dst, ref pos, t?.MemoryUsedBytes, t?.MemoryTotalBytes)) return -1;
+        if (pos >= dst.Length) return -1;
+        dst[pos++] = '|';
+        if (!WriteGb(dst, ref pos, t?.GpuMemoryUsedBytes, t?.GpuMemoryTotalBytes)) return -1;
+        return pos;
+
+        static bool WriteDouble(Span<char> d, ref int p, double? v, string fmt)
+        {
+            if (v is { } val && double.IsFinite(val))
+            {
+                if (!val.TryFormat(d[p..], out var written, fmt, CultureInfo.InvariantCulture)) return false;
+                p += written;
+                return true;
+            }
+
+            if (p >= d.Length) return false;
+            d[p++] = '—';
+            return true;
+        }
+
+        static bool WriteGb(Span<char> d, ref int p, long? used, long? total)
+        {
+            if (used is not { } u || total is not { } tt || tt <= 0 || u < 0)
+            {
+                if (p >= d.Length) return false;
+                d[p++] = '—';
+                return true;
+            }
+
+            const double Gb = 1024.0 * 1024 * 1024;
+            if (!(u / Gb).TryFormat(d[p..], out var uw, "0.0", CultureInfo.InvariantCulture)) return false;
+            p += uw;
+            if (p >= d.Length) return false;
+            d[p++] = '/';
+            if (!(tt / Gb).TryFormat(d[p..], out var tw, "0", CultureInfo.InvariantCulture)) return false;
+            p += tw;
+            return true;
+        }
     }
 
     internal static PixelFrame Rasterize(DrawingVisual visual, int width, int height)

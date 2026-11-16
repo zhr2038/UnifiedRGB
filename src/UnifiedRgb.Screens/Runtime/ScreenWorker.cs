@@ -158,13 +158,15 @@ internal sealed partial class ScreenWorker : IDisposable
     /// assignment started. An unknown or blocked timeline sets <paramref name="blocked"/> (the frame is then black, no overlay,
     /// labelled); it never falls back to the local start or shows a held content frame.
     /// </summary>
-    private long ElapsedMs(ScreenAssignmentDto assignment, long animationStart, out string? blocked)
+    private long ElapsedMs(ScreenAssignmentDto assignment, long animationStart, out double exactPositionMs, out string? blocked)
     {
         blocked = null;
         if (assignment.TimelineId is not { } id)
         {
             Volatile.Write(ref _timelineSource, null);
-            return (long)_ctx.Time.GetElapsedTime(animationStart).TotalMilliseconds;
+            var totalMs = _ctx.Time.GetElapsedTime(animationStart).TotalMilliseconds;
+            exactPositionMs = totalMs > 0 && double.IsFinite(totalMs) ? totalMs : 0;
+            return (long)exactPositionMs;
         }
 
         var sample = _ctx.Timeline()?.Position(id);
@@ -172,6 +174,7 @@ internal sealed partial class ScreenWorker : IDisposable
         {
             Volatile.Write(ref _timelineSource, "unavailable");
             blocked = $"shared timeline {id} is unavailable";
+            exactPositionMs = 0;
             return 0;
         }
 
@@ -179,11 +182,13 @@ internal sealed partial class ScreenWorker : IDisposable
         {
             Volatile.Write(ref _timelineSource, "blocked: " + why);
             blocked = why;
+            exactPositionMs = 0;
             return 0;
         }
 
         Volatile.Write(ref _timelineSource, sample.Source);
-        return double.IsFinite(sample.PositionMs) && sample.PositionMs > 0 ? (long)Math.Floor(sample.PositionMs) : 0;
+        exactPositionMs = double.IsFinite(sample.PositionMs) && sample.PositionMs > 0 ? sample.PositionMs : 0;
+        return (long)Math.Floor(exactPositionMs);
     }
 
     /// <summary>Transparent PNG-layer clears written (H2 only, one per opened channel); never counted as frames.</summary>
@@ -277,6 +282,8 @@ internal sealed partial class ScreenWorker : IDisposable
         var sourceBreak = true;
         var attemptOpen = false;
         object? sourceSession = null;
+        ScreenComposeBuffers? workerComposeBuffers = null;
+        long lastLookaheadElapsed = 0;
         try
         {
             if (_ctx.BacklightStateDirectory is { } stateDirectory)
@@ -287,6 +294,7 @@ internal sealed partial class ScreenWorker : IDisposable
                 {
                     if (cmd.Stop)
                     {
+                        _frameLookahead?.Invalidate();
                         break;
                     }
 
@@ -296,8 +304,10 @@ internal sealed partial class ScreenWorker : IDisposable
                         animationCache.Clear();
                         staticFrame = null;
                         animationStart = _ctx.Time.GetTimestamp();
+                        _frameLookahead?.Invalidate();
                     }
 
+                    if (cmd.Paused) _frameLookahead?.Invalidate();
                     assignment = cmd.Assignment;
                     paused = cmd.Paused;
                     pacing.Reset();
@@ -306,7 +316,7 @@ internal sealed partial class ScreenWorker : IDisposable
                 }
 
                 var powerOff = backlight is not null && _ctx.WholeCaseBlackout();
-                if (lastPowerRequest != powerOff) { lastPowerRequest = powerOff; powerError = null; powerAttempts = 0; offIssued = false; retryAt = 0; _backoff.Reset(); }
+                if (lastPowerRequest != powerOff) { lastPowerRequest = powerOff; powerError = null; powerAttempts = 0; offIssued = false; retryAt = 0; _backoff.Reset(); _frameLookahead?.Invalidate(); }
                 if (powerError is not null)
                 {
                     CloseChannel(); SetState(ScreenStates.Error, null, keepError: false, powerError);
@@ -451,6 +461,7 @@ internal sealed partial class ScreenWorker : IDisposable
                     ScreenImage frame;
                     string? warning = null;
                     var slow = false;
+                    Action<INativeVideoSession>? prepareLookahead = null;
                     if (staticFrame is not null && _ctx.EncodingOf(_device.Id) != staticEncoding)
                     {
                         staticFrame = null; // the local encoder policy changed: re-encode (the assignment and pause flag are unchanged)
@@ -458,11 +469,12 @@ internal sealed partial class ScreenWorker : IDisposable
 
                     if (staticFrame is not null)
                     {
+                        _frameLookahead?.Invalidate();
                         frame = staticFrame;
                     }
                     else
                     {
-                        var elapsed = ElapsedMs(renderAssignment, animationStart, out var blocked);
+                        var elapsed = ElapsedMs(renderAssignment, animationStart, out var exactPositionMs, out var blocked);
                         var encoding = _ctx.EncodingOf(_device.Id);
                         var nativeVideo = encoding.Quality == Encoding.ScreenEncodingPolicies.NativeH264IntraV1 && blocked is null;
                         if (cachedEncoding != encoding) { animationCache.Clear(); cachedEncoding = encoding; }
@@ -481,10 +493,123 @@ internal sealed partial class ScreenWorker : IDisposable
                         var frameIndex = sourceAsset?.FrameAt(elapsed) ?? 0;
                         if (nativeVideo) { _videoPosition = elapsed; _videoFrameIndex = frameIndex; }
                         selectedAsset = sourceAsset; selectedIndex = frameIndex; selectedPosition = elapsed;
+
+                        var lookaheadEligible = nativeVideo && bakedTelemetry && family.Family == ScreenFamily.Turzx && _ctx.NativeVideoAllowed(_device.Id);
+                        if (!lookaheadEligible) _frameLookahead?.Invalidate();
+
                         if (cacheAsset is not null && animationCache.Find(cacheAsset.Id, frameIndex) is { } hit)
                         {
                             frame = hit;
                             cacheHit = true;
+                            var stillCached = !compositor.IsDynamic(renderAssignment);
+                            if (assignment.TimelineId is not null)
+                            {
+                                slow = stillCached || blocked is not null;
+                            }
+                        }
+                        else if (lookaheadEligible)
+                        {
+                            var utcNow = _ctx.Time.GetUtcNow();
+                            var sampledReading = SampledTelemetry(renderAssignment, videoTelemetry, videoTrial?.Info.TrialId, out var telemetryGen, out var telemetryTakenAt);
+                            var actualStale = OverlayRenderer.IsStale(sampledReading, utcNow);
+                            var variant = new LookaheadEncoderVariant(
+                                SingleSliceOf(_ctx.Options, family.Family, videoTrial?.Info, _ctx.NativeVideoAllowed(_device.Id)),
+                                videoTrial?.Info.Quality ?? 95,
+                                _ctx.Options.TurzxLandscapeRotation);
+                            LookaheadResult? lookaheadHit = null;
+                            if (_videoSession is TurzxVideoSession activeSession)
+                            {
+                                var criteria = new LookaheadMatchCriteria(
+                                    activeSession,
+                                    renderAssignment,
+                                    sourceAsset?.Id,
+                                    frameIndex,
+                                    elapsed,
+                                    lastLookaheadElapsed,
+                                    period,
+                                    sourceAsset?.DurationMs ?? 0,
+                                    TimelineSource,
+                                    telemetryGen,
+                                    actualStale,
+                                    videoTelemetry,
+                                    variant);
+                                lookaheadHit = _frameLookahead?.TryTake(criteria, () => _stopping || _mailbox.HasPending);
+                            }
+
+                            bool still;
+                            if (lookaheadHit is { } preEncoded)
+                            {
+                                frame = preEncoded.Frame;
+                                composeMs = preEncoded.ComposeMs;
+                                encodeMs = preEncoded.EncodeMs;
+                                still = preEncoded.Still;
+                            }
+                            else
+                            {
+                                var composeStart = _ctx.Time.GetTimestamp();
+                                var composed = compositor.Compose(family, renderAssignment, elapsed, sampledReading, utcNow,
+                                    workerComposeBuffers ??= new ScreenComposeBuffers());
+                                warning = composed.Warning;
+                                composeMs = _ctx.Time.GetElapsedTime(composeStart).TotalMilliseconds;
+                                var encodeStart = _ctx.Time.GetTimestamp();
+                                frame = warning is null ? EncodeVideo(composed.Canvas, videoTelemetry)
+                                    : ScreenImage.Of(_ctx.Encode(family, composed.Canvas, _ctx.Options.TurzxLandscapeRotation,
+                                        Encoding.ScreenEncodingPolicies.Legacy, encoding.Indexed8Verified));
+                                encodeMs = _ctx.Time.GetElapsedTime(encodeStart).TotalMilliseconds;
+                                still = !compositor.IsDynamic(renderAssignment);
+                            }
+
+                            lastLookaheadElapsed = elapsed;
+                            if (assignment.TimelineId is null)
+                            {
+                                if (still && warning is null)
+                                {
+                                    staticFrame = frame;
+                                    staticEncoding = encoding;
+                                }
+                            }
+                            else
+                            {
+                                slow = still || blocked is not null || warning?.StartsWith(ScreenCompositor.BlockedPrefix, StringComparison.Ordinal) == true;
+                            }
+
+                            if (!still && warning is null && frame.Command == Protocol.TurzxVideoProtocol.DataCommand && targetFps > 1)
+                            {
+                                prepareLookahead = session =>
+                                {
+                                    var nextSlotTicks = pacing.PredictNextSlotTimestamp(frameStart, _ctx.Time.TimestampFrequency, period);
+                                    var predictedDeltaTicks = Math.Max(0L, nextSlotTicks - frameStart);
+                                    var predictedDeltaMs = predictedDeltaTicks * 1000.0 / _ctx.Time.TimestampFrequency;
+                                    var expectedAge = _ctx.Time.GetElapsedTime(telemetryTakenAt, frameStart) + TimeSpan.FromMilliseconds(predictedDeltaMs);
+                                    var nextUtc = utcNow + TimeSpan.FromMilliseconds(predictedDeltaMs);
+                                    var trialValidNext = videoTrial is null || frameStart < videoTrial.Deadline - predictedDeltaTicks;
+                                    if (trialValidNext
+                                        && expectedAge < TelemetrySamplePeriod
+                                        && OverlayRenderer.IsStale(sampledReading, nextUtc) == actualStale)
+                                    {
+                                        var nextElapsed = (long)Math.Floor(exactPositionMs + predictedDeltaMs);
+                                        var nextFrameIndex = sourceAsset?.FrameAt(nextElapsed) ?? 0;
+                                        _frameLookahead ??= new TurzxFrameLookahead(_ctx.Assets, FrameCacheBytes);
+                                        _frameLookahead.Submit(new LookaheadJob(
+                                            _frameLookahead.Epoch,
+                                            session,
+                                            family,
+                                            renderAssignment,
+                                            sourceAsset?.Id,
+                                            nextFrameIndex,
+                                            nextElapsed,
+                                            period,
+                                            sourceAsset?.DurationMs ?? 0,
+                                            TimelineSource,
+                                            telemetryGen,
+                                            sampledReading,
+                                            nextUtc,
+                                            actualStale,
+                                            videoTelemetry,
+                                            variant));
+                                    }
+                                };
+                            }
                         }
                         else
                         {
@@ -492,7 +617,7 @@ internal sealed partial class ScreenWorker : IDisposable
                             var composed = blocked is null
                                 ? compositor.Compose(family, separateVideoOverlay ? renderAssignment with { Overlay = "none", OverlayLayout = null } : renderAssignment,
                                     elapsed, bakedTelemetry ? SampledTelemetry(renderAssignment, videoTelemetry, videoTrial?.Info.TrialId) : _ctx.Telemetry(),
-                                    _ctx.Time.GetUtcNow())
+                                    _ctx.Time.GetUtcNow(), nativeVideo ? (workerComposeBuffers ??= new ScreenComposeBuffers()) : null)
                                 : ScreenCompositor.ComposeBlocked(family, blocked);
                             warning = composed.Warning;
                             composeMs = _ctx.Time.GetElapsedTime(composeStart).TotalMilliseconds;
@@ -503,20 +628,20 @@ internal sealed partial class ScreenWorker : IDisposable
                             encodeMs = _ctx.Time.GetElapsedTime(encodeStart).TotalMilliseconds;
                             if (cacheAsset is not null && warning is null && animationCache.Add(cacheAsset.Id, frameIndex, frame))
                                 compositor.ClearCache(); // encoded bytes replace decoded rasters, rather than retaining both caches
-                        }
-                        var still = !compositor.IsDynamic(renderAssignment);
-                        if (assignment.TimelineId is null)
-                        {
-                            if (still && warning is null)
+                            var still = !compositor.IsDynamic(renderAssignment);
+                            if (assignment.TimelineId is null)
                             {
-                                staticFrame = frame;
-                                staticEncoding = encoding;
+                                if (still && warning is null)
+                                {
+                                    staticFrame = frame;
+                                    staticEncoding = encoding;
+                                }
                             }
-                        }
-                        else
-                        {
-                            // Strict eligibility is re-checked every period, even when the immutable image bytes are cached.
-                            slow = still || blocked is not null || warning?.StartsWith(ScreenCompositor.BlockedPrefix, StringComparison.Ordinal) == true;
+                            else
+                            {
+                                // Strict eligibility is re-checked every period, even when the immutable image bytes are cached.
+                                slow = still || blocked is not null || warning?.StartsWith(ScreenCompositor.BlockedPrefix, StringComparison.Ordinal) == true;
+                            }
                         }
                     }
 
@@ -556,7 +681,7 @@ internal sealed partial class ScreenWorker : IDisposable
                         var beforeRead = _videoSession?.ReadMs ?? 0; var beforeBytes = _videoSession?.BytesWritten ?? 0;
                         var beforeNative = _videoSession?.Work ?? default;
                         var beforeOverlayCompose = _videoOverlayComposeMs; var beforeOverlayEncode = _videoOverlayEncodeMs;
-                        if (!SendVideo(frame, renderAssignment, stamp!, !correlationDisabled, videoTelemetry)) { StopVideo(); staticFrame = null; continue; }
+                        if (!SendVideo(frame, renderAssignment, stamp!, !correlationDisabled, videoTelemetry, prepareLookahead)) { StopVideo(); staticFrame = null; continue; }
                         packetMs = _videoSession!.PacketMs - beforePacket; writeMs = _videoSession.WriteMs - beforeWrite;
                         readMs = _videoSession.ReadMs - beforeRead; packetLength = checked((int)(_videoSession.BytesWritten - beforeBytes));
                         nativeWork = _videoSession.Work.Since(beforeNative);
@@ -656,6 +781,7 @@ internal sealed partial class ScreenWorker : IDisposable
                 catch (Exception ex)
 #pragma warning restore CA1031
                 {
+                    _frameLookahead?.Invalidate();
                     if (powerChanging)
                     {
                         CloseChannel(); powerError = "screen backlight wake state: " + ex.Message;
@@ -699,6 +825,7 @@ internal sealed partial class ScreenWorker : IDisposable
 #pragma warning disable CA1031 // native cleanup failure must not escape a screen's background thread
             catch (Exception ex) { LogFrameFailed(_ctx.Log, _device.Id, "H.264 cleanup: " + ex.Message); }
 #pragma warning restore CA1031
+            DisposeLookahead(); // after the channel is closed; bounded 500 ms join
             DisposeOverlayPreparer(); // after the channel is closed; at most one bounded 500 ms join
             StaThread.ShutdownDispatcher();
         }

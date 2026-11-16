@@ -9,12 +9,17 @@ namespace UnifiedRgb.Screens.Runtime;
 internal sealed class TurzxVideoSession(IScreenUsbChannel channel, ScreenTimestamp stamp, Func<bool> stopped,
     bool allowCorrelatedReplies = true, Func<int, bool>? waitForCommand = null) : INativeVideoSession
 {
+    internal const int BackpressurePollDelayMs = 5;
+    internal const int BackpressureMaxPolls = 40; // 40 x 5 ms = 200 ms bounded drain wait
+
     private bool _entered;
     private bool _faulted;
     private uint? _lastStamp;
     private readonly ScreenReplyCapability _dataReplyCapability = new();
     private NativeVideoWork _work;
     private readonly byte[] _reply = new byte[512];
+    private readonly byte[] _controlPacket = new byte[TurzxVideoProtocol.HeaderBlockBytes];
+    private readonly byte[] _dataPacket = new byte[TurzxVideoProtocol.HeaderBlockBytes + TurzxVideoProtocol.MaxChunkBytes];
     public int LastQueueDepth { get; private set; }
     public long AccessUnits { get; private set; }
     public long OverlayWrites { get; private set; }
@@ -40,17 +45,17 @@ internal sealed class TurzxVideoSession(IScreenUsbChannel channel, ScreenTimesta
     public void SendFrame(byte[] accessUnit)
     {
         if (!_entered || _faulted) throw new InvalidOperationException("Video session is not initialized or its channel must be reopened.");
-        var types = H264AnnexB.Types(accessUnit);
-        if (accessUnit.Length is 0 or > MfH264IntraEncoder.MaxEncodedBytes || !types.Contains(7) || !types.Contains(8)
-            || !types.Contains(5) || types.Any(t => t is >= 1 and <= 4)) throw new InvalidDataException("Only independent SPS/PPS/IDR pictures may be streamed.");
+        if (accessUnit.Length is 0 or > MfH264IntraEncoder.MaxEncodedBytes || !H264AnnexB.ValidateIdrAccessUnit(accessUnit, out _))
+            throw new InvalidDataException("Only independent SPS/PPS/IDR pictures may be streamed.");
         for (var offset = 0; offset < accessUnit.Length; offset += TurzxVideoProtocol.MaxChunkBytes)
         {
             if (stopped()) throw new ScreenTransferException(ScreenTransferError.Aborted, "Native video was stopped.");
             var timestamp = NextStamp();
             var packetStart = Stopwatch.GetTimestamp();
-            var packet = TurzxVideoProtocol.Data(accessUnit.AsSpan(offset, Math.Min(TurzxVideoProtocol.MaxChunkBytes, accessUnit.Length - offset)), timestamp);
+            var chunkLength = Math.Min(TurzxVideoProtocol.MaxChunkBytes, accessUnit.Length - offset);
+            var packetLength = TurzxVideoProtocol.WriteDataPacket(accessUnit.AsSpan(offset, chunkLength), timestamp, _dataPacket);
             PacketMs += Stopwatch.GetElapsedTime(packetStart).TotalMilliseconds;
-            var response = Send(packet, TurzxVideoProtocol.DataCommand, timestamp);
+            var response = Send(_dataPacket.AsSpan(0, packetLength), TurzxVideoProtocol.DataCommand, timestamp);
             if (response < 9) { _faulted = true; throw new ScreenTransferException(ScreenTransferError.ResponseMismatch, "Video reply lacks its buffer status."); }
             LastQueueDepth = _reply[8];
             // Actual .NET sender waits when depth >3, until <=2. The Python example has the opposite comparison.
@@ -58,17 +63,17 @@ internal sealed class TurzxVideoSession(IScreenUsbChannel channel, ScreenTimesta
             for (var i = 0; busy; i++)
             {
                 if (stopped()) throw new ScreenTransferException(ScreenTransferError.Aborted, "Native video was stopped.");
-                if (i >= 8) throw new ScreenTransferException(ScreenTransferError.ReplyBacklog, "Native video buffer did not drain within its bounded wait.");
+                if (i >= BackpressureMaxPolls) throw new ScreenTransferException(ScreenTransferError.ReplyBacklog, "Native video buffer did not drain within its bounded wait.");
                 var sleepStart = Stopwatch.GetTimestamp();
-                if (waitForCommand is null) Thread.Sleep(25);
-                else if (waitForCommand(25))
+                if (waitForCommand is null) Thread.Sleep(BackpressurePollDelayMs);
+                else if (waitForCommand(BackpressurePollDelayMs))
                 {
                     // The old access unit may be partial. Reopen before sending any data from the replacement scene.
                     _faulted = true;
                     throw new ScreenTransferException(ScreenTransferError.Aborted, "Native video interrupted by a pending screen command.");
                 }
                 _work = _work with { QueueSleep = _work.QueueSleep + Stopwatch.GetElapsedTime(sleepStart).TotalMilliseconds };
-                var count = Control(TurzxVideoProtocol.QueueStatus);
+                var count = ControlCommand(122);
                 if (count < 9) { _faulted = true; throw new ScreenTransferException(ScreenTransferError.ResponseMismatch, "Video status reply is too short."); }
                 LastQueueDepth = _reply[8];
                 busy = LastQueueDepth > 2;
@@ -96,9 +101,18 @@ internal sealed class TurzxVideoSession(IScreenUsbChannel channel, ScreenTimesta
     public int QueryQueueStatus()
     {
         if (!_entered || _faulted) throw new InvalidOperationException("Video session is not initialized or its channel must be reopened.");
-        var count = Control(TurzxVideoProtocol.QueueStatus);
+        var count = ControlCommand(122);
         if (count < 9) { _faulted = true; throw new ScreenTransferException(ScreenTransferError.ResponseMismatch, "Video status reply is too short."); }
         return _reply[8];
+    }
+
+    private int ControlCommand(byte command, byte value = 0)
+    {
+        var timestamp = NextStamp();
+        var start = Stopwatch.GetTimestamp();
+        var len = TurzxVideoProtocol.WriteControlHeader(command, timestamp, _controlPacket, value);
+        PacketMs += Stopwatch.GetElapsedTime(start).TotalMilliseconds;
+        return Send(_controlPacket.AsSpan(0, len), command, timestamp);
     }
 
     private int Control(Func<uint, byte[]> packet)
@@ -109,7 +123,7 @@ internal sealed class TurzxVideoSession(IScreenUsbChannel channel, ScreenTimesta
         return Send(bytes, command, timestamp);
     }
 
-    private int Send(byte[] packet, byte command, uint timestamp)
+    private int Send(ReadOnlySpan<byte> packet, byte command, uint timestamp)
     {
         if (_faulted) throw new IOException("Native video channel must be reopened before another command.");
         var diagnostics = channel as IScreenUsbDiagnostics;

@@ -31,4 +31,12 @@ internal sealed class ScreenPacing
         _next += skipped * ticks;
         return skipped;
     }
+
+    /// <summary>Predicted stopwatch tick timestamp when the next immediate period slot will become due.</summary>
+    public long PredictNextSlotTimestamp(long now, long frequency, double periodMs)
+    {
+        var ticks = periodMs * frequency / 1000.0;
+        var baseNext = (!_started || _period != periodMs) ? now : _next;
+        return (long)Math.Ceiling(baseNext + ticks);
+    }
 }

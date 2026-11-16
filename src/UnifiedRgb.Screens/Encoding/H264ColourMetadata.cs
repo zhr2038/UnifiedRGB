@@ -12,16 +12,63 @@ internal static class H264ColourMetadata
     public static byte[] SpecifyCanvasColour(ReadOnlySpan<byte> accessUnit, bool fullRange = false)
     {
         if (accessUnit.Length is 0 or > MfH264IntraEncoder.MaxEncodedBytes) throw new InvalidDataException("Invalid H.264 access-unit size.");
-        using var output = new MemoryStream(accessUnit.Length + 32);
         var (start, prefix) = FindStart(accessUnit, 0);
         if (start != 0) throw new InvalidDataException("H.264 access unit must start with an Annex B prefix.");
+
+        var spsStart = -1;
+        var spsPrefix = 0;
+        var spsEnd = -1;
+        var spsCount = 0;
+        var scan = start;
+        var scanPrefix = prefix;
+        while (scan >= 0)
+        {
+            var payload = scan + scanPrefix;
+            var (next, nextPrefix) = FindStart(accessUnit, payload);
+            var end = next < 0 ? accessUnit.Length : next;
+            if (payload >= end) throw new InvalidDataException("Empty H.264 NAL.");
+            if ((accessUnit[payload] & 31) == 7)
+            {
+                spsStart = scan;
+                spsPrefix = scanPrefix;
+                spsEnd = end;
+                spsCount++;
+            }
+
+            scan = next;
+            scanPrefix = nextPrefix;
+        }
+
+        if (spsCount == 0) throw new InvalidDataException("H.264 colour metadata needs a bounded SPS.");
+        if (spsCount == 1)
+        {
+            var spsHeaderOffset = spsStart + spsPrefix;
+            var described = DescribeSps(accessUnit.Slice(spsHeaderOffset + 1, spsEnd - spsHeaderOffset - 1), fullRange);
+            var oldBodyLen = spsEnd - spsHeaderOffset - 1;
+            var finalLength = accessUnit.Length - oldBodyLen + described.Length;
+            if (finalLength > MfH264IntraEncoder.MaxEncodedBytes) throw new InvalidDataException("H.264 colour metadata needs a bounded SPS.");
+            var patched = new byte[finalLength];
+            var dstPos = 0;
+            var headLen = spsHeaderOffset + 1;
+            accessUnit[..headLen].CopyTo(patched);
+            dstPos += headLen;
+            described.CopyTo(patched.AsSpan(dstPos));
+            dstPos += described.Length;
+            if (spsEnd < accessUnit.Length)
+            {
+                accessUnit[spsEnd..].CopyTo(patched.AsSpan(dstPos));
+            }
+
+            return patched;
+        }
+
+        using var output = new MemoryStream(accessUnit.Length + 32);
         var found = false;
         while (start >= 0)
         {
             var payload = start + prefix;
             var (next, nextPrefix) = FindStart(accessUnit, payload);
             var end = next < 0 ? accessUnit.Length : next;
-            if (payload >= end) throw new InvalidDataException("Empty H.264 NAL.");
             output.Write(accessUnit.Slice(start, prefix));
             if ((accessUnit[payload] & 31) == 7)
             {
