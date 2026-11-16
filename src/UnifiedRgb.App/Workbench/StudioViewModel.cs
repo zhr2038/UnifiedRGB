@@ -37,6 +37,7 @@ public sealed class StudioViewModel : ObservableObject, IDisposable
     private long _refreshId;
     private bool _updatingAssignments;
     private bool _replacePackage;
+    private bool _sceneReadbackRequired;
     private string? _activePackageContentId;
     public string? ActivePackageContentId => _activePackageContentId;
 
@@ -144,6 +145,7 @@ public sealed class StudioViewModel : ObservableObject, IDisposable
         _ui.Post(() =>
         {
             if (request != Volatile.Read(ref _refreshId)) return;
+            _sceneReadbackRequired = false;
             _activePackageContentId = scene.Package?.ContentId;
             OnPropertyChanged(nameof(ActivePackageContentId));
             var replaceDraft = revision == Draft.Revision && (!Draft.Dirty || discardDraft);
@@ -217,6 +219,11 @@ public sealed class StudioViewModel : ObservableObject, IDisposable
 
     public async Task ApplyAsync()
     {
+        if (_sceneReadbackRequired)
+        {
+            await RefreshAsync().ConfigureAwait(true);
+            return;
+        }
         if (!CanEditDraft) throw new InvalidOperationException("独立场景包的内容帧不可在灯效编辑器中修改。请到场景库管理。");
         var next = Draft.Build();
         var revision = Draft.Revision;
@@ -243,7 +250,7 @@ public sealed class StudioViewModel : ObservableObject, IDisposable
         var overlap = assignments.Any(a => a.Targets.Intersect(next.Targets).Any());
         if (overlap) throw new InvalidOperationException("所选分区已由其他编排控制。请先移除对应编排，避免覆盖。");
         assignments.Insert(Math.Min(originalIndex ?? assignments.Count, assignments.Count), next);
-        await service.SetSceneAsync(new(assignments, Screens: nextScreens)).ConfigureAwait(true);
+        if (!await SubmitSceneAsync(service, new(assignments, Screens: nextScreens)).ConfigureAwait(true)) return;
         _replacePackage = false;
         var reload = revision == Draft.Revision && ReferenceEquals(_assignment, selected);
         _scene = new(assignments); SetAssignmentRows(assignments, selected, next);
@@ -276,6 +283,11 @@ public sealed class StudioViewModel : ObservableObject, IDisposable
     }
     private async Task RemoveAssignmentAsync()
     {
+        if (_sceneReadbackRequired)
+        {
+            await RefreshAsync().ConfigureAwait(true);
+            return;
+        }
         var selected = _assignment;
         if (selected is null || !_confirm($"移除“{selected.Name}”的灯效编排？")) return;
         var revision = Draft.Revision;
@@ -284,10 +296,23 @@ public sealed class StudioViewModel : ObservableObject, IDisposable
         var current = await service.GetSceneAsync().ConfigureAwait(true);
         if (JsonSerializer.Serialize(current.Assignments, JsonOptions) != baseline) throw new InvalidOperationException("场景已更改，请重新读取。");
         var assignments = current.Assignments.Where((_, i) => i != selected.Index).ToArray();
-        await service.SetSceneAsync(new(assignments)).ConfigureAwait(true);
+        if (!await SubmitSceneAsync(service, new(assignments)).ConfigureAwait(true)) return;
         var reload = revision == Draft.Revision && ReferenceEquals(_assignment, selected);
         _scene = new(assignments); SetAssignmentRows(assignments);
         if (reload) await RefreshAsync(true).ConfigureAwait(true);
+    }
+
+    private async Task<bool> SubmitSceneAsync(IRgbService service, SceneDto scene)
+    {
+        try { await service.SetSceneAsync(scene).ConfigureAwait(true); }
+        catch (Exception ex) when (CasePowerActions.SceneWriteUnconfirmed(ex))
+        {
+            Interlocked.Increment(ref _refreshId); // an earlier read cannot resolve a later uncertain write
+            _sceneReadbackRequired = true;
+            Message = "未收到后台答复，场景可能已应用。请先回读当前场景，再决定是否重新应用。";
+            return false;
+        }
+        return true;
     }
     public async Task BlackoutAsync()
     {

@@ -100,13 +100,14 @@ public sealed partial class BringupManager : IAsyncDisposable
             }
 
             s = new Session(id, entry, native, owner, lease); // its step lock starts taken: held until the open completes
+            _adapters.ReserveBringup(entry, owner);
             _sessions[id] = s;
         }
 
         try
         {
             _loop.Hold(id);
-            _adapters.PauseForBringup(entry, owner);
+            if (entry.Writer is { } writer) await writer.QuiesceAsync().ConfigureAwait(false);
             await native.OpenForBringupAsync(id, ct).ConfigureAwait(false);
         }
         catch (Exception ex)

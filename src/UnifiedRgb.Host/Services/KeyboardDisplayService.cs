@@ -34,6 +34,7 @@ public sealed partial class KeyboardDisplayService : BackgroundService, IKeyboar
     private readonly Func<KeyboardCodexUsageDto>? _codexStatus;
     private readonly Func<bool, CancellationToken, KeyboardCodexUsageDto>? _setCodexEnabled;
     private readonly Func<string, bool> _wiredRoutePresent;
+    private readonly bool _watchWiredInterface;
     private byte[]? _entryLogo;
     private KeyboardNativePresentation? _presentation; // the running owner session's declared native presentation (volatile)
     private readonly object _gate = new();
@@ -85,6 +86,7 @@ public sealed partial class KeyboardDisplayService : BackgroundService, IKeyboar
         _idleFrame = idleFrame; _codexStatus = codexStatus; _setCodexEnabled = setCodexEnabled;
         _homeAssistantFrame = homeAssistantFrame;
         _wiredRoutePresent = wiredRoutePresent ?? ExactWiredPresent;
+        _watchWiredInterface = wiredRoutePresent is null;
         _wirelessFactory = wirelessFactory;
         _configurationGate = configurationGate;
         _nativeMenu = nativeMenu;
@@ -374,7 +376,17 @@ public sealed partial class KeyboardDisplayService : BackgroundService, IKeyboar
                     try { await Task.Delay(1000, sessionStop.Token).ConfigureAwait(false); }
                     catch (OperationCanceledException) when (sessionStop.IsCancellationRequested) { }
                 }
-                catch (RogOledTimeoutException ex)
+                catch (Exception ex) when ((ex is KeyboardStartupTimeoutException or
+                        RogKeyboardStartupNotReadyException { InnerException: RogOledTimeoutException })
+                    && Volatile.Read(ref _coldStartRetries) < ColdStartRetries
+                    && _configurationGate?.RogAcquisitionAllowed != false && _configurationGate?.FreshResumeAllowed != true)
+                {
+                    var attempt = Interlocked.Increment(ref _coldStartRetries);
+                    Publish("Connecting", $"键盘只读初始化超时，正在重新核对当前连接（{attempt}/{ColdStartRetries}）");
+                    try { await Task.Delay(500, sessionStop.Token).ConfigureAwait(false); }
+                    catch (OperationCanceledException) when (sessionStop.IsCancellationRequested) { }
+                }
+                catch (Exception ex) when (ex is RogOledTimeoutException or KeyboardStartupTimeoutException)
                 {
                     RememberRetiredRouteFault(acquiredConnection);
                     CompleteResume(new KeyboardResumeResult(true, ex));
@@ -804,8 +816,8 @@ public sealed partial class KeyboardDisplayService : BackgroundService, IKeyboar
     private async Task RunSessionAsync(IRogOledConnection connection, CancellationToken ct, bool recoveryOnly = false,
         byte[]? expectedJournal = null, Action? recoveryVerified = null, bool requirePresentationReadiness = false)
     {
-        var routeSwitch = connection.ConnectionKind == "wireless" && WiredSwitchKey is { } wiredKey
-            ? new KeyboardTransportSwitch(_time, () => CanSwitchToKnownWired(wiredKey)) : null;
+        using var routeSwitch = connection.ConnectionKind == "wireless" && WiredSwitchKey is { } wiredKey
+            ? new KeyboardTransportSwitch(_time, () => CanSwitchToKnownWired(wiredKey), _watchWiredInterface ? WatchWiredInterface() : null) : null;
         long? lastWiredRouteCheck = null;
         void CheckRoute()
         {
@@ -1064,6 +1076,9 @@ public sealed partial class KeyboardDisplayService : BackgroundService, IKeyboar
             if (!ct.IsCancellationRequested && failure is not KeyboardTransportChangedException && connection.PhysicalRouteAbsent)
                 failure = ex as RogOledConnectionLostException ?? new RogOledConnectionLostException(
                     "The original keyboard HID route is confirmed absent; retain its recovery record and acquire a fresh configured route.", ex);
+            if (!recoveryOnly && !session.MutationAdmitted && failure is RogOledTimeoutException timeout
+                && startupStage is "snapshot" or "snapshot-lighting")
+                failure = new KeyboardStartupTimeoutException(timeout);
             failedAt = _time.GetTimestamp();
             if (ex is RogReadOnlyObservationException or RogNativeArtworkUploadRefusedException or RogNativePresentationUnavailableException)
             {

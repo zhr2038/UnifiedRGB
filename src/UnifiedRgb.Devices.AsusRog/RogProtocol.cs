@@ -34,6 +34,10 @@ public static class RogProtocol
     public const int MaximumKeys = 128;
     public const ushort VendorId = 0x0B05;
 
+    private static readonly IReadOnlyList<int> SinglePacketLengths = Array.AsReadOnly(new[] { 14 });
+    private static readonly IReadOnlyList<int> GradientPacketLengths = Array.AsReadOnly(new[] { 14, 16, 7 });
+    private static readonly IReadOnlyList<int> QuicksandPacketLengths = Array.AsReadOnly(new[] { 14, 12 });
+
     public static byte[] PairingQuery() => Command(1, 0xA0, 0);
 
     public static byte[] KeyboardVersionQuery(byte reportId) => DeviceQuery(reportId, 0);
@@ -82,9 +86,9 @@ public static class RogProtocol
 
     public static IReadOnlyList<int> KeyboardPayloadLengths(byte effectType) => effectType switch
     {
-        0 or 1 or 2 or 3 or 6 or 8 or 9 => new[] { 14 },
-        4 or 5 => new[] { 14, 16, 7 }, // Rainbow / Ripple, descending chunk indices2,1,0.
-        7 => new[] { 14, 12 }, // Quicksand, descending1,0.
+        0 or 1 or 2 or 3 or 6 or 8 or 9 => SinglePacketLengths,
+        4 or 5 => GradientPacketLengths, // Rainbow / Ripple, descending chunk indices2,1,0.
+        7 => QuicksandPacketLengths, // Quicksand, descending1,0.
         _ => throw new NotSupportedException("Unknown keyboard effect layout; no partial restore is allowed."),
     };
 
@@ -101,10 +105,11 @@ public static class RogProtocol
 
     public static string ParseKeyboardNativePayload(ReadOnlySpan<byte> reply, byte reportId, byte effectType, int packet)
     {
-        var query = KeyboardNativeQuery(reportId, effectType, packet);
-        RequireEcho(reply, reportId, 0x25, 0x0E);
+        RequireDeviceReportId(reportId);
         var lengths = KeyboardPayloadLengths(effectType);
-        if (reply.Length != ReportLength || reply[3] != effectType || reply[4] != query[4]
+        if (packet < 0 || packet >= lengths.Count) throw new ArgumentOutOfRangeException(nameof(packet));
+        RequireEcho(reply, reportId, 0x25, 0x0E);
+        if (reply.Length != ReportLength || reply[3] != effectType || reply[4] != lengths.Count - 1 - packet
             || reply[(5 + lengths[packet])..].ContainsAnyExcept((byte)0))
             throw new InvalidDataException("Keyboard effect chunk does not match the complete known restore format.");
         var payload = reply.Slice(5, lengths[packet]);
@@ -243,6 +248,12 @@ public static class RogProtocol
     public static IReadOnlyList<byte[]> KeyboardFrame(byte reportId, ReadOnlySpan<RogKeyColor> keys)
     {
         RequireDeviceReportId(reportId);
+        return EncodeKeyboardFrame(reportId, ReportLength, keys);
+    }
+
+    // Both USB and RF encode directly into their final report size; key validation happens before packets are returned.
+    internal static IReadOnlyList<byte[]> EncodeKeyboardFrame(byte reportId, int reportLength, ReadOnlySpan<RogKeyColor> keys)
+    {
         if (keys.Length is < 1 or > MaximumKeys)
             throw new ArgumentOutOfRangeException(nameof(keys), "A verified keyboard frame needs 1..128 distinct LED records.");
         Span<bool> seen = stackalloc bool[256];
@@ -252,11 +263,14 @@ public static class RogProtocol
             if (seen[key.LedId]) throw new ArgumentException("Duplicate keyboard LED id.", nameof(keys));
             seen[key.LedId] = true;
         }
-        var result = new List<byte[]>((keys.Length + KeysPerReport - 1) / KeysPerReport);
+        var result = new byte[(keys.Length + KeysPerReport - 1) / KeysPerReport][];
         for (var start = 0; start < keys.Length; start += KeysPerReport)
         {
             var count = Math.Min(KeysPerReport, keys.Length - start);
-            var report = Command(reportId, 0xC0, 0x81);
+            var report = new byte[reportLength];
+            report[0] = reportId;
+            report[1] = 0xC0;
+            report[2] = 0x81;
             report[3] = (byte)count;
             for (var k = 0; k < count; k++)
             {
@@ -267,9 +281,9 @@ public static class RogProtocol
                 report[at + 2] = key.Color.G;
                 report[at + 3] = key.Color.B;
             }
-            result.Add(report);
+            result[start / KeysPerReport] = report;
         }
-        return result.AsReadOnly();
+        return Array.AsReadOnly(result);
     }
 
     public static void RequireEcho(ReadOnlySpan<byte> reply, byte reportId, byte command, byte key)

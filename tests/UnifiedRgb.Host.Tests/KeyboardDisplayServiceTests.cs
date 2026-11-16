@@ -964,6 +964,7 @@ public sealed partial class KeyboardDisplayServiceTests : IDisposable
         public bool BadFirmware { get; set; }
         public byte ProfileToken { get; set; } = 6;
         public bool StallFirstBegin { get; set; }
+        public bool StallFirstFirmware { get; set; }
         public bool EofFirstBegin { get; set; }
         public bool FailRestoreBrightness { get; set; }
         public bool Removed { get; set; }
@@ -994,7 +995,9 @@ public sealed partial class KeyboardDisplayServiceTests : IDisposable
             ct.ThrowIfCancellationRequested(); var p = request.ToArray(); var b = new byte[65]; p.AsSpan(0, 5).CopyTo(b);
             switch (p[1], p[2])
             {
-                case (0x12, 0): b[2] = BadFirmware ? (byte)1 : (byte)0; b[5] = 0x24; b[7] = 1; b[9] = 6; b[11] = ProfileToken; break;
+                case (0x12, 0):
+                    if (StallFirstFirmware) { StallFirstFirmware = false; return ValueTask.CompletedTask; }
+                    b[2] = BadFirmware ? (byte)1 : (byte)0; b[5] = 0x24; b[7] = 1; b[9] = 6; b[11] = ProfileToken; break;
                 case (0x25, 0x0E): Convert.FromHexString(_native.Payloads[0]).CopyTo(b, 5); break;
                 case (0x51, 0x2C): _native = new(0, new[] { Convert.ToHexString(p.AsSpan(5, 14)) }); NativeWrites++; b = p; break;
                 case (0x27, 0): b[5] = SoftwareControl; break;

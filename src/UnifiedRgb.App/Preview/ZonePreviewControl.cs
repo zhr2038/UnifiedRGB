@@ -16,6 +16,7 @@ public sealed class ZonePreviewControl : FrameworkElement
         new FrameworkPropertyMetadata(null, FrameworkPropertyMetadataOptions.AffectsRender));
 
     private static readonly Stopwatch Clock = Stopwatch.StartNew();
+    private readonly Dictionary<Rgb, SolidColorBrush> _brushes = [];
     private bool _hooked;
 
     public ZonePreviewControl()
@@ -35,7 +36,6 @@ public sealed class ZonePreviewControl : FrameworkElement
 
     protected override void OnRender(DrawingContext drawingContext)
     {
-        ArgumentNullException.ThrowIfNull(drawingContext);
         var r = Renderer;
         drawingContext.DrawRectangle(Brushes.Black, null, new Rect(RenderSize));
         if (r is null)
@@ -56,7 +56,7 @@ public sealed class ZonePreviewControl : FrameworkElement
         }
     }
 
-    private static void DrawZone(DrawingContext dc, ZoneLayout layout, ReadOnlySpan<Rgb> px, Rect box, RingFace? face)
+    private void DrawZone(DrawingContext dc, ZoneLayout layout, ReadOnlySpan<Rgb> px, Rect box, RingFace? face)
     {
         switch (layout.Kind)
         {
@@ -101,10 +101,13 @@ public sealed class ZonePreviewControl : FrameworkElement
         }
     }
 
-    private static SolidColorBrush Brush(Rgb c)
+    private SolidColorBrush Brush(Rgb c)
     {
+        if (_brushes.TryGetValue(c, out var cached)) return cached;
+        if (_brushes.Count == 4096) _brushes.Clear();
         var b = new SolidColorBrush(Color.FromRgb(c.R, c.G, c.B));
         b.Freeze();
+        _brushes.Add(c, b);
         return b;
     }
 

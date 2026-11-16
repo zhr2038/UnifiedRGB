@@ -43,6 +43,32 @@ public sealed class SixFixPersistenceTests
         sentinel.Opened.Should().BeFalse();
     }
 
+    [Fact]
+    public async Task Pipe_reopens_its_listener_after_transient_accept_errors()
+    {
+        await using var host = await TestHost.StartAsync();
+        var name = "UnifiedRgb-test-accept-" + Guid.NewGuid().ToString("N");
+        var attempts = 0;
+        var listening = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var server = new PipeServer(new UnifiedRgbOptions { PipeName = name }, host.Get<IRgbService>(), NullLogger<PipeServer>.Instance)
+        {
+            AcceptConnection = (pipe, ct) =>
+            {
+                if (Interlocked.Increment(ref attempts) <= 3) return Task.FromException(new IOException("injected accept error"));
+                listening.TrySetResult();
+                return pipe.WaitForConnectionAsync(ct);
+            },
+        };
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        using var client = new NamedPipeClientStream(".", name, PipeDirection.InOut, PipeOptions.Asynchronous);
+        await server.StartAsync(timeout.Token);
+        await listening.Task.WaitAsync(timeout.Token);
+        await client.ConnectAsync(timeout.Token);
+        Volatile.Read(ref attempts).Should().BeGreaterThanOrEqualTo(4);
+        await server.StopAsync(timeout.Token);
+        server.ExecuteTask!.IsCompletedSuccessfully.Should().BeTrue();
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -91,6 +117,31 @@ public sealed class SixFixPersistenceTests
         await apply.Should().ThrowAsync<IOException>();
         engine.Loop.Scene.Should().BeSameAs(before);
         (await host.Get<ScreenManager>().GetScreenSceneAsync()).Assignments.Should().BeEmpty();
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Joint_scene_cancellation_obeys_the_durable_commit_boundary(bool afterCommit)
+    {
+        await using var host = await TestHost.StartAsync();
+        var engine = host.Engine;
+        var manager = host.Get<ScreenManager>();
+        var previousName = engine.ActiveProfileName;
+        var next = new ScreenSceneDto([new("screen:turzx:test", BackgroundColor: "#123456", Overlay: "none")]);
+        using var cancellation = new CancellationTokenSource();
+        using (var transaction = await manager.BeginSceneAsync(next, default))
+        {
+            if (!afterCommit) cancellation.Cancel();
+            Action change = () => engine.ChangeScene(engine.Loop.Scene, "joint-test", allowMissing: true, transaction,
+                beforeScreens: cancellation.Cancel, cancellationToken: cancellation.Token);
+            if (!afterCommit) change.Should().Throw<OperationCanceledException>();
+            else change.Should().NotThrow();
+        }
+        engine.ActiveProfileName.Should().Be(afterCommit ? "joint-test" : previousName);
+        var active = await manager.GetScreenSceneAsync();
+        if (afterCommit) active.Assignments.Should().BeEquivalentTo(next.Assignments);
+        else active.Assignments.Should().BeEmpty();
     }
 
     [Fact]

@@ -92,8 +92,16 @@ public sealed partial class ScreenManager : IScreenPackageMedia
         var limits = ImportLimits.Default with { ScratchDirectory = Path.Combine(_stateRoot, "screens", "scratch", "video-import") };
         return await _importThread.Value.InvokeAsync(() =>
         {
-            var import = Mp4Importer.IsMp4(data) ? Mp4Importer.Import(data, limits, ct) : ImageImporter.Import(data, limits);
-            var thumb = ImageImporter.Import(import.FramePngs[0], limits with { NormalizeBox = ThumbnailBox });
+            var thumbLimits = limits with { NormalizeBox = ThumbnailBox };
+            if (Mp4Importer.IsMp4(data))
+            {
+                var probe = Mp4Importer.Probe(data, limits, ct);
+                var thumbnail = ImageImporter.Import(probe.FirstFramePng, thumbLimits).FramePngs[0];
+                return new ScreenMediaInfo("mp4", probe.Width, probe.Height, probe.Frames, probe.DurationMs, thumbnail);
+            }
+
+            var import = ImageImporter.Import(data, limits);
+            var thumb = ImageImporter.Import(import.FramePngs[0], thumbLimits);
             return new ScreenMediaInfo(import.Format, import.Width, import.Height, import.FramePngs.Count, import.DurationMs, thumb.FramePngs[0]);
         }, ct).ConfigureAwait(false);
     }

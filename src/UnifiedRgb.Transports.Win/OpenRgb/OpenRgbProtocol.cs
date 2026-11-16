@@ -98,12 +98,18 @@ public static class OpenRgbProtocol
 
     public static byte[] Packet(uint deviceIndex, uint packetId, ReadOnlySpan<byte> payload)
     {
-        var p = new byte[OpenRgbHeader.Size + payload.Length];
+        var p = CreatePacket(deviceIndex, packetId, payload.Length);
+        payload.CopyTo(p.AsSpan(OpenRgbHeader.Size));
+        return p;
+    }
+
+    private static byte[] CreatePacket(uint deviceIndex, uint packetId, int payloadLength)
+    {
+        var p = new byte[OpenRgbHeader.Size + payloadLength];
         OpenRgbHeader.Magic.CopyTo(p);
         BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(4), deviceIndex);
         BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(8), packetId);
-        BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(12), (uint)payload.Length);
-        payload.CopyTo(p.AsSpan(OpenRgbHeader.Size));
+        BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(12), (uint)payloadLength);
         return p;
     }
 
@@ -126,11 +132,12 @@ public static class OpenRgbProtocol
     {
         var n = rgbTriplets.Length / 3;
         var size = 4 + 2 + (4 * n);
-        var payload = new byte[size];
+        var packet = CreatePacket(index, OpenRgbPacketIds.UpdateLeds, size);
+        var payload = packet.AsSpan(OpenRgbHeader.Size);
         BinaryPrimitives.WriteUInt32LittleEndian(payload, (uint)size);
-        BinaryPrimitives.WriteUInt16LittleEndian(payload.AsSpan(4), checked((ushort)n));
-        WriteColors(payload.AsSpan(6), rgbTriplets);
-        return Packet(index, OpenRgbPacketIds.UpdateLeds, payload);
+        BinaryPrimitives.WriteUInt16LittleEndian(payload[4..], checked((ushort)n));
+        WriteColors(payload[6..], rgbTriplets);
+        return packet;
     }
 
     /// <summary>UpdateZoneLeds: [u32 data_size][u32 zone][u16 count][count × (R,G,B,0)].</summary>
@@ -138,12 +145,13 @@ public static class OpenRgbProtocol
     {
         var n = rgbTriplets.Length / 3;
         var size = 4 + 4 + 2 + (4 * n);
-        var payload = new byte[size];
+        var packet = CreatePacket(index, OpenRgbPacketIds.UpdateZoneLeds, size);
+        var payload = packet.AsSpan(OpenRgbHeader.Size);
         BinaryPrimitives.WriteUInt32LittleEndian(payload, (uint)size);
-        BinaryPrimitives.WriteUInt32LittleEndian(payload.AsSpan(4), zone);
-        BinaryPrimitives.WriteUInt16LittleEndian(payload.AsSpan(8), checked((ushort)n));
-        WriteColors(payload.AsSpan(10), rgbTriplets);
-        return Packet(index, OpenRgbPacketIds.UpdateZoneLeds, payload);
+        BinaryPrimitives.WriteUInt32LittleEndian(payload[4..], zone);
+        BinaryPrimitives.WriteUInt16LittleEndian(payload[8..], checked((ushort)n));
+        WriteColors(payload[10..], rgbTriplets);
+        return packet;
     }
 
     public static int UpdateZoneLedsLength(int ledCount) => OpenRgbHeader.Size + 4 + 4 + 2 + (4 * ledCount);
@@ -385,11 +393,12 @@ public static class OpenRgbProtocol
         {
             Need(count * 4);
             var a = new uint[count];
+            var values = _d.Slice(_p, count * 4);
             for (var i = 0; i < count; i++)
             {
-                a[i] = U32();
+                a[i] = BinaryPrimitives.ReadUInt32LittleEndian(values[(i * 4)..]);
             }
-
+            _p += values.Length;
             return a;
         }
 

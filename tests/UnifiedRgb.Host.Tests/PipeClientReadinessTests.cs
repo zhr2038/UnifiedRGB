@@ -63,13 +63,14 @@ public sealed class PipeClientReadinessTests
         Set(c, "_screenPerformance", Proxy<IScreenPerformanceService>()); Set(c, "_screenVideo", Proxy<IScreenVideoService>());
         Set(c, "_keyboardDisplay", Proxy<IKeyboardDisplayService>()); Set(c, "_peripheralConfiguration", Proxy<IPeripheralConfigurationService>());
         Set(c, "_nativeMenu", Proxy<INativeMenuService>());
+        Set(c, "_firmware", Proxy<IFirmwareUpdateService>());
     }
 
     private static IEnumerable<Action> Requires(PipeClient c) =>
     [
         () => c.Require(), () => c.RequireScreens(), () => c.RequirePackages(), () => c.RequireLibrary(),
         () => c.RequireScreenSettings(), () => c.RequireScreenPerformance(), () => c.RequireScreenVideo(),
-        () => c.RequireKeyboardDisplay(), () => c.RequirePeripheralConfiguration(), () => c.RequireNativeMenu(),
+        () => c.RequireKeyboardDisplay(), () => c.RequirePeripheralConfiguration(), () => c.RequireNativeMenu(), () => c.RequireFirmware(),
     ];
     private static void Set(PipeClient client, string field, object? value) =>
         typeof(PipeClient).GetField(field, BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(client, value);

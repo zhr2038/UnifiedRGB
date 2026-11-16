@@ -154,11 +154,13 @@ public static class FirmwareRuntimeResolver
     private static void ValidateCatalog(TrustedCatalog catalog)
     {
         if (catalog.Schema != 1 || catalog.Classification != "UNIFIEDRGB_FIRMWARE_TRUST_CATALOG_V1" ||
-            catalog.Releases.Length is < 1 or > 128 || catalog.Releases.Any(x => x is null) ||
-            catalog.Releases.GroupBy(x => x.ReleaseId, StringComparer.OrdinalIgnoreCase).Any(x => x.Count() != 1))
+            catalog.Releases.Length is < 1 or > 128)
             throw new InvalidDataException("Invalid trusted catalog schema/unique releases");
+        var releaseIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var release in catalog.Releases)
         {
+            if (release is null || !releaseIds.Add(release.ReleaseId))
+                throw new InvalidDataException("Invalid trusted catalog schema/unique releases");
             if (!FirmwareFiles.Identifier(release.ReleaseId)) throw new InvalidDataException("Invalid catalog release ID");
             foreach (var hash in new[] { release.ReleaseManifestSha256, release.CandidateSha256, release.RollbackSha256,
                 release.ImageManifestSha256, release.WireContractSha256, release.SoftwareReviewSha256 }) FirmwareFiles.Hash(hash);

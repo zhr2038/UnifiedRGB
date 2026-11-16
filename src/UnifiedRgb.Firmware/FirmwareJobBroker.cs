@@ -21,7 +21,9 @@ public sealed class FirmwareJobBroker : IFirmwareUpdateService, IAsyncDisposable
     private bool _interfacesReleased;
     private string? _parentLedger, _parentBefore, _parentLedgerHash, _parentLineageHash;
     private Task? _ownedTask;
-    private CancellationTokenSource? _prepareCancellation;
+    private CancellationTokenSource? _observationCancellation;
+    private bool _stopping;
+    private Task? _disposeTask;
     private string? _operationDirectory;
     private readonly HashSet<Guid> _requests = [];
     private readonly Dictionary<Guid, FirmwareJobStatus> _history = [];
@@ -94,6 +96,7 @@ public sealed class FirmwareJobBroker : IFirmwareUpdateService, IAsyncDisposable
         { _featureError = "本机固件审核目录无效；仅检查文件：" + ex.GetType().Name; }
         lock (_gate)
         {
+            ObjectDisposedException.ThrowIf(_stopping, this);
             if (_historyUnavailable) throw new InvalidOperationException(_featureError);
             if (_status?.Running == true || _leaseOwner is not null) throw new InvalidOperationException("An owned firmware job still requires explicit safe finish");
             var id = Guid.NewGuid(); var directory = Path.Combine(_jobsDirectory, id.ToString("N"));
@@ -159,9 +162,9 @@ public sealed class FirmwareJobBroker : IFirmwareUpdateService, IAsyncDisposable
                 throw new InvalidOperationException("Prepare not allowed in current phase");
             if (!request.OperatorConfirmedOtherWritersAbsent) throw new InvalidDataException("请明确确认已关闭其他固件工具；设备元数据不能证明没有其他写入者");
             Accept(request);
-            _prepareCancellation?.Dispose();
-            _prepareCancellation = new CancellationTokenSource();
-            var token = _prepareCancellation.Token;
+            _observationCancellation?.Dispose();
+            _observationCancellation = new CancellationTokenSource();
+            var token = _observationCancellation.Token;
             var directory = NewOperationDirectory("physical");
             var published = Publish(current with { Phase = FirmwarePhase.Preparing, Running = true, CanCancel = true, Detail = "正在释放并等待键鼠会话退出，然后观察正常 USB 物理连接" });
             _ownedTask = Task.Run(async () =>
@@ -231,6 +234,8 @@ public sealed class FirmwareJobBroker : IFirmwareUpdateService, IAsyncDisposable
             PhysicalWorkflow.RequireFresh(_binding); // BEFORE executable selection, inventory and open
             _catalog = new InstalledTrust(_options).Review(_package!) ?? throw new InvalidDataException("Installed release review no longer matches");
             Accept(request);
+            _observationCancellation?.Dispose();
+            _observationCancellation = null;
             var runId = Guid.NewGuid(); var directory = NewOperationDirectory(operation.ToString()); _operationDirectory = directory;
             var workerRequest = new FirmwareWorkerRequest(current.JobId, runId, operation, Path.Combine(current.ReceiptDirectory, "package.urgbfw"),
                 current.Package.BundleSha256, current.Package.ReleaseId, directory, _binding, _actualAdmissionBackup,
@@ -279,7 +284,7 @@ public sealed class FirmwareJobBroker : IFirmwareUpdateService, IAsyncDisposable
             if (_requests.Contains(request.RequestId)) return Task.FromResult(current);
             if (!current.Running || !current.CanCancel) throw new InvalidOperationException("Cancellation unsafe or not running");
             Accept(request);
-            if (_prepareCancellation is not null && current.Phase is FirmwarePhase.Preparing or FirmwarePhase.AwaitingBoot or FirmwarePhase.EnteringUpgrade) _prepareCancellation.Cancel();
+            if (_observationCancellation is not null && current.Phase is FirmwarePhase.Preparing or FirmwarePhase.AwaitingBoot or FirmwarePhase.EnteringUpgrade) _observationCancellation.Cancel();
             else if (_operationDirectory is not null) _runner.RequestCancel(_operationDirectory);
             return Task.FromResult(Publish(current with { CanCancel = false, Detail = "已请求仅在擦除前取消；以后台回读结果为准，界面关闭不会停止任务。" }));
         }
@@ -293,20 +298,24 @@ public sealed class FirmwareJobBroker : IFirmwareUpdateService, IAsyncDisposable
             if (current.Running || !current.WireClosed || current.Phase == FirmwarePhase.NeedsReviewedRecovery || !_interfacesReleased || _leaseOwner != current.JobId || _ownedTask is { IsCompleted: false })
                 throw new InvalidOperationException("Cannot finish an active/unknown/unjoined job");
             Accept(request);
+            _observationCancellation?.Dispose();
+            _observationCancellation = new CancellationTokenSource(TimeSpan.FromSeconds(120));
+            var token = _observationCancellation.Token;
             var published = Publish(current with { Running = true, CanCancel = false, Detail = "等待正常 USB 重插与全新会话确认；仍保持维护" });
             _ownedTask = Task.Run(async () =>
             {
                 try
                 {
                     var normal = _binding is null
-                        ? await _physical.ConfirmNormalWithoutWorkerAsync(CancellationToken.None, _retainedReceipt).ConfigureAwait(false)
-                        : await _physical.ConfirmNormalAsync(_binding, CancellationToken.None).ConfigureAwait(false);
+                        ? await _physical.ConfirmNormalWithoutWorkerAsync(token, _retainedReceipt).ConfigureAwait(false)
+                        : await _physical.ConfirmNormalAsync(_binding, token).ConfigureAwait(false);
                     if (!normal) throw new InvalidOperationException("Fresh normal reconnect not observed");
-                    await _maintenance.FinishAsync(current.JobId, true, true, CancellationToken.None).ConfigureAwait(false);
+                    await _maintenance.FinishAsync(current.JobId, true, true, token).ConfigureAwait(false);
                     lock (_gate) { _leaseOwner = null; _interfacesReleased = false; Publish(_status! with { Phase = FirmwarePhase.Finished, Running = false, Detail = "维护已明确完成；新会话接管当前设置，不回放旧场景或配置" }); }
                 }
                 catch (Exception ex) when (ex is not OutOfMemoryException)
-                { Update(s => s with { Running = false, Detail = "完成维护失败，保持阻止接管。" + ex.Message }); }
+                { Update(s => s with { Running = false, Detail = ex is OperationCanceledException && token.IsCancellationRequested
+                        ? "等待正常 USB 或重新接管已结束；维护仍保留，可重新确认。" : "完成维护失败，保持阻止接管。" + ex.Message }); }
             }, CancellationToken.None);
             return Task.FromResult(published);
         }
@@ -314,6 +323,7 @@ public sealed class FirmwareJobBroker : IFirmwareUpdateService, IAsyncDisposable
 
     private FirmwareJobStatus Check(FirmwareRequest request, bool hardware, CancellationToken ct)
     {
+        ObjectDisposedException.ThrowIf(_stopping, this);
         ct.ThrowIfCancellationRequested();
         var s = _status ?? throw new InvalidOperationException("No loaded firmware job");
         if (request.JobId != s.JobId || request.ReleaseId != s.Package.ReleaseId || request.BundleSha256 != s.Package.BundleSha256 || request.RequestId == Guid.Empty)
@@ -345,11 +355,29 @@ public sealed class FirmwareJobBroker : IFirmwareUpdateService, IAsyncDisposable
         }
         return _status;
     }
-    public async ValueTask DisposeAsync()
+    public ValueTask DisposeAsync()
     {
-        Task? owned;
-        lock (_gate) owned = _ownedTask;
-        if (owned is not null) await owned.ConfigureAwait(false);
-        _prepareCancellation?.Dispose(); // never cancel or kill an in-flight destructive operation
+        lock (_gate)
+        {
+            _stopping = true;
+            return new(_disposeTask ??= StopOwnedTaskAsync(_ownedTask, _observationCancellation));
+        }
+    }
+
+    private static async Task StopOwnedTaskAsync(Task? owned, CancellationTokenSource? observation)
+    {
+        // Host stop cancels preparation/USB observation. An admitted worker retains ownership until it exits.
+        using (observation)
+        {
+            try
+            {
+                if (owned is { IsCompleted: false } && observation is not null)
+                    await observation.CancelAsync().ConfigureAwait(false);
+            }
+            finally
+            {
+                if (owned is not null) await owned.ConfigureAwait(false);
+            }
+        }
     }
 }

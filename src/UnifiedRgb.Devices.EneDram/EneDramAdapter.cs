@@ -218,8 +218,7 @@ public sealed partial class EneDramAdapter : IWholeFrameAdapter, INativeBringup,
             }
 
             var colors = StickFrame(s, zones);
-            var bytes = Rbg(colors);
-            if (s.LastFrame is { } last && last.AsSpan().SequenceEqual(bytes))
+            if (s.LastFrame is { } last && last.AsSpan().SequenceEqual(colors))
             {
                 return false; // cached frame: no native write, sample or budget refusal
             }
@@ -237,7 +236,7 @@ public sealed partial class EneDramAdapter : IWholeFrameAdapter, INativeBringup,
             }
 
             scope.Complete();
-            s.LastFrame = bytes;
+            s.LastFrame = colors;
             return true;
         }
     }
@@ -690,19 +689,6 @@ public sealed partial class EneDramAdapter : IWholeFrameAdapter, INativeBringup,
     }
 
     private static bool IsRead(SmbusCompoundKind kind) => kind is SmbusCompoundKind.Probe or SmbusCompoundKind.ReadSig or SmbusCompoundKind.RegRead;
-
-    private static byte[] Rbg(ReadOnlySpan<Rgb> colors)
-    {
-        var bytes = new byte[colors.Length * 3];
-        for (var i = 0; i < colors.Length; i++)
-        {
-            bytes[3 * i] = colors[i].R;
-            bytes[(3 * i) + 1] = colors[i].B;
-            bytes[(3 * i) + 2] = colors[i].G;
-        }
-
-        return bytes;
-    }
 
     private static Rgb[] StickFrame(Stick s, IReadOnlyList<Rgb[]> zones)
     {
@@ -1441,6 +1427,6 @@ public sealed partial class EneDramAdapter : IWholeFrameAdapter, INativeBringup,
 
         public bool MarkerActive { get; set; }
 
-        public byte[]? LastFrame { get; set; }
+        public Rgb[]? LastFrame { get; set; }
     }
 }

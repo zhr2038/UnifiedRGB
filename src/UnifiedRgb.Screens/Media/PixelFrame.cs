@@ -60,10 +60,16 @@ internal static class PixelOps
     /// <summary>Separable tent-filter resample: bilinear when enlarging, a radius-1/scale area-like average when reducing.</summary>
     public static PixelFrame Resize(PixelFrame src, int width, int height)
     {
-        ArgumentNullException.ThrowIfNull(src);
         if (src.Width == width && src.Height == height)
         {
             return src.Clone();
+        }
+
+        if (src.Width == width || src.Height == height)
+        {
+            var dst = new PixelFrame(width, height);
+            Pass(src, dst, horizontal: src.Height == height);
+            return dst;
         }
 
         // order the passes so the intermediate raster is the smaller one
@@ -100,8 +106,6 @@ internal static class PixelOps
     /// <summary>Source-over of premultiplied <paramref name="src"/> at (x, y), clipped to <paramref name="dst"/>.</summary>
     public static void BlendOver(PixelFrame dst, PixelFrame src, int x, int y)
     {
-        ArgumentNullException.ThrowIfNull(dst);
-        ArgumentNullException.ThrowIfNull(src);
         var x0 = Math.Max(0, x);
         var y0 = Math.Max(0, y);
         var x1 = Math.Min(dst.Width, x + src.Width);
@@ -137,7 +141,6 @@ internal static class PixelOps
     /// <summary>Exact clockwise rotation by 0/90/180/270 degrees (90/270 swap the dimensions).</summary>
     public static PixelFrame Rotate(PixelFrame src, int degreesClockwise)
     {
-        ArgumentNullException.ThrowIfNull(src);
         var w = src.Width;
         var h = src.Height;
         var s = MemoryMarshal.Cast<byte, uint>(src.Pixels.AsSpan());
@@ -195,7 +198,6 @@ internal static class PixelOps
     /// <summary>Scales B, G and R by <paramref name="brightness"/> (0..1); alpha is kept.</summary>
     public static void ApplyBrightness(PixelFrame frame, double brightness)
     {
-        ArgumentNullException.ThrowIfNull(frame);
         var k = (int)Math.Round(Math.Clamp(brightness, 0, 1) * 256);
         if (k == 256)
         {
@@ -214,7 +216,6 @@ internal static class PixelOps
     /// <summary>Quantizes B, G and R to <paramref name="bits"/> bits per channel (rescaled to 0..255); 8 is the identity.</summary>
     public static void Posterize(PixelFrame frame, int bits)
     {
-        ArgumentNullException.ThrowIfNull(frame);
         ArgumentOutOfRangeException.ThrowIfLessThan(bits, 1);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(bits, 8);
         if (bits == 8)
@@ -223,7 +224,7 @@ internal static class PixelOps
         }
 
         var max = (1 << bits) - 1;
-        var lut = new byte[256];
+        Span<byte> lut = stackalloc byte[256];
         for (var c = 0; c < 256; c++)
         {
             lut[c] = (byte)((((c >> (8 - bits)) * 255) + (max / 2)) / max);
@@ -241,7 +242,6 @@ internal static class PixelOps
     /// <summary>Forces every pixel opaque over black (premultiplied colour is unchanged; alpha becomes 255).</summary>
     public static void Flatten(PixelFrame frame)
     {
-        ArgumentNullException.ThrowIfNull(frame);
         var p = frame.Pixels;
         for (var i = 3; i < p.Length; i += 4)
         {

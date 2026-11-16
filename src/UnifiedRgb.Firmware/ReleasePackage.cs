@@ -64,33 +64,25 @@ public static partial class FirmwareFiles
     public static T Parse<T>(byte[] bytes)
     {
         using var doc = JsonDocument.Parse(bytes, new JsonDocumentOptions { MaxDepth = 24 });
-        void Unique(JsonElement e)
-        {
-            if (e.ValueKind == JsonValueKind.Null) throw new InvalidDataException("Explicit null JSON fields/elements are not permitted");
-            if (e.ValueKind == JsonValueKind.Object)
-            {
-                var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                foreach (var p in e.EnumerateObject()) { if (!names.Add(p.Name)) throw new InvalidDataException("Duplicate JSON property"); Unique(p.Value); }
-            }
-            else if (e.ValueKind == JsonValueKind.Array) foreach (var v in e.EnumerateArray()) Unique(v);
-        }
         // Nullable optional record fields are used by internal receipts/configuration. Their nulls
         // are permitted; closed release/catalog data records must never contain a null.
-        if (typeof(T) == typeof(FirmwareRelease) || typeof(T) == typeof(FunctionalImageManifest) ||
-            typeof(T) == typeof(ReleaseWireContract) || typeof(T) == typeof(SoftwareReleaseReview)) Unique(doc.RootElement);
-        else ValidateUnique(doc.RootElement);
-        try { return JsonSerializer.Deserialize<T>(bytes, Json) ?? throw new InvalidDataException("Missing JSON object"); }
+        var rejectNull = typeof(T) == typeof(FirmwareRelease) || typeof(T) == typeof(FunctionalImageManifest) ||
+            typeof(T) == typeof(ReleaseWireContract) || typeof(T) == typeof(SoftwareReleaseReview);
+        ValidateUnique(doc.RootElement, rejectNull);
+        try { return doc.RootElement.Deserialize<T>(Json) ?? throw new InvalidDataException("Missing JSON object"); }
         catch (JsonException ex) { throw new InvalidDataException("Missing, null or invalid JSON field: " + ex.Message, ex); }
     }
-    private static void ValidateUnique(JsonElement e)
+    private static void ValidateUnique(JsonElement e, bool rejectNull)
     {
+        if (rejectNull && e.ValueKind == JsonValueKind.Null)
+            throw new InvalidDataException("Explicit null JSON fields/elements are not permitted");
         if (e.ValueKind == JsonValueKind.Object)
         {
             var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var property in e.EnumerateObject())
-            { if (!names.Add(property.Name)) throw new InvalidDataException("Duplicate JSON property"); ValidateUnique(property.Value); }
+            { if (!names.Add(property.Name)) throw new InvalidDataException("Duplicate JSON property"); ValidateUnique(property.Value, rejectNull); }
         }
-        else if (e.ValueKind == JsonValueKind.Array) foreach (var value in e.EnumerateArray()) ValidateUnique(value);
+        else if (e.ValueKind == JsonValueKind.Array) foreach (var value in e.EnumerateArray()) ValidateUnique(value, rejectNull);
     }
     public static byte[] ReadBounded(string path, int maximum)
     {

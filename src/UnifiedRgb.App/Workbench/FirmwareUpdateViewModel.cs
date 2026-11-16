@@ -112,6 +112,8 @@ public sealed class FirmwareUpdateViewModel : ObservableObject
             _ui.Post(() =>
             {
                 if (epoch != _epoch || version != _readVersion || _busy) return;
+                if (_observed is not null && status is not null && _status is { } current &&
+                    status.JobId == current.JobId && status.Revision < current.Revision) return;
                 _status = status; ObserveClock(); _uncertain = false;
                 _message = "状态来自后台；读取不会开始、重试或完成任务。"; Changed();
             });

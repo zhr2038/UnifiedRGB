@@ -1,11 +1,13 @@
 namespace UnifiedRgb.Contracts;
 
+using System.Buffers;
 using Dto;
 
 /// <summary>Shared deterministic source-time and RGB transforms used by Host preparation and local previews.</summary>
 public static class ScenePackagePlayback
 {
     public const string EditedContract = "rgb24-hold-physical-ms-v1+editor-v1";
+    private static readonly SearchValues<char> HexDigits = SearchValues.Create("0123456789abcdefABCDEF");
 
     public static string? Validate(ScenePackagePlaybackDto? p)
     {
@@ -24,8 +26,8 @@ public static class ScenePackagePlayback
                 if (s.Fps is < 1 or > 60) return "屏幕发送上限范围为 1～60 fps。";
                 if (s.Overlay is not (null or "none" or "compact" or "dashboard")) return "未知的屏幕叠层。";
                 if (s.Fit is not (null or "contain" or "cover")) return "未知的屏幕适配方式。";
-                if (s.AccentColor is { } c && (c.Length != 7 || c[0] != '#' || !c.AsSpan(1).ToString().All(char.IsAsciiHexDigit))) return "强调色应为 #RRGGBB。";
-                if (s.OverlayLayout is { } r && (!Finite(r.X, r.Y, r.Width, r.Height, r.BackgroundOpacity) || r.X < 0 || r.Y < 0 || r.Width <= 0 || r.Height <= 0 || r.X + r.Width > 1 || r.Y + r.Height > 1 || r.Columns is < 1 or > 4 || r.BackgroundOpacity is < 0 or > 1)) return "监控区域必须完整位于画布内，列数为 1～4。";
+                if (s.AccentColor is { } c && (c.Length != 7 || c[0] != '#' || c.AsSpan(1).ContainsAnyExcept(HexDigits))) return "强调色应为 #RRGGBB。";
+                if (s.OverlayLayout is { } r && (!double.IsFinite(r.X) || !double.IsFinite(r.Y) || !double.IsFinite(r.Width) || !double.IsFinite(r.Height) || !double.IsFinite(r.BackgroundOpacity) || r.X < 0 || r.Y < 0 || r.Width <= 0 || r.Height <= 0 || r.X + r.Width > 1 || r.Y + r.Height > 1 || r.Columns is < 1 or > 4 || r.BackgroundOpacity is < 0 or > 1)) return "监控区域必须完整位于画布内，列数为 1～4。";
             }
         }
         return null;
@@ -62,9 +64,16 @@ public static class ScenePackagePlayback
     {
         if (leds < 1 || frames < 1 || source.Length != checked(leds * frames * 3)) throw new ArgumentException("Invalid RGB frame dimensions.", nameof(source));
         var result = new byte[source.Length]; var stride = leds * 3;
+        if (!p.LightingEnabled || p.LightingBrightness == 0) return result;
+        var unchangedColors = p.LightingBrightness == 1 && p.HueDegrees == 0;
         for (var f = 0; f < frames; f++)
         {
             var sourceFrame = p.Reverse ? frames - f - 1 : f;
+            if (unchangedColors)
+            {
+                source.Slice(sourceFrame * stride, stride).CopyTo(result.AsSpan(f * stride, stride));
+                continue;
+            }
             for (var i = 0; i < stride; i += 3)
             {
                 var offset = sourceFrame * stride + i;
@@ -75,5 +84,4 @@ public static class ScenePackagePlayback
     }
 
     private static byte Scale(double value, double brightness) => (byte)Math.Clamp((int)Math.Round(value * brightness), 0, 255);
-    private static bool Finite(params double[] values) => values.All(double.IsFinite);
 }

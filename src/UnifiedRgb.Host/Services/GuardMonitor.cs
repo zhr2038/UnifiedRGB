@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Win32;
 
 namespace UnifiedRgb.Host.Services;
 
@@ -17,8 +18,19 @@ public sealed partial class GuardMonitor(UnifiedRgbOptions options, LightingEngi
         var every = Math.Max(1, options.GuardRescanSeconds);
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
         var tick = 0;
+        var powerNotifications = false;
         try
         {
+            try
+            {
+                SystemEvents.PowerModeChanged += PowerModeChanged;
+                powerNotifications = true;
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or System.Runtime.InteropServices.ExternalException)
+            {
+                LogPowerNotificationsUnavailable(ex);
+            }
+
             while (await timer.WaitForNextTickAsync(stoppingToken).ConfigureAwait(false))
             {
                 tick++;
@@ -45,7 +57,19 @@ public sealed partial class GuardMonitor(UnifiedRgbOptions options, LightingEngi
         {
             // shutdown
         }
+        finally
+        {
+            if (powerNotifications) SystemEvents.PowerModeChanged -= PowerModeChanged;
+        }
     }
+
+    private void PowerModeChanged(object sender, PowerModeChangedEventArgs args)
+    {
+        if (args.Mode == PowerModes.Resume) engine.Adapters.RequestRescan();
+    }
+
+    [LoggerMessage(EventId = 2012, Level = LogLevel.Warning, Message = "System resume notifications are unavailable; periodic guard checks remain active")]
+    private partial void LogPowerNotificationsUnavailable(Exception ex);
 
     [LoggerMessage(EventId = 2010, Level = LogLevel.Warning, Message = "WriterGuard re-scan failed")]
     private partial void LogPassFailed(Exception ex);

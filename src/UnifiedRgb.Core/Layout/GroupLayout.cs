@@ -22,10 +22,11 @@ public static class GroupLayout
         var k = 0;
         foreach (var z in zones)
         {
-            var local = Projector.Project(z);
-            foreach (var s in local)
+            var local = result.AsSpan(k, z.LedCount);
+            Projector.Project(z, local);
+            for (var i = 0; i < local.Length; i++)
             {
-                result[k] = s with { U = (k + 0.5f) / total };
+                local[i] = local[i] with { U = (k + 0.5f) / total };
                 k++;
             }
         }

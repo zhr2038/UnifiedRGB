@@ -62,7 +62,7 @@ internal sealed class ScreenSourceTrace
         {
             _metaAsset = asset;
             _metaCount = asset?.FrameCount ?? 0;
-            _metaLoopMs = asset?.DurationMs ?? 0; // a Sum over the delays: once per asset identity, never per picture
+            _metaLoopMs = asset?.DurationMs ?? 0;
         }
 
         var valid = asset is not null && (uint)s.Index < (uint)_metaCount;

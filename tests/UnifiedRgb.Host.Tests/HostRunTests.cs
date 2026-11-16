@@ -101,6 +101,10 @@ public class HostRunTests(ITestOutputHelper output)
 
         (code, _, _) = await CliAsync();
         code.Should().Be(2);
+
+        (code, _, stderr) = await CliAsync("--pipe");
+        code.Should().Be(2);
+        stderr.Should().Contain("--pipe");
     }
 
     [Fact]

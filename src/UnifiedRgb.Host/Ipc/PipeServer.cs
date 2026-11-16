@@ -37,6 +37,8 @@ public sealed partial class PipeServer(
 
     private readonly TaskCompletionSource _listening = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private NamedPipeServerStream? _reserved;
+    internal Func<NamedPipeServerStream, CancellationToken, Task> AcceptConnection { get; init; } =
+        static (pipe, ct) => pipe.WaitForConnectionAsync(ct);
 
     internal void ReserveEndpoint()
     {
@@ -98,7 +100,15 @@ public sealed partial class PipeServer(
 
                 try
                 {
-                    await pipe.WaitForConnectionAsync(stoppingToken).ConfigureAwait(false);
+                    await AcceptConnection(pipe, stoppingToken).ConfigureAwait(false);
+                }
+                catch (IOException ex)
+                {
+                    await pipe.DisposeAsync().ConfigureAwait(false);
+                    stoppingToken.ThrowIfCancellationRequested();
+                    LogAcceptFailed(options.PipeName, ex);
+                    await Task.Delay(200, stoppingToken).ConfigureAwait(false);
+                    continue;
                 }
                 catch
                 {
@@ -219,4 +229,7 @@ public sealed partial class PipeServer(
 
     [LoggerMessage(EventId = 4005, Level = LogLevel.Warning, Message = "Client session {Id} failed")]
     private partial void LogSessionFailed(int id, Exception ex);
+
+    [LoggerMessage(EventId = 4007, Level = LogLevel.Warning, Message = "Pipe {Name}: accepting a client failed; reopening the listener")]
+    private partial void LogAcceptFailed(string name, Exception ex);
 }

@@ -34,19 +34,8 @@ public static class RogPerKeyLighting
     /// Every report of one frame at the RID0/65 boundary. The whole frame is validated first (1..128 distinct LED ids), so an
     /// invalid frame returns nothing to send. Byte 64 is always zero, which the wireless translation requires.
     /// </summary>
-    public static IReadOnlyList<byte[]> BoundaryFrame(ReadOnlySpan<RogKeyColor> keys)
-    {
-        var reports = RogProtocol.KeyboardFrame(2, keys);
-        var result = new byte[reports.Count][];
-        for (var i = 0; i < reports.Count; i++)
-        {
-            var boundary = new byte[BoundaryReportLength];
-            reports[i].CopyTo(boundary, 0);
-            boundary[0] = 0;
-            result[i] = boundary;
-        }
-        return Array.AsReadOnly(result);
-    }
+    public static IReadOnlyList<byte[]> BoundaryFrame(ReadOnlySpan<RogKeyColor> keys) =>
+        RogProtocol.EncodeKeyboardFrame(0, BoundaryReportLength, keys);
 
     /// <summary>The original unpaced entry point, retained for existing compiled callers.</summary>
     public static Task WriteAsync(Func<byte[], bool, CancellationToken, Task<byte[]>> exchange, IReadOnlyList<RogKeyColor> keys,

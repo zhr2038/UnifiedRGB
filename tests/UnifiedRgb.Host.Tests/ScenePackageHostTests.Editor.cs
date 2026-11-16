@@ -8,6 +8,21 @@ namespace UnifiedRgb.Host.Tests;
 public sealed partial class ScenePackageHostTests
 {
     [Fact]
+    public void Unchanged_or_disabled_frame_transforms_preserve_frame_order_and_source_bytes()
+    {
+        byte[] source = [0, 127, 255, 14, 28, 42, 200, 150, 100, 255, 1, 0];
+        var original = source.ToArray();
+        var forward = ScenePackagePlayback.TransformFrames(source, 2, 2, new());
+        forward.Should().Equal(original);
+        forward.Should().NotBeSameAs(source);
+        ScenePackagePlayback.TransformFrames(source, 2, 2, new(Reverse: true)).Should()
+            .Equal(200, 150, 100, 255, 1, 0, 0, 127, 255, 14, 28, 42);
+        ScenePackagePlayback.TransformFrames(source, 2, 2, new(LightingBrightness: 0)).Should().OnlyContain(value => value == 0);
+        ScenePackagePlayback.TransformFrames(source, 2, 2, new(Reverse: true, LightingEnabled: false)).Should().OnlyContain(value => value == 0);
+        source.Should().Equal(original);
+    }
+
+    [Fact]
     public async Task Editor_RPC_round_trip_preserves_original_output_until_explicit_apply()
     {
         await using var rig = await StartAsync();

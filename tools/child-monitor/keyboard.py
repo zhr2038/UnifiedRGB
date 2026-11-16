@@ -140,7 +140,7 @@ class Inputs:
 
     def view(self, previous_version):
         with self.condition:
-            self.condition.wait_for(lambda: self.version != previous_version, timeout=0.25)
+            self.condition.wait_for(lambda: self.version != previous_version, timeout=2)
             return self.version, self.epoch, self.enabled, self.reading, self.received
 
     def admits(self, epoch):

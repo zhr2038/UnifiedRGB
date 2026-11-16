@@ -56,6 +56,7 @@ public sealed class DeviceWriter : IDisposable
     private volatile bool _paused;
     private long _written;
     private long _errors;
+    private int _consecutiveIoFailures;
     private long _uploads;
     private long _uploadsAborted;
     private string? _lastError;
@@ -96,6 +97,7 @@ public sealed class DeviceWriter : IDisposable
     public int MaxFps { get; }
 
     public bool UploadsLoops => _loopAdapter is not null;
+    public int ConsecutiveIoFailures => Volatile.Read(ref _consecutiveIoFailures);
 
     /// <summary>
     /// True when the adapter's FrameBudget paces this Streamed writer (<see cref="IFramePacingSource"/>): no MaxFps grid is
@@ -283,6 +285,7 @@ public sealed class DeviceWriter : IDisposable
             }
 
             var stats = loops.LastUpload(Controller);
+            Volatile.Write(ref _consecutiveIoFailures, 0);
             Volatile.Write(ref _lastUpload, stats);
             Interlocked.Increment(ref _uploads);
             var w = Interlocked.Increment(ref _written);
@@ -293,6 +296,7 @@ public sealed class DeviceWriter : IDisposable
         catch (Exception ex)
 #pragma warning restore CA1031
         {
+            RecordIoOutcome(ex);
             Interlocked.Increment(ref _errors);
             _lastError = ex.Message;
             _onError?.Invoke(Controller, ex);
@@ -404,6 +408,7 @@ public sealed class DeviceWriter : IDisposable
                 }
             }
 
+            Volatile.Write(ref _consecutiveIoFailures, 0);
             var w = Interlocked.Increment(ref _written);
             Volatile.Write(ref _writeTimes[(int)((w - 1) % _writeTimes.Length)], Stopwatch.GetTimestamp());
         }
@@ -411,10 +416,17 @@ public sealed class DeviceWriter : IDisposable
         catch (Exception ex)
 #pragma warning restore CA1031
         {
+            RecordIoOutcome(ex);
             Interlocked.Increment(ref _errors);
             _lastError = ex.Message;
             _onError?.Invoke(Controller, ex);
         }
+    }
+
+    private void RecordIoOutcome(Exception ex)
+    {
+        if (ex is System.IO.IOException or TimeoutException) Interlocked.Increment(ref _consecutiveIoFailures);
+        else Volatile.Write(ref _consecutiveIoFailures, 0);
     }
 
     /// <remarks>

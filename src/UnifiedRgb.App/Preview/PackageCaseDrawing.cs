@@ -25,7 +25,7 @@ public sealed class PackageCaseDrawing : FrameworkElement
         var dc = drawingContext;
         dc.DrawImage(Background, new Rect(0, 0, 776, 420));
         var vm = Model; var data = vm?.PreviewData;
-        if (vm is null || data is null || ScenePackagePlayback.Validate(vm.PreviewPlayback) is not null) return;
+        if (vm is null || data is null || vm.ParameterProblem.Length != 0) return;
         if (!ReferenceEquals(_data, data) || _tracks.Any(p => !ReferenceEquals(p.Target, vm.Roles.FirstOrDefault(r => r.Dto.Role == p.Track.Info.Role)?.Selected))) Rebuild(vm, data);
         var position = ScenePackagePlayback.SourcePosition(vm.PreviewPositionMs, data.Info.DurationMs, vm.PreviewPlayback);
         foreach (var track in _tracks)

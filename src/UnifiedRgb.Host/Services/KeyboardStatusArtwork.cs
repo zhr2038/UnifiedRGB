@@ -11,6 +11,17 @@ namespace UnifiedRgb.Host.Services;
 /// <summary>Off-clock208x64 artwork; the compiled project logo and independently packed pixels match the accepted trial.</summary>
 internal static class KeyboardStatusArtwork
 {
+    private static readonly Lazy<Drawing> BrandMark = new(() =>
+    {
+        using var stream = typeof(KeyboardStatusArtwork).Assembly.GetManifestResourceStream("UnifiedRgb.KeyboardBrand.xaml")
+            ?? throw new InvalidOperationException("Compiled brand resource missing.");
+        var resources = (ResourceDictionary)XamlReader.Load(stream);
+        var mark = ((Drawing)resources["Brand.MarkDrawing"]).CloneCurrentValue();
+        White(mark);
+        mark.Freeze(); // One immutable logo can be shared by all short-lived rendering STA threads.
+        return mark;
+    });
+
     public static byte[] Render(CaseStatusObservation state) => Rasterize((dc, mark) =>
     {
         dc.PushTransform(new MatrixTransform(17d / 256, 0, 0, 17d / 256, 6, 0)); dc.DrawDrawing(mark); dc.Pop();
@@ -38,11 +49,7 @@ internal static class KeyboardStatusArtwork
         {
             try
             {
-                using var stream = typeof(KeyboardStatusArtwork).Assembly.GetManifestResourceStream("UnifiedRgb.KeyboardBrand.xaml")
-                    ?? throw new InvalidOperationException("Compiled brand resource missing.");
-                var resources = (ResourceDictionary)XamlReader.Load(stream);
-                var mark = ((Drawing)resources["Brand.MarkDrawing"]).CloneCurrentValue();
-                White(mark); mark.Freeze();
+                var mark = BrandMark.Value;
                 var visual = new DrawingVisual();
                 TextOptions.SetTextFormattingMode(visual, TextFormattingMode.Display);
                 TextOptions.SetTextRenderingMode(visual, TextRenderingMode.Aliased);

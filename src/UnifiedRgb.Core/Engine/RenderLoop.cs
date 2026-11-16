@@ -634,11 +634,6 @@ public sealed partial class RenderLoop : IDisposable
                         var slot = controllers[pl.ControllerSlot];
                         var dst = slot.Mailbox.Back.Zones[pl.ZoneIndex].AsSpan();
                         var k = Player.FrameAt(phase >= 0 ? phase * pl.Frames * pl.IntervalMs / 1000.0 : pt, pl.IntervalMs, pl.Frames);
-                        if ((uint)k >= (uint)pl.Frames)
-                        {
-                            k = 0;
-                        }
-
                         pl.Pixels.AsSpan(k * pl.Leds, dst.Length).CopyTo(dst);
                         slot.Stage.Apply(dst, pl.Brightness);
                     }

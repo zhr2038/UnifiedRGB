@@ -24,6 +24,33 @@ internal static class ReviewChecks
             throw new TimeoutException("Focused review fake did not reach expected state");
         }
         var options = Fixtures.Trust(Dir("review-trust"), package);
+        foreach (var finish in new[] { false, true })
+        {
+            var observer = new FakePhysical(Dir("host-stop-evidence")) { HoldBootEntry = !finish };
+            var leaseOwner = new FakeMaintenance();
+            var stoppingRunner = new MemoryRunner(original);
+            await using var stopping = new FirmwareJobBroker(options, leaseOwner, new PhysicalWorkflow(observer), stoppingRunner, Dir("host-stop"));
+            var state = await stopping.LoadFirmwarePackageAsync(bundlePath).ConfigureAwait(false);
+            await stopping.PrepareFirmwareAsync(Click(state)).ConfigureAwait(false);
+            if (finish)
+            {
+                state = await Wait(stopping).ConfigureAwait(false);
+                await Task.Delay(20).ConfigureAwait(false); // wait for the owner task to return after publishing Prepared
+                observer.HoldNormalReplug = new(TaskCreationOptions.RunContinuationsAsynchronously);
+                await stopping.FinishFirmwareAsync(Click(state)).ConfigureAwait(false);
+                await observer.HoldNormalReplug.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            }
+            else
+            {
+                state = await Wait(stopping, FirmwarePhase.AwaitingBoot).ConfigureAwait(false);
+            }
+            await stopping.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            var stopped = await stopping.GetFirmwareJobAsync().ConfigureAwait(false);
+            check(stopped is { Running: false, WireClosed: true } &&
+                stopped.Phase == (finish ? FirmwarePhase.Prepared : FirmwarePhase.Cancelled) &&
+                leaseOwner.Owner == state.JobId && leaseOwner.Finishes == 0 && stoppingRunner.Runs == 0,
+                "Host shutdown cancels and joins safe observation and retains the maintenance owner: " + (finish ? "finish" : "prepare"));
+        }
         var mutablePicker = Path.Combine(Dir("snapshot-picker"), "picker.urgbfw"); File.Copy(bundlePath, mutablePicker);
         var immutablePackage = ReleasePackage.Load(mutablePicker);
         using (var expanded = new FileStream(mutablePicker, FileMode.Open, FileAccess.Write)) expanded.SetLength(32 * 1024 * 1024);
@@ -184,6 +211,28 @@ internal static class ReviewChecks
         var service = new UiService(completed with { Phase = FirmwarePhase.Loaded, Package = completed.Package with { Trusted = true, HardwareEnabled = true }, UpdatedAt = baselineClock.AddSeconds(-1) });
         var vm = new FirmwareUpdateViewModel(() => service, InlineDispatcher.Instance, () => null, _ => true, _ => { }, () => clock);
         await vm.RefreshAsync().ConfigureAwait(false); check(vm.CanPrepare, "fresh UI observation enabled only with trusted enabled source");
+        var oldStatus = service.Status;
+        var pendingRead = new TaskCompletionSource<FirmwareJobStatus?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var pendingMutation = new TaskCompletionSource<FirmwareJobStatus>(TaskCreationOptions.RunContinuationsAsynchronously);
+        service.PendingRead = pendingRead.Task;
+        service.PendingMutation = pendingMutation.Task;
+        var oldPoll = vm.RefreshAsync();
+        var mutate = vm.PrepareCommand.ExecuteAsync();
+        var reads = service.Reads;
+        await vm.RefreshAsync().ConfigureAwait(false);
+        check(service.Reads == reads, "busy firmware UI skips background polling");
+        var accepted = oldStatus with { Revision = oldStatus.Revision + 1, Running = true, Phase = FirmwarePhase.Preparing };
+        pendingMutation.SetResult(accepted);
+        await mutate.ConfigureAwait(false);
+        pendingRead.SetResult(oldStatus);
+        await oldPoll.ConfigureAwait(false);
+        service.PendingRead = null;
+        await vm.RefreshAsync().ConfigureAwait(false); // stale same-job read also cannot overwrite the new acknowledgement
+        check(vm.Status == accepted && !vm.CanPrepare && service.Writes == 1, "stale firmware readings cannot overwrite the accepted revision");
+        service.PendingMutation = null;
+        service.Status = oldStatus with { Revision = accepted.Revision + 1 };
+        service.Writes = 0;
+        await vm.RefreshAsync().ConfigureAwait(false);
         clock = baselineClock.AddMinutes(-1); await vm.RefreshAsync().ConfigureAwait(false); check(!vm.CanPrepare, "UI clock rollback rejects even a new read from lower clock");
         clock = baselineClock.AddSeconds(1); service.Status = service.Status with { UpdatedAt = clock.AddMinutes(1) };
         await vm.RefreshAsync().ConfigureAwait(false); check(!vm.CanPrepare, "future Host observation cannot authorize UI actions");

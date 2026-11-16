@@ -17,13 +17,27 @@ internal static class Mp4Importer
 
     public static ImportResult Import(byte[] data, ImportLimits limits, CancellationToken ct = default)
     {
+        var frames = new List<byte[]>();
+        var (width, height, delays) = Read(data, limits, frames.Add, firstFrameOnly: false, ct);
+        return new("mp4", width, height, frames, delays);
+    }
+
+    public static (int Width, int Height, int Frames, int DurationMs, byte[] FirstFramePng) Probe(byte[] data, ImportLimits limits, CancellationToken ct)
+    {
+        byte[]? firstFrame = null;
+        var (width, height, delays) = Read(data, limits, png => firstFrame = png, firstFrameOnly: true, ct);
+        return (width, height, delays.Length, delays.Sum(), firstFrame!);
+    }
+
+    private static (int Width, int Height, int[] Delays) Read(byte[] data, ImportLimits limits, Action<byte[]> acceptFrame, bool firstFrameOnly, CancellationToken ct)
+    {
         ArgumentNullException.ThrowIfNull(data);
         if (!IsMp4(data) || data.Length > limits.MaxBytes) throw new ArgumentException("An MP4 must fit the upload byte budget.", nameof(data));
         ValidateContainer(data);
-        return WithInput(data, limits.ScratchDirectory, path => Decode(path, limits, ct));
+        return WithInput(data, limits.ScratchDirectory, path => Decode(path, limits, acceptFrame, firstFrameOnly, ct));
     }
 
-    internal static ImportResult WithInput(byte[] data, string? scratchRoot, Func<string, ImportResult> decode)
+    internal static T WithInput<T>(byte[] data, string? scratchRoot, Func<string, T> decode)
     {
         var root = scratchRoot ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "UnifiedRgb", "scratch", "video-import");
         var directory = Path.Combine(root, Guid.NewGuid().ToString("N"));
@@ -47,7 +61,7 @@ internal static class Mp4Importer
         }
     }
 
-    private static ImportResult Decode(string path, ImportLimits limits, CancellationToken ct)
+    private static (int Width, int Height, int[] Delays) Decode(string path, ImportLimits limits, Action<byte[]> acceptFrame, bool firstFrameOnly, CancellationToken ct)
     {
         MFStartup().CheckError();
         try
@@ -85,7 +99,9 @@ internal static class Mp4Importer
                 throw new ArgumentException("Unsupported MP4 decoder stride.");
             var fit = Math.Min(1.0, limits.NormalizeBox / (double)Math.Max(width, height));
             var targetW = Math.Max(1, (int)Math.Round(width * fit)); var targetH = Math.Max(1, (int)Math.Round(height * fit));
-            var frames = new List<byte[]>(); var positions = new List<long>();
+            var positions = new List<long>();
+            var raster = new PixelFrame(width, height);
+            using var png = new MemoryStream();
             long bytes = 0, finalDuration = 0; long? origin = null; var clock = Stopwatch.StartNew();
             for (var reads = 0; reads <= MaxFrames * 3; reads++)
             {
@@ -97,12 +113,11 @@ internal static class Mp4Importer
                 {
                     origin ??= timestamp; // MF can expose the codec/edit-list origin; preserve relative PTS, start the first picture at zero
                     var position = checked(timestamp - origin.Value);
-                    if (frames.Count >= MaxFrames || position < 0 || position > limits.MaxDurationMs * 10_000L
+                    if (positions.Count >= MaxFrames || position < 0 || position > limits.MaxDurationMs * 10_000L
                         || (positions.Count > 0 && position <= positions[^1]))
                         throw new ArgumentException("MP4 needs increasing presentation times, at most 30 seconds and 1800 frames.");
                     using var buffer = sample.ConvertToContiguousBuffer();
                     buffer.Lock(out var pointer, out _, out var length);
-                    var raster = new PixelFrame(width, height);
                     try
                     {
                         if (length < (long)Math.Abs(stride) * (height - 1) + width * 4L) throw new InvalidDataException("MP4 decoder returned a short raster.");
@@ -114,20 +129,22 @@ internal static class Mp4Importer
                     }
                     finally { buffer.Unlock(); }
                     PixelOps.Flatten(raster); // RGB32's unused alpha byte is not transparency
-                    var png = WpfCodec.EncodePng(width == targetW && height == targetH ? raster : PixelOps.Resize(raster, targetW, targetH));
+                    png.SetLength(0);
+                    WpfCodec.EncodePng(width == targetW && height == targetH ? raster : PixelOps.Resize(raster, targetW, targetH), png);
                     bytes += png.Length;
                     if (bytes > limits.MaxNormalizedBytes) throw new ArgumentException("MP4 normalized frames exceed the 256 MiB asset budget.");
-                    frames.Add(png); positions.Add(position);
+                    if (!firstFrameOnly || positions.Count == 0) acceptFrame(png.ToArray());
+                    positions.Add(position);
                     finalDuration = sample.SampleDuration;
                 }
                 if ((flags & SourceReaderFlag.EndOfStream) != 0) break;
                 if (reads == MaxFrames * 3) throw new ArgumentException("MP4 source exceeded the bounded read count.");
             }
-            if (frames.Count < 2) throw new ArgumentException("An MP4 needs at least two decoded frames.");
+            if (positions.Count < 2) throw new ArgumentException("An MP4 needs at least two decoded frames.");
             if (finalDuration <= 0) finalDuration = positions[^1] - positions[^2];
             var end = checked(positions[^1] + finalDuration);
             if (end > limits.MaxDurationMs * 10_000L) throw new ArgumentException("MP4 lasts more than 30 seconds.");
-            var delays = new int[frames.Count];
+            var delays = new int[positions.Count];
             for (var i = 0; i < delays.Length; i++)
             {
                 var startMs = (long)Math.Round(positions[i] / 10_000.0);
@@ -135,7 +152,7 @@ internal static class Mp4Importer
                 delays[i] = checked((int)(endMs - startMs));
                 if (delays[i] is < 1 or > 30000) throw new ArgumentException("Unsupported MP4 presentation interval.");
             }
-            return new("mp4", targetW, targetH, frames, delays);
+            return (targetW, targetH, delays);
         }
         finally { MFShutdown().CheckError(); }
     }

@@ -1,3 +1,4 @@
+using UnifiedRgb.Core.Color;
 using UnifiedRgb.Core.Effects;
 using UnifiedRgb.Core.Effects.Generators;
 using UnifiedRgb.Core.Engine;
@@ -97,6 +98,39 @@ public class LoopCompilerTests
 {
     private static readonly Capabilities Chain = Capabilities.UploadedLoopOnly(200, 20, 12288);
     private static readonly Capabilities Slow = Capabilities.UploadedLoopOnly(100, 30, 12288);
+
+    [Fact]
+    public void Overlapping_targets_keep_independent_output_corrections_and_frame_counts()
+    {
+        var generator = new RainbowEffect();
+        var samples = Projector.Project(ZoneLayout.Linear(12));
+        LoopTarget[] targets =
+        [
+            new(0, 12, new OutputStage(2.2f, new Rgb(255, 128, 64)), 7),
+            new(3, 2, OutputStage.Identity, 7),
+            new(1, 5, new OutputStage(1.4f), 3),
+        ];
+        var result = LoopCompiler.Render(generator, samples, [], .5f, .65f, Direction.Reverse, 1, 2, targets);
+        for (var i = 0; i < targets.Length; i++)
+        {
+            var target = targets[i];
+            result[i].Length.Should().Be(target.Frames * target.LedCount * 3);
+            for (var k = 0; k < target.Frames; k++)
+            {
+                var source = new Rgb[samples.Length];
+                generator.Render(new RenderContext(LoopCompiler.FrameTime(k, target.Frames, 2), 2.0 / target.Frames,
+                    [], .5f, .65f, Direction.Reverse, samples, 1), source);
+                var expected = source.AsSpan(target.SourceOffset, target.LedCount);
+                target.Stage.Apply(expected, .65f);
+                for (var led = 0; led < expected.Length; led++)
+                {
+                    var offset = (k * target.LedCount + led) * 3;
+                    new Rgb(result[i][offset], result[i][offset + 1], result[i][offset + 2])
+                        .Should().Be(expected[led], $"target {i}, frame {k}, LED {led}");
+                }
+            }
+        }
+    }
 
     [Fact]
     public void Timing_takes_as_many_frames_as_the_minimum_interval_allows()

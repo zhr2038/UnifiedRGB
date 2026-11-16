@@ -15,6 +15,24 @@ public sealed class TurzxQueueQueryTests
     private static readonly byte[] Png = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1];
 
     [Fact]
+    public void Pending_screen_command_interrupts_backpressure_before_another_IO()
+    {
+        var channel = Channel((command, ack) =>
+        {
+            if (command == TurzxVideoProtocol.DataCommand) ack[8] = 4;
+            return ack;
+        });
+        var fixedTime = new DateTime(2026, 10, 22, 12, 0, 0);
+        var session = new TurzxVideoSession(channel, new ScreenTimestamp(ScreenFamily.Turzx, () => fixedTime, () => fixedTime),
+            () => false, waitForCommand: _ => true);
+        session.Begin(Png);
+        FluentActions.Invoking(() => session.SendFrame(Picture)).Should().Throw<ScreenTransferException>()
+            .Which.Kind.Should().Be(ScreenTransferError.Aborted);
+        session.Stop();
+        channel.Writes.Select(Command).Should().Equal(111, 112, 41, 102, 15, 121);
+        session.AccessUnits.Should().Be(0);
+    }
+    [Fact]
     public void A_query_is_one_strict_status_control_that_leaves_LastQueueDepth_and_counts_as_control_work()
     {
         var channel = Channel((command, ack) =>

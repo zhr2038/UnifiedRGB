@@ -157,8 +157,8 @@ public sealed class RogWirelessOledConnection : IRogOledConnection
     public async Task WriteLightingFrameAsync(IReadOnlyList<RogKeyColor> keys, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(keys);
-        // Validate and translate the entire frame before entering the existing exclusive owner or writing anything.
-        var packets = RogPerKeyLighting.BoundaryFrame(keys.ToArray()).Select(ToWireless).ToArray();
+        // Validate and encode the entire RF frame before entering the exclusive owner or writing anything.
+        var packets = RogProtocol.KeyboardFrame(2, keys.ToArray());
         var spacing = KeyReportDelayMs;
         Enter(ct);
         try
@@ -579,7 +579,6 @@ public sealed class RogWirelessOledConnection : IRogOledConnection
 
     private static byte[] ToWireless(byte[] wired)
     {
-        ArgumentNullException.ThrowIfNull(wired);
         if (wired.Length != 65 || wired[0] != 0) throw new ArgumentException("Expected a wired RID0 OLED packet.", nameof(wired));
         if (wired[64] != 0) throw new ArgumentException("Wireless OLED framing cannot carry a nonzero 65th byte.", nameof(wired));
         var wireless = new byte[64]; wired.AsSpan(1, 63).CopyTo(wireless.AsSpan(1)); wireless[0] = 2;

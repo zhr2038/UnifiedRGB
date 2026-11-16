@@ -53,6 +53,42 @@ public class LoopHostTests
     }
 
     [Fact]
+    public async Task Consecutive_IO_failures_close_the_old_writer_before_reopening_the_controller()
+    {
+        var adapter = new LoopAdapter { FailUploads = true };
+        using var bus = new FrameBus();
+        await using var host = new AdapterHost([new Factory(adapter)], null!, ClearGuard(), bus, () => new HybridSleeper(), NullLogger<AdapterHost>.Instance);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await host.StartAsync(timeout.Token);
+        var entry = host.Controllers.Should().ContainSingle().Subject;
+        var firstWriter = entry.Writer!;
+        for (uint i = 1; i <= 3; i++)
+        {
+            bus.PublishLoop(entry.Descriptor.Id, new ZoneId(0), new LoopFrames(2, 4, 20, i, new byte[24]));
+            while (firstWriter.ConsecutiveIoFailures < i) await Task.Delay(10, timeout.Token);
+        }
+        while (!host.RescanRequested) await Task.Delay(10, timeout.Token);
+        adapter.FailUploads = false;
+        var closing = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var closeAllowed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        adapter.CloseHook = () => { closing.TrySetResult(); return closeAllowed.Task; };
+        var recovery = host.RescanAsync(timeout.Token);
+        try
+        {
+            await closing.Task.WaitAsync(timeout.Token);
+            Action reserveBringup = () => host.ReserveBringup(entry, "test");
+            reserveBringup.Should().Throw<InvalidOperationException>().WithMessage("*recovery*");
+            adapter.Opens.Should().Be(1);
+        }
+        finally { closeAllowed.TrySetResult(); }
+        (await recovery).Should().BeTrue();
+        entry.Writer.Should().NotBeSameAs(firstWriter);
+        adapter.Opens.Should().Be(2);
+        adapter.Closes.Should().Be(1);
+        host.TakeArrivals().Should().ContainSingle().Which.Should().Be(entry.Descriptor.Id);
+    }
+
+    [Fact]
     public void Managed_is_the_default_even_with_a_stale_vendor_path_and_vendor_is_explicit()
     {
         var options = new LianLiOptions { YuzDllPath = @"C:\missing\yuz.dll" };
@@ -88,6 +124,10 @@ public class LoopHostTests
         private LoopUploadStats? _last;
 
         public Exception? OpenError { get; init; }
+        public bool FailUploads { get; set; }
+        public Func<Task>? CloseHook { get; set; }
+        public int Opens { get; private set; }
+        public int Closes { get; private set; }
 
         public int Uploads { get; private set; }
 
@@ -105,13 +145,19 @@ public class LoopHostTests
 
         public Task<IReadOnlyList<ControllerDescriptor>> DiscoverAsync(CancellationToken ct) => Task.FromResult<IReadOnlyList<ControllerDescriptor>>([_d]);
 
-        public Task OpenAsync(ControllerId id, CancellationToken ct) => OpenError is { } e ? Task.FromException(e) : Task.CompletedTask;
+        public Task OpenAsync(ControllerId id, CancellationToken ct)
+        {
+            Opens.Should().Be(Closes, "an earlier writer still owns the connection");
+            Opens++;
+            return OpenError is { } e ? Task.FromException(e) : Task.CompletedTask;
+        }
 
         public void WriteFrame(ControllerId id, ZoneId zone, ReadOnlySpan<Rgb> colors) => Writes++;
 
         public Task UploadLoopAsync(ControllerId id, ZoneId zone, LoopFrames loop, CancellationToken ct)
         {
             Uploads++;
+            if (FailUploads) throw new IOException("injected controller I/O failure");
             _last = new LoopUploadStats(DateTimeOffset.UtcNow, 1, loop.EffectIndex, loop.Frames, loop.IntervalMs, loop.Rgb.Length, loop.Rgb.Length, 1, TimeSpan.Zero, 0, "test");
             return Task.CompletedTask;
         }
@@ -122,6 +168,10 @@ public class LoopHostTests
 
         public Telemetry? ReadTelemetry(ControllerId id) => null;
 
-        public Task CloseAsync(ControllerId id) => Task.CompletedTask;
+        public async Task CloseAsync(ControllerId id)
+        {
+            if (CloseHook is { } close) await close();
+            Closes++;
+        }
     }
 }

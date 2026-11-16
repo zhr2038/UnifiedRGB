@@ -445,9 +445,10 @@ public sealed class ScreensViewModel : ObservableObject
         if (!CurrentConnection(epoch)) return;
         var baseline = _baseline.Assignments.FirstOrDefault(s => s.ScreenId == a.ScreenId);
         if (current.Assignments.FirstOrDefault(s => s.ScreenId == a.ScreenId) != baseline) throw new InvalidOperationException("此屏幕配置已被其他操作修改。请刷新后再应用。");
-        await service.SetScreenSceneAsync(new(current.Assignments.Where(s => s.ScreenId != a.ScreenId).Append(a).ToArray())).ConfigureAwait(true);
+        var candidate = new ScreenSceneDto(current.Assignments.Where(s => s.ScreenId != a.ScreenId).Append(a).ToArray());
+        await service.SetScreenSceneAsync(candidate).ConfigureAwait(true);
         if (!CurrentConnection(epoch)) return;
-        _baseline = new(current.Assignments.Where(s => s.ScreenId != a.ScreenId).Append(a).ToArray());
+        _baseline = candidate;
         if (version == _draftVersion) Dirty = false;
         Message = (version == _draftVersion ? "屏幕内容已保存；实际发送取决于输出门槛与设备状态。" : "已保存点击应用时的内容，后续修改仍留在草稿中。")
             + (detaches ? "\n此屏幕已脱离场景包同步时间线，独立播放。" : "");

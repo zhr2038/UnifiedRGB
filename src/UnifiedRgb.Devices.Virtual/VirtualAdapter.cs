@@ -30,7 +30,7 @@ public sealed class VirtualAdapter : IDeviceAdapter
     public Task OpenAsync(ControllerId id, CancellationToken ct)
     {
         var d = _catalog.TryGetValue(id, out var c) ? c : throw new ArgumentException($"Unknown virtual controller {id}", nameof(id));
-        _open.TryAdd(id, new State(d));
+        _open.GetOrAdd(id, static (_, descriptor) => new State(descriptor), d);
         return Task.CompletedTask;
     }
 

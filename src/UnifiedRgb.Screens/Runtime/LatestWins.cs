@@ -9,33 +9,36 @@ internal sealed class LatestWins<T> : IDisposable
 {
     private readonly SemaphoreSlim _signal = new(0, 1);
     private readonly ScreenWaitTimer _timer = new();
+    private readonly object _postGate = new();
     private T? _value;
+    private bool _disposed;
 
     public void Post(T value)
     {
         ArgumentNullException.ThrowIfNull(value);
         Interlocked.Exchange(ref _value, value);
-        try
+        lock (_postGate)
         {
-            _signal.Release();
-        }
-        catch (SemaphoreFullException)
-        {
-            // already signalled: the consumer will take the newest value
-        }
-        catch (ObjectDisposedException)
-        {
-            // consumer gone
+            if (!_disposed && _signal.CurrentCount == 0) _signal.Release();
         }
     }
 
     /// <summary>The newest message, or null; never blocks.</summary>
     public T? TryTake() => Interlocked.Exchange(ref _value, null);
+    public bool HasPending => Volatile.Read(ref _value) is not null;
 
     /// <summary>Waits up to <paramref name="timeoutMs"/> (-1 = forever) for a post; true when one may be waiting.</summary>
     public bool Wait(int timeoutMs) => _timer.TryWait(_signal, timeoutMs, out var signaled) ? signaled : _signal.Wait(timeoutMs);
 
-    public void Dispose() { _timer.Dispose(); _signal.Dispose(); }
+    public void Dispose()
+    {
+        lock (_postGate)
+        {
+            _disposed = true;
+            _timer.Dispose();
+            _signal.Dispose();
+        }
+    }
 }
 
 /// <summary>Reopen delay after failures: initial, doubling per consecutive failure, capped; reset by a success.</summary>

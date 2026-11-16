@@ -19,6 +19,7 @@ public sealed partial class WiredKeyboardAdapter : IWholeFrameAdapter, INativeBr
     private readonly RogWiredLightingBridge _bridge;
     private readonly ControllerDescriptor _descriptor;
     private readonly RogPerKeyPlan? _perKey;
+    private readonly Dictionary<string, int[]> _routeIndices = new(StringComparer.Ordinal);
     private readonly IReadOnlyList<string> _verifiedRoutes;
     private volatile bool _open;
     private PerKeyFrame? _lastPerKeyFrame;
@@ -46,6 +47,27 @@ public sealed partial class WiredKeyboardAdapter : IWholeFrameAdapter, INativeBr
         _verifiedRoutes = routes.ToArray();
         perKey?.ValidatePacing();
         _perKey = RogPerKeyPlanner.Plan(perKey, routes, bridge.KeyFrameTransport);
+        if (_perKey is { Ready: true, Map: { } geometry })
+        {
+            var indices = geometry.Keys.Select((cell, index) => (cell, index))
+                .ToDictionary(p => (p.cell.Key, p.cell.Row, p.cell.Column), p => p.index);
+            foreach (var (transport, map) in _perKey.RouteMaps)
+            {
+                if (map.Keys.Count != geometry.Keys.Count) continue;
+                var route = new int[map.Keys.Count];
+                var valid = true;
+                for (var i = 0; i < route.Length; i++)
+                {
+                    var cell = map.Keys[i];
+                    if (!indices.TryGetValue((cell.Key, cell.Row, cell.Column), out route[i]))
+                    {
+                        valid = false;
+                        break;
+                    }
+                }
+                if (valid) _routeIndices.Add(transport, route);
+            }
+        }
         // Opt-in offer ceiling for a Ready per-key map only; absent, aggregate and not-Ready keep the legacy 10.
         _offerCeilingFps = _perKey?.Ready == true && perKey?.MaximumFps is { } fps ? fps : RogPerKeyOptions.LegacyMaximumFps;
         _rfReportDelayMs = perKey?.RfReportDelayMs ?? RogPerKeyOptions.LegacyRfReportDelayMs;
@@ -172,8 +194,7 @@ public sealed partial class WiredKeyboardAdapter : IWholeFrameAdapter, INativeBr
         if (transport is null || !plan.RouteMaps.TryGetValue(transport, out var routeMap))
             throw new DeviceBlockedException("Keyboard lighting owner does not service per-key frames on a verified map transport.");
         var cells = routeMap.Keys;
-        var indices = geometry.Select((cell, index) => (cell, index)).ToDictionary(p => (p.cell.Key, p.cell.Row, p.cell.Column), p => p.index);
-        if (cells.Count != geometry.Count || cells.Any(cell => !indices.ContainsKey((cell.Key, cell.Row, cell.Column))))
+        if (!_routeIndices.TryGetValue(transport, out var indices))
             throw new DeviceBlockedException("The active route map has different physical keys or geometry; rediscover it with that route selected.");
         var colors = zones[0];
         var overlay = CurrentOverlay();
@@ -183,7 +204,7 @@ public sealed partial class WiredKeyboardAdapter : IWholeFrameAdapter, INativeBr
         for (var i = 0; i < keys.Length; i++)
         {
             var cell = cells[i];
-            var logicalIndex = indices[(cell.Key, cell.Row, cell.Column)];
+            var logicalIndex = indices[i];
             var color = colors[logicalIndex];
             keys[i] = new((byte)cell.LedId, color);
             if (!ReferenceEquals(output, keys))

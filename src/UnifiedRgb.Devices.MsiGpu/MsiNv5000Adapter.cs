@@ -211,7 +211,26 @@ public sealed partial class MsiNv5000Adapter : IWholeFrameAdapter, INativeBringu
                 return false; // hold-black owns the card until the next reviewed restart; after a failed black send nothing more
             }
 
-            var frame = Nv5000Frames.Frame(Records(g, zones));
+            Span<Rgb> recordBuffer = stackalloc Rgb[Nv5000.EvidencedIndices];
+            var records = recordBuffer[.._options.MaxIndices];
+            records.Clear(); // indices outside the mapped zones remain black
+            if (g.ZoneIndices is null)
+            {
+                AggregateZone.Replicate(zones.Count > 0 ? zones[0] : [], records);
+            }
+            else
+            {
+                for (var z = 0; z < g.ZoneIndices.Length && z < zones.Count; z++)
+                {
+                    var indices = g.ZoneIndices[z];
+                    var colors = zones[z];
+                    for (var k = 0; k < indices.Length && k < colors.Length; k++)
+                    {
+                        records[indices[k]] = colors[k];
+                    }
+                }
+            }
+            var frame = Nv5000Frames.Frame(records);
             var now = Stopwatch.GetTimestamp();
             if (g.LastFrame is { } last && last.AsSpan().SequenceEqual(frame)
                 && (_options.KeepAliveMs == 0 || now - g.LastSent < _options.KeepAliveMs * (Stopwatch.Frequency / 1000)))
@@ -529,26 +548,6 @@ public sealed partial class MsiNv5000Adapter : IWholeFrameAdapter, INativeBringu
         }
 
         return ([AggregateZone.Descriptor("GPU")], null);
-    }
-
-    private Rgb[] Records(Gpu g, IReadOnlyList<Rgb[]> zones)
-    {
-        if (g.ZoneIndices is null)
-        {
-            return AggregateZone.Replicate(zones.Count > 0 ? zones[0] : [], _options.MaxIndices);
-        }
-
-        var records = new Rgb[_options.MaxIndices]; // indices in no zone stay black in every frame (RQ-G3 not established)
-        for (var z = 0; z < g.ZoneIndices.Length && z < zones.Count; z++)
-        {
-            var idx = g.ZoneIndices[z];
-            for (var k = 0; k < idx.Length && k < zones[z].Length; k++)
-            {
-                records[idx[k]] = zones[z][k];
-            }
-        }
-
-        return records;
     }
 
     private Gpu Get(ControllerId id)

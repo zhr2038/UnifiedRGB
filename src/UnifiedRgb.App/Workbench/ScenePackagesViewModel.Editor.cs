@@ -21,6 +21,7 @@ public sealed partial class ScenePackagesViewModel
     private PackagePreviewData? _previewData;
     private ScenePackagePreviewDto? _previewMetadata;
     private ScenePackagePlaybackDto _previewPlayback = new();
+    private string _parameterProblem = "";
     private readonly Dictionary<object, int> _inputErrors = [];
     public PcTelemetryDto? TelemetrySnapshot { get; set; }
     public Func<Task<PcTelemetryDto>>? ReadPreviewTelemetry { get; set; }
@@ -55,7 +56,7 @@ public sealed partial class ScenePackagesViewModel
     public bool EditorDirty { get => _editorDirty; private set { if (SetProperty(ref _editorDirty, value)) { NotifyState(); OnPropertyChanged(nameof(EditorDraftState)); } } }
     public bool CanAdjust => HasDetails && EditorAvailable && !Busy;
     public bool CanCommitEdits => CanAdjust && Available && _inputErrors.Count == 0 && ParameterProblem.Length == 0;
-    public string ParameterProblem => ScenePackagePlayback.Validate(_previewPlayback) ?? "";
+    public string ParameterProblem => _parameterProblem;
     public void UpdateInputErrors(object source, int count) { if (count == 0) _inputErrors.Remove(source); else _inputErrors[source] = count; NotifyEditorState(); }
     public double PlaybackSpeed { get => _speed; set { if (SetProperty(ref _speed, value)) MarkEditorChanged(); } }
     public double LightingBrightness { get => _lightBrightness; set { if (SetProperty(ref _lightBrightness, value)) MarkEditorChanged(); } }
@@ -111,13 +112,17 @@ public sealed partial class ScenePackagesViewModel
         }
         finally { _loading = loading; }
         _previewPlayback = BuildPlayback();
+        _parameterProblem = ScenePackagePlayback.Validate(_previewPlayback) ?? "";
+        OnPropertyChanged(nameof(ParameterProblem));
         OnPropertyChanged(nameof(PreviewDurationMs)); PreviewChanged?.Invoke(this, EventArgs.Empty);
     }
 
     private void MarkEditorChanged()
     {
         if (_loading) return;
-        _draftVersion++; _previewPlayback = BuildPlayback(); EditorDirty = true;
+        _draftVersion++; _previewPlayback = BuildPlayback();
+        _parameterProblem = ScenePackagePlayback.Validate(_previewPlayback) ?? "";
+        EditorDirty = true;
         NotifyState(); OnPropertyChanged(nameof(ParameterProblem));
         OnPropertyChanged(nameof(PreviewDurationMs)); OnPropertyChanged(nameof(PreviewTime));
         PreviewChanged?.Invoke(this, EventArgs.Empty);
@@ -148,17 +153,18 @@ public sealed partial class ScenePackagesViewModel
             PreviewNote = "原始帧动态预演 · 结构与光晕为示意；预览不发送到硬件。";
             SetPreviewPosition(0); PreviewPlaying = true; NotifyState();
         }
-        catch (Exception ex) when (ex is NotSupportedException or StreamJsonRpc.RemoteMethodNotFoundException)
+        catch (Exception ex) when (ex is NotSupportedException or StreamJsonRpc.RemoteMethodNotFoundException
+            or System.IO.IOException or System.IO.InvalidDataException)
         {
             if (request != _selectionRequest || Selected?.Id != id || revision != _draftVersion) return;
-            EditorAvailable = false; PreviewNote = "请更新后台以使用外部效果调参和动态预览。";
+            if (ex is NotSupportedException or StreamJsonRpc.RemoteMethodNotFoundException)
+            {
+                EditorAvailable = false;
+                PreviewNote = "请更新后台以使用外部效果调参和动态预览。";
+            }
+            else PreviewNote = "动态预览未能加载：" + ex.Message;
         }
         catch (OperationCanceledException) { }
-        catch (Exception ex) when (ex is System.IO.IOException or System.IO.InvalidDataException)
-        {
-            if (request != _selectionRequest || Selected?.Id != id || revision != _draftVersion) return;
-            PreviewNote = "动态预览未能加载：" + ex.Message;
-        }
     }
 
     public void AdvancePreview()
@@ -175,7 +181,7 @@ public sealed partial class ScenePackagesViewModel
     private async Task SaveEditsAsync()
     {
         if (!CanCommitEdits || Selected is null) return;
-        var options = BuildPlayback(); if (ScenePackagePlayback.Validate(options) is { } bad) throw new ArgumentException(bad);
+        var options = _previewPlayback;
         var id = Selected.Id; var revision = _draftVersion; Busy = true;
         try
         {

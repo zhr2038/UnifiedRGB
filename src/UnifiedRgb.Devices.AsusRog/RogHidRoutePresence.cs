@@ -17,9 +17,10 @@ internal static class RogHidRoutePresence
         if (string.IsNullOrWhiteSpace(capturedPath)) return false;
         try
         {
-            // Finish the complete enumeration before inspecting paths; never infer absence from a partial result.
-            var snapshot = enumerateComplete().ToArray();
-            return snapshot.All(c => !string.Equals(c.Path, capturedPath, StringComparison.OrdinalIgnoreCase));
+            // Absence is established only after visiting the entire returned snapshot successfully.
+            foreach (var collection in enumerateComplete())
+                if (string.Equals(collection.Path, capturedPath, StringComparison.OrdinalIgnoreCase)) return false;
+            return true;
         }
         catch (Exception ex) when (ex is not OutOfMemoryException) { return false; }
     }

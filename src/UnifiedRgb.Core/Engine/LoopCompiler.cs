@@ -162,10 +162,13 @@ public sealed class LoopCompiler
         ArgumentNullException.ThrowIfNull(targets);
         var scratch = new Rgb[samples.Length];
         var result = new byte[targets.Count][];
+        var maxZoneLeds = 0;
         for (var i = 0; i < targets.Count; i++)
         {
             result[i] = new byte[targets[i].Frames * targets[i].LedCount * 3];
+            maxZoneLeds = Math.Max(maxZoneLeds, targets[i].LedCount);
         }
+        var corrected = new Rgb[maxZoneLeds];
 
         foreach (var frames in targets.Select(t => t.Frames).Distinct())
         {
@@ -182,7 +185,8 @@ public sealed class LoopCompiler
                         continue;
                     }
 
-                    var zone = scratch.AsSpan(tg.SourceOffset, tg.LedCount).ToArray();
+                    var zone = corrected.AsSpan(0, tg.LedCount);
+                    scratch.AsSpan(tg.SourceOffset, tg.LedCount).CopyTo(zone);
                     tg.Stage.Apply(zone, brightness);
                     Pack(zone, result[i].AsSpan(k * tg.LedCount * 3));
                 }

@@ -11,6 +11,7 @@ internal sealed class FakePhysical(string directory) : IPhysicalObservationSourc
     public int Calls;
     public int NormalGetterCalls, PassiveNormalCalls;
     public bool HoldBootEntry;
+    public TaskCompletionSource? HoldNormalReplug;
     public bool WrongHeader, WrongBoot, AlreadyBoot;
     public static readonly string Container = new Guid("65393e54-a029-4804-83e2-6e2aba7d7315").ToString("D");
     public const string Location = "PCIROOT(0)#USBROOT(0)#USB(3)";
@@ -43,7 +44,17 @@ internal sealed class FakePhysical(string directory) : IPhysicalObservationSourc
             "29498fe8-cf5f-11f1-95fe-60ff9efff29b", WrongBoot ? Location + "#USB(99)" : Location, new string('a', 64), "02000200", at, [], true, true);
         return boot with { InventoryJson = JsonSerializer.SerializeToUtf8Bytes(new { at, boot.HidPath, boot.HidInstanceId, boot.UsbAncestor, boot.ContainerId, boot.PhysicalLocation, boot.CapsSha256 }) };
     }
-    public Task<bool> ObserveFreshNormalReplugAsync(PhysicalBinding binding, CancellationToken ct) { ct.ThrowIfCancellationRequested(); Calls++; return Task.FromResult(true); }
+    public async Task<bool> ObserveFreshNormalReplugAsync(PhysicalBinding binding, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        Calls++;
+        if (HoldNormalReplug is { } entered)
+        {
+            entered.TrySetResult();
+            await Task.Delay(Timeout.InfiniteTimeSpan, ct).ConfigureAwait(false);
+        }
+        return true;
+    }
 }
 
 internal sealed class FakeMaintenance : IFirmwareMaintenance
@@ -78,8 +89,10 @@ internal sealed class UiService(FirmwareJobStatus status) : IFirmwareUpdateServi
     public int Writes, Reads;
     public FirmwareRequest? LastRequest;
     public bool Unsupported, TimeoutMutation;
+    public Task<FirmwareJobStatus?>? PendingRead;
+    public Task<FirmwareJobStatus>? PendingMutation;
     public Task<FirmwareJobStatus?> GetFirmwareJobAsync(Guid? jobId = null, CancellationToken ct = default)
-    { Reads++; if (Unsupported) throw new NotSupportedException("Old host"); return Task.FromResult<FirmwareJobStatus?>(Status); }
+    { Reads++; if (Unsupported) throw new NotSupportedException("Old host"); return PendingRead ?? Task.FromResult<FirmwareJobStatus?>(Status); }
     public Task<FirmwareJobStatus> LoadFirmwarePackageAsync(string path, CancellationToken ct = default) => Change();
     public Task<FirmwareJobStatus> PrepareFirmwareAsync(FirmwareRequest request, CancellationToken ct = default) { LastRequest = request; return Change(); }
     public Task<FirmwareJobStatus> UseRetainedFirmwareBaselineAsync(FirmwareRequest request, CancellationToken ct = default) => Change();
@@ -89,7 +102,7 @@ internal sealed class UiService(FirmwareJobStatus status) : IFirmwareUpdateServi
     public Task<FirmwareJobStatus> CancelFirmwareIfSafeAsync(FirmwareRequest request, CancellationToken ct = default) => Change();
     public Task<FirmwareJobStatus> FinishFirmwareAsync(FirmwareRequest request, CancellationToken ct = default) => Change();
     private Task<FirmwareJobStatus> Change()
-    { Writes++; return TimeoutMutation ? new TaskCompletionSource<FirmwareJobStatus>(TaskCreationOptions.RunContinuationsAsynchronously).Task : Task.FromResult(Status); }
+    { Writes++; return PendingMutation ?? (TimeoutMutation ? new TaskCompletionSource<FirmwareJobStatus>(TaskCreationOptions.RunContinuationsAsynchronously).Task : Task.FromResult(Status)); }
 }
 
 internal sealed class PendingChild : IFirmwareChildProcess

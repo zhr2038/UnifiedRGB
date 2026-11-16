@@ -366,7 +366,7 @@ public static partial class ScenePackageFormat
         if (o.ContainsKey("segments"))
         {
             if (schema != SchemaVersionSegments || o.ContainsKey("file")) throw Bad($"{where}: use either file or v4 segments, never both");
-            var entries = Arr(o, "segments").ToArray();
+            var entries = Arr(o, "segments");
             if (entries.Length is < 2 or > MaxSegmentsPerScreen) throw Bad($"{where}: segments needs 2..{MaxSegmentsPerScreen} entries");
             segments = entries.Select((entry, i) =>
             {

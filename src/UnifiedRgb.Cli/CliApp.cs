@@ -27,15 +27,16 @@ public static class CliApp
         ArgumentNullException.ThrowIfNull(stdout);
         ArgumentNullException.ThrowIfNull(stderr);
         var a = new List<string>(args);
-        var pipeName = Take(a, "--pipe") ?? PipeNames.Default;
-        if (a.Count == 0 || a[0] is "-h" or "--help" or "help")
-        {
-            await stdout.WriteLineAsync(Usage).ConfigureAwait(false);
-            return a.Count == 0 ? 2 : 0;
-        }
+        var pipeName = PipeNames.Default;
 
         try
         {
+            pipeName = Take(a, "--pipe") ?? pipeName;
+            if (a.Count == 0 || a[0] is "-h" or "--help" or "help")
+            {
+                await stdout.WriteLineAsync(Usage).ConfigureAwait(false);
+                return a.Count == 0 ? 2 : 0;
+            }
             await using var pipe = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
             await pipe.ConnectAsync(3000, ct).ConfigureAwait(false);
             PipeServerIdentity.Verify(pipe, trust);

@@ -47,7 +47,7 @@ public static class SetupPlanner
         try
         {
             baseRoot = current.Exists ? SetupConfigDocument.Parse(current.Content) : new JsonObject();
-            root = current.Exists ? SetupConfigDocument.Parse(current.Content) : new JsonObject();
+            root = (JsonObject)baseRoot.DeepClone();
         }
         catch (SetupConfigException ex)
         {

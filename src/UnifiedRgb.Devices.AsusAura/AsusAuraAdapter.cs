@@ -230,8 +230,12 @@ public sealed partial class AsusAuraAdapter : IWholeFrameAdapter, INativeBringup
                 reports.AddRange(AuraReports.Direct(ch.DirectChannel, colors));
             }
 
-            var flat = reports.SelectMany(r => r).ToArray();
-            if (b.LastFrame is { } last && last.AsSpan().SequenceEqual(flat))
+            var unchanged = b.LastFrame is { } last && last.Count == reports.Count;
+            for (var i = 0; unchanged && i < reports.Count; i++)
+            {
+                unchanged = reports[i].AsSpan().SequenceEqual(b.LastFrame![i]);
+            }
+            if (unchanged)
             {
                 return false; // cached frame: no native write, sample or budget refusal
             }
@@ -248,7 +252,7 @@ public sealed partial class AsusAuraAdapter : IWholeFrameAdapter, INativeBringup
             }
 
             scope.Complete();
-            b.LastFrame = flat;
+            b.LastFrame = reports;
             return true;
         }
     }
@@ -867,6 +871,6 @@ public sealed partial class AsusAuraAdapter : IWholeFrameAdapter, INativeBringup
 
         public AuraChannel? Marker { get; set; }
 
-        public byte[]? LastFrame { get; set; }
+        public List<byte[]>? LastFrame { get; set; }
     }
 }

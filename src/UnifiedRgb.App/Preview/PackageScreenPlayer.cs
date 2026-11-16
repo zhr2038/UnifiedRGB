@@ -19,6 +19,7 @@ public sealed class PackageScreenPlayer : Grid, IDisposable
     private readonly CancellationTokenSource _stop = new();
     private string? _file;
     private string? _request;
+    private string? _accent;
     private bool _opened;
     private bool _closed;
     private double _wantedMs;
@@ -38,7 +39,7 @@ public sealed class PackageScreenPlayer : Grid, IDisposable
 
     public void Tick()
     {
-        if (_closed || _vm.PreviewData is not { } data || ScenePackagePlayback.Validate(_vm.PreviewPlayback) is not null) return;
+        if (_closed || _vm.PreviewData is not { } data || _vm.ParameterProblem.Length != 0) return;
         var source = ScenePackagePlayback.SourcePosition(_vm.PreviewPositionMs, data.Info.DurationMs, _vm.PreviewPlayback);
         source %= Math.Max(1, _info.Clips.Sum(c => c.DurationMs));
         var offset = 0.0; var clip = _info.Clips.Count == 0 ? null : _info.Clips[^1];
@@ -115,9 +116,22 @@ public sealed class PackageScreenPlayer : Grid, IDisposable
         _overlayBox.HorizontalAlignment = HorizontalAlignment.Left; _overlayBox.VerticalAlignment = VerticalAlignment.Top;
         _overlayBox.Margin = new Thickness(x * Width, y * Height, 0, 0); _overlayBox.Width = w * Width; _overlayBox.Height = h * Height;
         var alpha = region ? Math.Clamp(row!.RegionOpacity / 100, 0, 1) : .6;
-        _overlayBox.Background = new SolidColorBrush(Color.FromArgb((byte)(alpha * 255), 0, 0, 0));
+        var opacity = (byte)(alpha * 255);
+        if (_overlayBox.Background is not SolidColorBrush background || background.Color.A != opacity)
+        {
+            background = new SolidColorBrush(Color.FromArgb(opacity, 0, 0, 0));
+            background.Freeze();
+            _overlayBox.Background = background;
+        }
         var color = row?.ScreenAccent ?? _info.AccentColor;
-        if (color.Length == 7 && color[0] == '#' && color.AsSpan(1).ToString().All(char.IsAsciiHexDigit)) _overlay.Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString(color));
+        if (_accent != color && color.Length == 7 && color[0] == '#' && uint.TryParse(color.AsSpan(1),
+            System.Globalization.NumberStyles.AllowHexSpecifier, System.Globalization.CultureInfo.InvariantCulture, out var rgb))
+        {
+            var foreground = new SolidColorBrush(Color.FromRgb((byte)(rgb >> 16), (byte)(rgb >> 8), (byte)rgb));
+            foreground.Freeze();
+            _overlay.Foreground = foreground;
+            _accent = color;
+        }
     }
     public void Close() => Dispose();
     public void Dispose()

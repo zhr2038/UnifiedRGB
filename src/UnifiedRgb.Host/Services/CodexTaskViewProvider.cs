@@ -27,11 +27,12 @@ internal sealed class CodexTaskViewProvider(
 
     public void Browse(int direction)
     {
-        if (Volatile.Read(ref _disposed) != 0) return;
-        display.Browse(direction);
-        try { _wake.Release(); }
-        catch (SemaphoreFullException) { /* A pending wake already observes the latest selected task. */ }
-        catch (ObjectDisposedException) { /* A retired input callback cannot restart a stopped worker. */ }
+        lock (_wake)
+        {
+            if (_disposed != 0) return;
+            display.Browse(direction);
+            if (_wake.CurrentCount == 0) _wake.Release();
+        }
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -83,7 +84,11 @@ internal sealed class CodexTaskViewProvider(
 
     public override void Dispose()
     {
-        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+        lock (_wake)
+        {
+            if (_disposed != 0) return;
+            _disposed = 1;
+        }
         base.Dispose();
         _wake.Dispose();
     }

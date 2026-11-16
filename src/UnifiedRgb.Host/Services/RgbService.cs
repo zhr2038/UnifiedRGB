@@ -231,8 +231,9 @@ public sealed class RgbService(
 
     /// <summary>
     /// One serialized mixed change: the screen transaction validates the screen candidate (assets included) and holds the screen
-    /// mutation gate across RGB validation/commit and the screen commit, so no asset delete can interleave. An RGB failure,
-    /// cancellation or exception disposes the transaction uncommitted: the screen scene is unchanged and the gate released.
+    /// mutation gate across RGB validation and commit, so no asset delete can interleave. Cancellation before the durable
+    /// commit leaves both scenes unchanged. After that point the Host completes publication even if the caller has gone away;
+    /// callers that lose the acknowledgement must read the active scene to resolve the outcome.
     /// </summary>
     private async Task SetSceneWithScreensAsync(SceneDto scene, ScreenSceneDto screenScene, CancellationToken ct)
     {

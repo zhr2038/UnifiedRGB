@@ -7,9 +7,11 @@ namespace UnifiedRgb.App.Preview;
 /// <summary>Bounded local GIF compositor, including restore/clear disposal, off the UI dispatcher.</summary>
 internal sealed record PreviewGif(BitmapSource[] Frames, int[] Delays)
 {
+    public int[] Delays { get; } = Delays;
+    private readonly int _duration = Math.Max(1, Delays.Sum());
     public BitmapSource At(double milliseconds)
     {
-        var t = milliseconds % Math.Max(1, Delays.Sum());
+        var t = milliseconds % _duration;
         for (var i = 0; i < Frames.Length; i++) { if (t < Delays[i]) return Frames[i]; t -= Delays[i]; }
         return Frames[^1];
     }

@@ -70,5 +70,10 @@ public static class RogWiredOledProtocol
             || reply[5..].ContainsAnyExcept((byte)0)) throw new InvalidDataException("OLED acknowledgement changed; no retry.");
     }
 
-    public static void RequireRenewalReply(ReadOnlySpan<byte> reply) => RequireAck(reply, Renew());
+    public static void RequireRenewalReply(ReadOnlySpan<byte> reply)
+    {
+        if (reply.Length != 65 || reply[0] != 0 || reply[1] != 0x67 || reply[2] != 2
+            || reply[3..].ContainsAnyExcept((byte)0))
+            throw new InvalidDataException("OLED acknowledgement changed; no retry.");
+    }
 }

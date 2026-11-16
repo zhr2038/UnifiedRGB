@@ -27,8 +27,10 @@ public sealed class ManagedTinyuzEncoder : IRgbAnimationEncoder
         { throw new ArgumentOutOfRangeException(nameof(rgbData), $"Codec input must contain 1..{MaxInputBytes} bytes."); }
 
         // Different parses matter more than longer searches for RGB runs. Select the smaller complete stream.
-        var first = EncodePass(rgbData, lazy: false);
-        var second = EncodePass(rgbData, lazy: true);
+        var heads = new int[65536];
+        var previous = new int[DictionaryLimit];
+        var first = EncodePass(rgbData, heads, previous, lazy: false);
+        var second = EncodePass(rgbData, heads, previous, lazy: true);
         var packed = second.Length < first.Length ? second : first;
         if (BinaryPrimitives.ReadUInt32LittleEndian(packed) > DictionaryLimit)
         { throw new InvalidDataException("Tinyuz dictionary exceeds the receiver-compatible 4 KiB limit; upload refused."); }
@@ -38,10 +40,8 @@ public sealed class ManagedTinyuzEncoder : IRgbAnimationEncoder
         return packed;
     }
 
-    private static byte[] EncodePass(ReadOnlySpan<byte> data, bool lazy)
+    private static byte[] EncodePass(ReadOnlySpan<byte> data, int[] heads, int[] previous, bool lazy)
     {
-        var heads = new int[65536];
-        var previous = new int[DictionaryLimit];
         Array.Fill(heads, -1);
         Array.Fill(previous, -1);
         var writer = new CodeWriter();

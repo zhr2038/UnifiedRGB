@@ -13,7 +13,6 @@ import uuid
 from urllib.parse import parse_qs, urlsplit
 
 import numpy as np
-from tflite_runtime.interpreter import Interpreter
 
 
 WIDTH, HEIGHT = 320, 180
@@ -141,25 +140,40 @@ class MotionDetector:
         left, top, right, bottom = roi
         self.region = np.s_[round(top * HEIGHT):round(bottom * HEIGHT),
                            round(left * WIDTH):round(right * WIDTH)]
-        self.previous = deque(maxlen=4)
+        self.history = np.empty((4, HEIGHT, WIDTH), dtype=np.int16)
+        self.frames_seen = 0
+        self.next_frame = 0
+        self.delta = np.empty((HEIGHT, WIDTH), dtype=np.int16)
+        self.changed = np.empty((HEIGHT, WIDTH), dtype=np.bool_)
+        region = self.changed[self.region]
+        self.clustered = np.empty((region.shape[0] - 1, region.shape[1] - 1), dtype=np.bool_)
 
     def detect(self, data):
-        frame = np.frombuffer(data, np.uint8).reshape(HEIGHT, WIDTH).astype(np.int16)
-        previous = self.previous[0] if self.previous else None
-        self.previous.append(frame)
-        if previous is None:
+        frame = np.frombuffer(data, np.uint8).reshape(HEIGHT, WIDTH)
+        if self.frames_seen:
+            previous = self.history[0 if self.frames_seen < 4 else self.next_frame]
+            np.subtract(frame, previous, out=self.delta)
+        np.copyto(self.history[self.next_frame], frame)
+        self.next_frame = (self.next_frame + 1) % 4
+        self.frames_seen += 1
+        if self.frames_seen == 1:
             return 0.0
-        delta = frame - previous
-        delta -= int(np.median(delta))
-        changed = np.abs(delta) >= 18
-        region = changed[self.region]
+        self.delta -= int(np.median(self.delta))
+        np.abs(self.delta, out=self.delta)
+        np.greater_equal(self.delta, 18, out=self.changed)
+        if float(np.mean(self.changed)) >= 0.45:
+            return 0.0
+        region = self.changed[self.region]
         # Require adjacent changed pixels so isolated sensor noise does not count.
-        clustered = region[1:, 1:] & region[1:, :-1] & region[:-1, 1:]
-        return float(np.mean(clustered)) if float(np.mean(changed)) < 0.45 else 0.0
+        np.logical_and(region[1:, 1:], region[1:, :-1], out=self.clustered)
+        np.logical_and(self.clustered, region[:-1, 1:], out=self.clustered)
+        return float(np.mean(self.clustered))
 
 
 class CryDetector:
     def __init__(self, model, labels):
+        from tflite_runtime.interpreter import Interpreter
+
         self.model = Interpreter(model_path=model, num_threads=1)
         input_details = self.model.get_input_details()[0]
         if input_details["shape"].tolist() == [1]:
@@ -168,18 +182,24 @@ class CryDetector:
         self.input = self.model.get_input_details()[0]
         self.output = next(t for t in self.model.get_output_details() if t["shape"][-1] == 521)
         with open(labels, encoding="utf-8", newline="") as table:
-            self.labels = {row["display_name"]: int(row["index"]) for row in csv.DictReader(table)}
+            labels_by_name = {row["display_name"]: int(row["index"]) for row in csv.DictReader(table)}
+        self.baby_index = labels_by_name["Baby cry, infant cry"]
+        self.cry_index = labels_by_name["Crying, sobbing"]
+        self.pcm = np.empty(AUDIO_WINDOW, dtype=np.float32)
+        self.squares = np.empty_like(self.pcm)
+        self.model_input = self.pcm.reshape(self.input["shape"])
 
     def score(self, data):
-        pcm = np.frombuffer(data, dtype="<i2").astype(np.float32) / 32768
-        rms = float(np.sqrt(np.mean(pcm ** 2)))
+        np.multiply(np.frombuffer(data, dtype="<i2"), np.float32(1 / 32768), out=self.pcm)
+        np.square(self.pcm, out=self.squares)
+        rms = float(np.sqrt(np.mean(self.squares)))
         if rms < MIN_AUDIO_RMS:
             return 0.0, 0.0, rms
-        self.model.set_tensor(self.input["index"], pcm.reshape(self.input["shape"]))
+        self.model.set_tensor(self.input["index"], self.model_input)
         self.model.invoke()
         scores = self.model.get_tensor(self.output["index"]).reshape(-1, 521).max(axis=0)
-        baby = float(scores[self.labels["Baby cry, infant cry"]])
-        combined = max(baby, float(scores[self.labels["Crying, sobbing"]]) * 0.72)
+        baby = float(scores[self.baby_index])
+        combined = max(baby, float(scores[self.cry_index]) * 0.72)
         return combined, baby, rms
 
 

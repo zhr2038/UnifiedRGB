@@ -11,12 +11,13 @@ namespace UnifiedRgb.Screens.Media;
 /// <summary>A stored, normalized asset. Frames are PNG files f000.png.. in the asset directory.</summary>
 internal sealed record StoredAsset(string Id, string Name, string Format, int Width, int Height, IReadOnlyList<int> DelaysMs, long Bytes)
 {
+    public IReadOnlyList<int> DelaysMs { get; } = DelaysMs;
     public VideoSequenceMeta? Sequence { get; init; }
     public int FrameCount => DelaysMs.Count;
 
     public bool Animated => FrameCount > 1;
 
-    public int DurationMs => Animated ? DelaysMs.Sum() : 0;
+    public int DurationMs { get; } = DelaysMs.Count > 1 ? DelaysMs.Sum() : 0;
 
     public string Kind => Format is "mp4" or SegmentedVideo.Format ? "video" : Animated ? "animation" : "image";
 

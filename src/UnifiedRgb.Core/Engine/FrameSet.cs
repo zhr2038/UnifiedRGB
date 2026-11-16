@@ -133,6 +133,7 @@ public sealed class InMemoryFrameSetSource : IFrameSetSource
 /// </summary>
 public interface IStreamedLoopPlayer
 {
+    /// <summary>Returns a frame index in [0, frames) for a validated loop.</summary>
     int FrameAt(double tt, double intervalMs, int frames);
 }
 

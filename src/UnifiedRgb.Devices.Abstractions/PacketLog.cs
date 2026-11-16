@@ -54,11 +54,10 @@ public sealed class PacketLog
         {
             var n = (int)Math.Min(_count, _ring.Length);
             var result = new PacketRecord[n];
-            var start = _count - n;
-            for (var i = 0; i < n; i++)
-            {
-                result[i] = _ring[(start + i) % _ring.Length];
-            }
+            var start = (int)((_count - n) % _ring.Length);
+            var first = Math.Min(n, _ring.Length - start);
+            _ring.AsSpan(start, first).CopyTo(result);
+            _ring.AsSpan(0, n - first).CopyTo(result.AsSpan(first));
 
             return result;
         }

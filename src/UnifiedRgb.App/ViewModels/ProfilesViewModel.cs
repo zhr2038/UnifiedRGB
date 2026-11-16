@@ -18,6 +18,7 @@ public sealed class ProfilesViewModel : ObservableObject
     private string _details = "选择一个场景查看内容。";
     private int _libraryPage;
     private long _previewId;
+    private bool _applyUnconfirmed;
     public event EventHandler? Applied;
     public string SelectedTitle => _selected is null ? "场景详情" : DisplayNames.Scene(_selected.Name);
     public string SelectedModified => _selected is null ? "" : $"更新于 {_selected.Modified.ToLocalTime():yyyy/MM/dd HH:mm}";
@@ -110,8 +111,22 @@ public sealed class ProfilesViewModel : ObservableObject
     {
         var name = _selected?.Name ?? throw new InvalidOperationException("Select a profile.");
         var svc = _client.Require();
+        if (_applyUnconfirmed)
+        {
+            await svc.GetSceneAsync().ConfigureAwait(true);
+            _applyUnconfirmed = false;
+            Applied?.Invoke(this, EventArgs.Empty);
+            Summary = "已回读后台场景。请先查看当前灯效和屏幕，再决定是否重新应用。";
+            return;
+        }
         await PerKeyDisplay.RequireProfileAdmittedAsync(svc, name).ConfigureAwait(true);
-        await svc.ApplyProfileAsync(name).ConfigureAwait(true);
+        try { await svc.ApplyProfileAsync(name).ConfigureAwait(true); }
+        catch (Exception ex) when (CasePowerActions.SceneWriteUnconfirmed(ex))
+        {
+            _applyUnconfirmed = true;
+            Summary = "未收到后台答复，场景可能已应用。再次点击应用会先回读当前状态。";
+            return;
+        }
         Applied?.Invoke(this, EventArgs.Empty);
     }
 

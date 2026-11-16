@@ -1,11 +1,59 @@
 using System.Text.Json;
 using UnifiedRgb.Host.Services;
+using UnifiedRgb.Transports.WinUsb;
 
 namespace UnifiedRgb.Host.Tests;
 
 public sealed partial class KeyboardDisplayServiceTests
 {
     private string SwitchJournal => Path.Combine(_directory, "peripherals", "keyboard-display-session.json");
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Read_only_keyboard_startup_timeout_reopens_the_same_transport_without_replaying_output(bool rf)
+    {
+        var wired = new Factory { Available = !rf };
+        wired.Io.StallFirstFirmware = !rf;
+        var wireless = new WirelessFactory { Prepare = (open, io) => io.StallFirstFirmware = open == 1 };
+        var originalUsb = wired.Io;
+        using var service = Make(rf ? WirelessPinned() : Pinned(), wired, wirelessFactory: wireless);
+        await service.StartAsync(default);
+        await WaitAsync(service, "Running");
+        var original = rf ? wireless.Channels[0].Inner : originalUsb;
+        original.Mutations.Should().Be(0);
+        original.NativeWrites.Should().Be(0);
+        if (rf) wireless.Opens.Should().Be(2);
+        else { wired.Opens.Should().Be(2); wireless.Opens.Should().Be(0); }
+        await service.StopAsync(default);
+    }
+
+    [Fact]
+    public void RF_checks_exact_USB_immediately_on_relevant_HID_notification_and_backs_off_periodic_checks()
+    {
+        var time = new ManualTimeProvider();
+        var watcher = new TestHidWatcher();
+        var probes = 0;
+        var present = false;
+        using var routes = new KeyboardTransportSwitch(time, () => { probes++; return present; }, watcher);
+        routes.Observe().Should().BeFalse();
+        time.Advance(TimeSpan.FromMilliseconds(200));
+        watcher.Signal("hid#vid_0000&pid_0000");
+        routes.Observe().Should().BeFalse();
+        probes.Should().Be(1);
+        present = true;
+        watcher.Signal("hid#VID_0B05&PID_1C24");
+        routes.Observe().Should().BeTrue();
+        routes.Observe().Should().BeTrue();
+        probes.Should().Be(2);
+    }
+
+    private sealed class TestHidWatcher : IHotplugSource
+    {
+        public event Action<DeviceInterfaceChange, string>? Changed;
+        public void Signal(string link) => Changed?.Invoke(DeviceInterfaceChange.Arrived, link);
+        public void Dispose() { }
+    }
 
     private static byte[] WriteSwitchJournal(string path, string transport = "wired", byte brightness = 37, byte profile = 6)
     {

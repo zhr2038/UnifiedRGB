@@ -72,7 +72,7 @@ internal sealed partial class ScreenWorker
             if (_device.Family.Family == ScreenFamily.Turzx)
             {
                 _transparentVideoLayer ??= WpfCodec.EncodePng(new PixelFrame(_device.Family.Height, _device.Family.Width));
-                _videoSession = new TurzxVideoSession(_channel, stamp, () => _stopping, allowCorrelatedReplies);
+                _videoSession = new TurzxVideoSession(_channel, stamp, () => _stopping, allowCorrelatedReplies, WaitForVideoCommand);
             }
             else _videoSession = new H2VideoSession(_channel, stamp, () => _stopping, _ctx.VideoTrialOf(_device.Id)?.Info.Fps ?? assignment.Fps);
             _videoSession.Begin(_transparentVideoLayer ?? []);
@@ -127,6 +127,13 @@ internal sealed partial class ScreenWorker
             }
             _lastVideoOverlay = layer; _lastVideoOverlayAssignment = assignment; _lastVideoOverlaySimplePng = simplePng;
         }
+    }
+
+    private bool WaitForVideoCommand(int milliseconds)
+    {
+        if (!_stopping && !_mailbox.HasPending)
+            _mailbox.Wait(milliseconds);
+        return _stopping || _mailbox.HasPending;
     }
 
     private void StopVideo()

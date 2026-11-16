@@ -14,13 +14,12 @@ public sealed partial class LianLiAdapter : ILoopBudgetProbe
         ArgumentNullException.ThrowIfNull(loop);
         const int max = LianLiWire.MaxCompressedAnimation;
         Session s;
-        try
+        lock (_gate)
         {
-            s = Get(id);
-        }
-        catch (InvalidOperationException ex)
-        {
-            return new LoopBudget(0, max, ex.Message);
+            if (!_sessions.TryGetValue(id, out s!))
+            {
+                return new LoopBudget(0, max, $"{id} is not open");
+            }
         }
 
         if (zone != ChainZone)

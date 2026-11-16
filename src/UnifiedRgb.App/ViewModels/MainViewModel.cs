@@ -181,9 +181,15 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public static TrayState TrayStateOf(bool connected, IEnumerable<ControllerDto> controllers)
     {
         ArgumentNullException.ThrowIfNull(controllers);
-        return !connected ? TrayState.Disconnected
-            : controllers.Any(c => !DisplayNames.IsDiscoveryPort(c)) && controllers.Where(c => !DisplayNames.IsDiscoveryPort(c)).All(c => c.State == ControllerStates.Active) ? TrayState.Ok
-            : TrayState.Attention;
+        if (!connected) return TrayState.Disconnected;
+        var state = TrayState.Attention;
+        foreach (var controller in controllers)
+        {
+            if (DisplayNames.IsDiscoveryPort(controller)) continue;
+            if (controller.State != ControllerStates.Active) return TrayState.Attention;
+            state = TrayState.Ok;
+        }
+        return state;
     }
 
     public async Task RefreshAllAsync()

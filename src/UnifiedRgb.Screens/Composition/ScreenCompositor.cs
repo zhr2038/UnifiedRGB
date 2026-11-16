@@ -42,9 +42,7 @@ internal sealed class ScreenCompositor(AssetStore assets, long cacheBytes, Overl
     /// </summary>
     public static ComposeResult ComposeBlocked(ScreenFamilyInfo family, string why)
     {
-        ArgumentNullException.ThrowIfNull(family);
         var canvas = PixelFrame.Solid(family.Width, family.Height, 0, 0, 0);
-        PixelOps.Flatten(canvas);
         return new ComposeResult(canvas, BlockedPrefix + why);
     }
 
@@ -132,7 +130,6 @@ internal sealed class ScreenCompositor(AssetStore assets, long cacheBytes, Overl
 
         var canvas = a.Rotation == 0 ? content : PixelOps.Rotate(content, a.Rotation);
         PixelOps.ApplyBrightness(canvas, a.Brightness);
-        PixelOps.Flatten(canvas);
         return new ComposeResult(canvas, warning);
     }
 
@@ -199,12 +196,11 @@ internal static class ScreenColor
 
     public static (byte R, byte G, byte B) Parse(string s)
     {
-        if (!IsValid(s))
+        if (s is not { Length: 7 } || s[0] != '#' || !int.TryParse(s.AsSpan(1), NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture, out var v))
         {
             throw new ArgumentException($"'{s}' is not a #RRGGBB colour.", nameof(s));
         }
 
-        var v = int.Parse(s.AsSpan(1), NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture);
         return ((byte)(v >> 16), (byte)(v >> 8), (byte)v);
     }
 }

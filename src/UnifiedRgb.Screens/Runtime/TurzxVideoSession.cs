@@ -7,7 +7,7 @@ namespace UnifiedRgb.Screens.Runtime;
 
 /// <summary>One worker's existing channel, one access unit in flight. No independent file player or local playback clock.</summary>
 internal sealed class TurzxVideoSession(IScreenUsbChannel channel, ScreenTimestamp stamp, Func<bool> stopped,
-    bool allowCorrelatedReplies = true) : INativeVideoSession
+    bool allowCorrelatedReplies = true, Func<int, bool>? waitForCommand = null) : INativeVideoSession
 {
     private bool _entered;
     private bool _faulted;
@@ -57,9 +57,16 @@ internal sealed class TurzxVideoSession(IScreenUsbChannel channel, ScreenTimesta
             var busy = LastQueueDepth > 3;
             for (var i = 0; busy; i++)
             {
-                if (i >= 8 || stopped()) throw new ScreenTransferException(ScreenTransferError.ReplyBacklog, "Native video buffer did not drain within its bounded wait.");
+                if (stopped()) throw new ScreenTransferException(ScreenTransferError.Aborted, "Native video was stopped.");
+                if (i >= 8) throw new ScreenTransferException(ScreenTransferError.ReplyBacklog, "Native video buffer did not drain within its bounded wait.");
                 var sleepStart = Stopwatch.GetTimestamp();
-                Thread.Sleep(25);
+                if (waitForCommand is null) Thread.Sleep(25);
+                else if (waitForCommand(25))
+                {
+                    // The old access unit may be partial. Reopen before sending any data from the replacement scene.
+                    _faulted = true;
+                    throw new ScreenTransferException(ScreenTransferError.Aborted, "Native video interrupted by a pending screen command.");
+                }
                 _work = _work with { QueueSleep = _work.QueueSleep + Stopwatch.GetElapsedTime(sleepStart).TotalMilliseconds };
                 var count = Control(TurzxVideoProtocol.QueueStatus);
                 if (count < 9) { _faulted = true; throw new ScreenTransferException(ScreenTransferError.ResponseMismatch, "Video status reply is too short."); }

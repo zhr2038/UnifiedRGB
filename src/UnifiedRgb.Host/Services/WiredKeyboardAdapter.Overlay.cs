@@ -30,8 +30,8 @@ public sealed partial class WiredKeyboardAdapter
     {
         ct.ThrowIfCancellationRequested();
         var transport = _bridge.KeyFrameTransport;
-        if (!_open || _perKey is not { Ready: true, Map: { } map } plan ||
-            transport is null || !plan.RouteMaps.ContainsKey(transport))
+        if (!_open || _perKey is not { Ready: true, Map: { } map } ||
+            transport is null || !_routeIndices.ContainsKey(transport))
             throw new DeviceBlockedException("Keyboard overlay requires the active verified key map.");
         if (start < 0 || colors.Length > MaximumOverlayKeys || start > map.Keys.Count - colors.Length)
             throw new ArgumentOutOfRangeException(nameof(start), "Overlay must fit within the verified key map.");

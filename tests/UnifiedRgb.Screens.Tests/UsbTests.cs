@@ -115,4 +115,20 @@ public sealed class UsbTests
         (await waiter).Should().BeTrue();
         box.TryTake().Should().Be("d");
     }
+
+    [Fact]
+    public void Latest_wins_coalesces_concurrent_posts_and_can_take_before_waiting()
+    {
+        using var box = new LatestWins<string>();
+        Parallel.For(0, 1000, i => box.Post(i.ToString(System.Globalization.CultureInfo.InvariantCulture)));
+        box.Post("latest");
+        box.TryTake().Should().Be("latest");
+        box.Post("after take");
+        box.Wait(0).Should().BeTrue();
+        box.TryTake().Should().Be("after take");
+        box.Wait(0).Should().BeFalse("overwrites share one pending notification");
+        box.Post("next");
+        box.Wait(0).Should().BeTrue();
+        box.TryTake().Should().Be("next");
+    }
 }

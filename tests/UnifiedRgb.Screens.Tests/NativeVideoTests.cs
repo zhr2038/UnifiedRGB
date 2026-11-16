@@ -42,7 +42,10 @@ public sealed class NativeVideoTests
     {
         var bytes = File.ReadAllBytes(Fixture);
         var result = await Sta.RunAsync(() => Mp4Importer.Import(bytes, ImportLimits.Default));
+        var probe = await Sta.RunAsync(() => Mp4Importer.Probe(bytes, ImportLimits.Default, default));
         (result.Format, result.Width, result.Height, result.FramePngs.Count, result.DurationMs).Should().Be(("mp4", 64, 64, 60, 2000));
+        (probe.Width, probe.Height, probe.Frames, probe.DurationMs).Should().Be((result.Width, result.Height, result.FramePngs.Count, result.DurationMs));
+        probe.FirstFramePng.Should().Equal(result.FramePngs[0]);
         result.DelaysMs.Should().OnlyContain(d => d == 33 || d == 34, "MP4 uses presentation times, never GIF's short-delay=100ms rule");
         await using var rig = new Rig();
         var asset = await rig.Manager.UploadScreenAssetAsync(new("generic MP4", Convert.ToBase64String(bytes)));
@@ -61,6 +64,8 @@ public sealed class NativeVideoTests
     {
         var bytes = File.ReadAllBytes(Fixture);
         await FluentActions.Awaiting(() => Sta.RunAsync(() => Mp4Importer.Import(bytes, ImportLimits.Default with { MaxNormalizedBytes=100 })))
+            .Should().ThrowAsync<ArgumentException>().WithMessage("*budget*");
+        await FluentActions.Awaiting(() => Sta.RunAsync(() => Mp4Importer.Probe(bytes, ImportLimits.Default with { MaxNormalizedBytes=100 }, default)))
             .Should().ThrowAsync<ArgumentException>().WithMessage("*budget*");
         await FluentActions.Awaiting(() => Sta.RunAsync(() => Mp4Importer.Import(bytes, ImportLimits.Default with { MaxDurationMs=100 })))
             .Should().ThrowAsync<ArgumentException>();

@@ -103,10 +103,6 @@ public sealed partial class OpenRgbSdkAdapter : IDeviceAdapter, IActiveDiscovery
         {
             if (!_disposed && _options.RediscoverInterval > TimeSpan.Zero && _timer is null)
                 _timer = new Timer(_ => StartTick(), null, _options.RediscoverInterval, _options.RediscoverInterval);
-        }
-
-        lock (_gate)
-        {
             return _known.Values.Where(k => k.Index >= 0).Select(k => k.Descriptor).ToArray();
         }
     }

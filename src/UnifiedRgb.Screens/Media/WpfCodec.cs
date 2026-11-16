@@ -60,13 +60,18 @@ internal static class WpfCodec
     /// <summary>32-bit RGBA PNG (colour type 6, as the TURZX reference sends); premultiplied input is un-premultiplied by WIC.</summary>
     public static byte[] EncodePng(PixelFrame frame)
     {
+        using var stream = new MemoryStream();
+        EncodePng(frame, stream);
+        return stream.ToArray();
+    }
+
+    public static void EncodePng(PixelFrame frame, Stream output)
+    {
         BitmapSource src = BitmapSource.Create(frame.Width, frame.Height, 96, 96, PixelFormats.Pbgra32, null, frame.Pixels, frame.Stride);
         src = new FormatConvertedBitmap(src, PixelFormats.Bgra32, null, 0);
         var enc = new PngBitmapEncoder { Interlace = PngInterlaceOption.Off };
         enc.Frames.Add(BitmapFrame.Create(src));
-        using var ms = new MemoryStream();
-        enc.Save(ms);
-        return ms.ToArray();
+        enc.Save(output);
     }
 
     /// <summary>Decodes one stored PNG frame, refusing anything larger than <paramref name="maxPixels"/>.</summary>
@@ -112,7 +117,7 @@ internal static class WpfCodec
 /// <summary>A dedicated STA thread with a work queue (previews, uploads). Display workers have their own STA threads.</summary>
 internal sealed class StaThread : IDisposable
 {
-    private readonly System.Collections.Concurrent.BlockingCollection<Action> _queue = [];
+    private readonly System.Collections.Concurrent.BlockingCollection<Action> _queue = new(32);
     private readonly Thread _thread;
     private int _disposed;
     private int _queueDisposed;
@@ -129,9 +134,10 @@ internal sealed class StaThread : IDisposable
         ArgumentNullException.ThrowIfNull(work);
         ct.ThrowIfCancellationRequested();
         var tcs = new TaskCompletionSource<T>(TaskCreationOptions.RunContinuationsAsynchronously);
+        bool added;
         try
         {
-            _queue.Add(() =>
+            added = _queue.TryAdd(() =>
             {
                 if (ct.IsCancellationRequested)
                 {
@@ -149,13 +155,15 @@ internal sealed class StaThread : IDisposable
                 {
                     tcs.TrySetException(ex);
                 }
-            }, CancellationToken.None); // unbounded queue: Add never blocks; a cancelled item is skipped when it runs
+            }, 0, ct); // Never block an RPC/UI caller on a busy STA.
         }
         catch (InvalidOperationException)
         {
             throw new ObjectDisposedException(nameof(StaThread));
         }
 
+        if (!added)
+            throw new InvalidOperationException("屏幕媒体处理队列已满，请等待当前任务完成后重试。");
         return tcs.Task;
     }
 

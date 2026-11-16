@@ -24,6 +24,7 @@ public static class DtoMapper
         // One Writer snapshot: a retirement on another thread may clear e.Writer between two reads.
         var writer = e.Writer;
         var state = e.BringupLease is not null ? ControllerStates.BringUp
+            : e.RecoveryClosing ? ControllerStates.Offline
             : writer is not null
             ? (writer.Paused ? ControllerStates.Contended : ControllerStates.Active)
             : e.Verdict.State == Services.GuardState.Clear ? ControllerStates.Offline : e.Verdict.State.ToString();

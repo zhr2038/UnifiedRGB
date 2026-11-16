@@ -96,7 +96,7 @@ public sealed class CasePowerActions(Func<IRgbService> service) : IDisposable
             catch (Exception ex)
             {
                 // A Host error is an answer; only a missing answer after the write leaves the outcome to the next read-back.
-                if (_sceneSent && ex is OperationCanceledException or TimeoutException or StreamJsonRpc.ConnectionLostException)
+                if (_sceneSent && SceneWriteUnconfirmed(ex))
                     SetStatus(CasePowerRequestState.Unconfirmed, "未收到后台答复，结果以回读为准");
                 else SetStatus(CasePowerRequestState.Failed, "操作未完成，请检查光域");
                 throw;
@@ -112,6 +112,9 @@ public sealed class CasePowerActions(Func<IRgbService> service) : IDisposable
             }
         }
     }
+
+    internal static bool SceneWriteUnconfirmed(Exception ex) =>
+        ex is OperationCanceledException or TimeoutException or StreamJsonRpc.ConnectionLostException;
 
     public void Dispose()
     {

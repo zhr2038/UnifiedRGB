@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using Microsoft.Extensions.Logging;
 using UnifiedRgb.Core.Clock;
 using UnifiedRgb.Core.Engine;
@@ -20,6 +21,9 @@ public sealed class ControllerEntry(ControllerDescriptor descriptor, IDeviceAdap
     public bool IsActive => Writer is not null;
 
     internal bool OpenedOnce { get; set; }
+    internal IPreciseSleeper? Sleeper { get; set; }
+    internal long? LastRecoveryAttempt { get; set; }
+    internal bool RecoveryClosing { get; set; }
 
     /// <summary>
     /// Owner of the bring-up session holding this controller (NATIVE design §6), or null. While set the writer (if any) stays
@@ -52,7 +56,8 @@ public sealed partial class AdapterHost(
     // Only typed, pre-write mouse-startup timeouts qualify. Rechecking one receiver must not retry unrelated terminal opens.
     private readonly HashSet<ControllerId> _mouseStartupRetries = [];
     private readonly List<ControllerEntry> _entries = [];
-    private readonly List<IPreciseSleeper> _sleepers = [];
+    private const int RecoveryFailureThreshold = 3;
+    private static readonly TimeSpan RecoveryInterval = TimeSpan.FromSeconds(30);
     private readonly object _gate = new();
     private readonly ConcurrentQueue<ControllerId> _arrivals = new();
     private int _rescanRequested;
@@ -202,6 +207,7 @@ public sealed partial class AdapterHost(
                     bus.Unregister(entry.Descriptor.Id);
                     writer.Dispose();
                     entry.Writer = null;
+                    ReleaseSleeper(entry);
                 }
             }
             catch (Exception ex) when (ex is not OutOfMemoryException) { errors.Add(ex); }
@@ -257,22 +263,21 @@ public sealed partial class AdapterHost(
         if (errors.Count != 0) throw new AggregateException("Fresh ROG adapter construction, discovery or current-settings open was incomplete.", errors);
     }
 
-    /// <summary>
-    /// A bring-up session took <paramref name="entry"/>: its writer (a verified native controller has one) is paused and the
-    /// write or upload already in flight is waited out, so no scene frame reaches the device until
-    /// <see cref="ResumeAfterBringupAsync"/> and no marker interleaves with one (Codex review, writer quiescence).
-    /// </summary>
-    public void PauseForBringup(ControllerEntry entry, string owner)
+    internal void ReserveBringup(ControllerEntry entry, string owner)
     {
         ArgumentNullException.ThrowIfNull(entry);
-        DeviceWriter? writer;
         lock (_gate)
         {
+            if (entry.RecoveryClosing || Volatile.Read(ref _stopping))
+                throw new InvalidOperationException($"{entry.Descriptor.Id}: controller recovery or Host shutdown owns the connection.");
             entry.BringupLease = owner;
-            writer = entry.Writer;
         }
+    }
 
-        writer?.Quiesce();
+    public void PauseForBringup(ControllerEntry entry, string owner)
+    {
+        ReserveBringup(entry, owner);
+        entry.Writer?.Quiesce();
     }
 
     /// <summary>
@@ -398,6 +403,7 @@ public sealed partial class AdapterHost(
 
             e.Writer?.Dispose();
             e.Writer = null;
+            ReleaseSleeper(e);
         }
 
         IDeviceAdapter[] adapters;
@@ -427,12 +433,6 @@ public sealed partial class AdapterHost(
 
         lock (_gate)
         {
-            foreach (var s in _sleepers)
-            {
-                (s as IDisposable)?.Dispose();
-            }
-
-            _sleepers.Clear();
             _adapters.Clear();
             _adapterFactories.Clear();
             _deferredDiscovery.Clear();
@@ -459,8 +459,10 @@ public sealed partial class AdapterHost(
             _arrivals.Enqueue(e.Id);
         }
 
-        Interlocked.Exchange(ref _rescanRequested, 1);
+        RequestRescan();
     }
+
+    internal void RequestRescan() => Interlocked.Exchange(ref _rescanRequested, 1);
 
     /// <summary>Guard verdict; when blocked and the class has Takeover on, stop the vendor services and check again.</summary>
     private async Task<GuardVerdict> VerdictAsync(DeviceClass cls, CancellationToken ct)
@@ -531,6 +533,27 @@ public sealed partial class AdapterHost(
         foreach (var e in mine)
         {
             var before = (e.Verdict, e.IsActive, e.Writer?.Paused);
+            var reopen = false;
+            var recoveryDue = e.LastRecoveryAttempt is not { } last || Stopwatch.GetElapsedTime(last) >= RecoveryInterval;
+            if (e.Descriptor.Class != DeviceClass.AsusRog &&
+                verdict.State == GuardState.Clear && e.Writer is { ConsecutiveIoFailures: >= RecoveryFailureThreshold } &&
+                recoveryDue && TryBeginIoRecovery(e))
+            {
+                // Keep the old writer owned and paused until both its thread and adapter close are confirmed.
+                // Scene output is regenerated through the normal rescan path from the current scene.
+                try { await DetachAsync(e, verdict, requireClose: true).ConfigureAwait(false); }
+#pragma warning disable CA1031 // failed close/join keeps this writer paused and owned; other devices can recover
+                catch (Exception ex) when (ex is not OutOfMemoryException)
+#pragma warning restore CA1031
+                {
+                    LogRecoveryFailed(e.Descriptor.Id.Value, ex);
+                    changed = true;
+                    continue;
+                }
+                reopen = true;
+                changed = true;
+            }
+            if (e.RecoveryClosing && !reopen) continue;
             if (e.Writer is { } w)
             {
                 var contended = verdict.State != GuardState.Clear;
@@ -547,9 +570,20 @@ public sealed partial class AdapterHost(
                 if (retryOnly is not null && !retryOnly.Contains(e.Descriptor.Id)) continue;
                 var previous = e.Verdict;
                 e.Verdict = GuardVerdict.Clear;
-                if (previous.State != GuardState.Clear || retryOpen)
+                if (e.LastRecoveryAttempt.HasValue && recoveryDue && e.BringupLease is null)
                 {
-                    await OpenAsync(e, previous, ct).ConfigureAwait(false); // a failed open stays Offline until the next rescan
+                    e.LastRecoveryAttempt = Stopwatch.GetTimestamp();
+                    reopen = true;
+                }
+                if (previous.State != GuardState.Clear || retryOpen || reopen)
+                {
+                    try { await OpenAsync(e, previous, ct).ConfigureAwait(false); }
+                    finally
+                    {
+                        if (e.RecoveryClosing)
+                            lock (_gate) e.RecoveryClosing = false;
+                    }
+                    if (e.IsActive && e.LastRecoveryAttempt.HasValue) _arrivals.Enqueue(e.Descriptor.Id);
                 }
             }
             else
@@ -566,6 +600,17 @@ public sealed partial class AdapterHost(
         }
 
         return changed;
+    }
+
+    private bool TryBeginIoRecovery(ControllerEntry entry)
+    {
+        lock (_gate)
+        {
+            if (entry.BringupLease is not null || Volatile.Read(ref _stopping)) return false;
+            entry.LastRecoveryAttempt = Stopwatch.GetTimestamp();
+            entry.RecoveryClosing = true;
+            return true;
+        }
     }
 
     private async Task OpenAsync(ControllerEntry entry, GuardVerdict previous, CancellationToken ct)
@@ -650,10 +695,7 @@ public sealed partial class AdapterHost(
         lock (_gate) _mouseStartupRetries.Remove(id);
 
         var sleeper = sleeperFactory();
-        lock (_gate)
-        {
-            _sleepers.Add(sleeper);
-        }
+        entry.Sleeper = sleeper;
 
         var mailbox = bus.Register(entry.Descriptor);
         var writer = new DeviceWriter(mailbox, entry.Adapter, sleeper, OnWriteError, (c, l, s) => LoopUploaded?.Invoke(c, l, s));
@@ -666,13 +708,12 @@ public sealed partial class AdapterHost(
     /// Takes the writer off <paramref name="entry"/> (waits out its in-flight write, stops the thread, unregisters the mailbox),
     /// closes the controller once (idempotent after a session release: the GPU sends nothing more) and sets the verdict.
     /// </summary>
-    private async Task DetachAsync(ControllerEntry entry, GuardVerdict verdict)
+    private async Task DetachAsync(ControllerEntry entry, GuardVerdict verdict, bool requireClose = false)
     {
         DeviceWriter? writer;
         lock (_gate)
         {
             writer = entry.Writer;
-            entry.Writer = null;
             entry.Verdict = verdict;
         }
 
@@ -683,7 +724,6 @@ public sealed partial class AdapterHost(
 
         await writer.QuiesceAsync().ConfigureAwait(false);
         await writer.StopAsync().ConfigureAwait(false);
-        bus.Unregister(entry.Descriptor.Id);
         try
         {
             await entry.Adapter.CloseAsync(entry.Descriptor.Id).ConfigureAwait(false);
@@ -693,14 +733,31 @@ public sealed partial class AdapterHost(
 #pragma warning restore CA1031
         {
             LogCloseFailed(entry.Descriptor.Id.Value, ex);
+            if (requireClose) throw;
         }
 
+        bus.Unregister(entry.Descriptor.Id);
+        entry.Writer = null;
+        if (!requireClose) entry.RecoveryClosing = false;
         writer.Dispose();
+        ReleaseSleeper(entry);
+    }
+
+    private static void ReleaseSleeper(ControllerEntry entry)
+    {
+        (entry.Sleeper as IDisposable)?.Dispose();
+        entry.Sleeper = null;
     }
 
     private void OnWriteError(ControllerId id, Exception ex)
     {
-        var errors = Controllers.FirstOrDefault(c => c.Descriptor.Id == id)?.Writer?.GetStats().Errors ?? 1;
+        ControllerEntry? entry;
+        lock (_gate) entry = _entries.Find(c => c.Descriptor.Id == id);
+        var writer = entry?.Writer;
+        if (entry is not null && entry.Descriptor.Class != DeviceClass.AsusRog &&
+            writer?.ConsecutiveIoFailures == RecoveryFailureThreshold)
+            RequestRescan();
+        var errors = writer?.GetStats().Errors ?? 1;
         if (errors == 1 || errors % 600 == 0)
         {
             LogWriteError(id.Value, errors, ex);
@@ -709,6 +766,9 @@ public sealed partial class AdapterHost(
 
     [LoggerMessage(EventId = 2001, Level = LogLevel.Error, Message = "Discovery failed for adapter {Vendor}")]
     private partial void LogDiscoveryFailed(string vendor, Exception ex);
+
+    [LoggerMessage(EventId = 2011, Level = LogLevel.Warning, Message = "Automatic recovery could not close controller {Id}; writer remains paused")]
+    private partial void LogRecoveryFailed(string id, Exception ex);
 
     [LoggerMessage(EventId = 2002, Level = LogLevel.Warning, Message = "Controller {Id} blocked by {Writer}; not opened")]
     private partial void LogBlocked(string id, string writer);

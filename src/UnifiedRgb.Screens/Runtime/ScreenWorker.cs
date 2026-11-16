@@ -599,6 +599,11 @@ internal sealed partial class ScreenWorker : IDisposable
                 }
                 catch (ScreenTransferException ex)
                 {
+                    if (ex.Kind == ScreenTransferError.Aborted && _mailbox.HasPending)
+                    {
+                        CloseChannel();
+                        continue; // handle the pending pause, assignment or stop before opening a new video channel
+                    }
                     if (powerChanging) powerError = "screen backlight wake: " + ex.Message;
                     if (ex.Kind == ScreenTransferError.ResponseMismatch) correlationDisabled = true;
                     _ctx.AbortTrial(_device.Id);

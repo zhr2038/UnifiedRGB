@@ -204,7 +204,7 @@ public static class ColorText
 
     public static bool TryParse(string? s, out Rgb color)
     {
-        var t = s?.Trim().TrimStart('#') ?? string.Empty;
+        var t = s.AsSpan().Trim().TrimStart('#');
         if (t.Length == 6 && uint.TryParse(t, System.Globalization.NumberStyles.HexNumber, System.Globalization.CultureInfo.InvariantCulture, out var v))
         {
             color = Rgb.FromUInt32(v);
