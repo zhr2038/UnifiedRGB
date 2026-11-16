@@ -6,4 +6,5 @@ public static class RgbNotifications
     public const string ControllersChanged = nameof(IRgbService.ControllersChanged);
     public const string StatusChanged = nameof(IRgbService.StatusChanged);
     public const string TelemetryTick = nameof(IRgbService.TelemetryTick);
+    public const string SceneChanged = nameof(IRgbService.SceneChanged);
 }

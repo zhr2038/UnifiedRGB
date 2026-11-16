@@ -83,4 +83,32 @@ public sealed class RogWiredBridgeTests
         await session.SnapshotLightingAsync(default); session.OriginalStaticBank!.SameContent(bank).Should().BeTrue();
         io.DataPackets.Should().Be(0);
     }
+
+    [Theory]
+    [InlineData(RogPerKeyLighting.WiredTransport, RogLightingDetachReason.TransportSwitch)]
+    [InlineData(RogPerKeyLighting.WirelessTransport, RogLightingDetachReason.CleanStop)]
+    [InlineData(RogPerKeyLighting.WirelessTransport, RogLightingDetachReason.Standby)]
+    public async Task Attach_predeclares_transport_before_availability_and_clean_detach_marks_suppressed_transition(
+        string transport, RogLightingDetachReason reason)
+    {
+        var bridge = new RogWiredLightingBridge();
+        string? observedTransportAtArrival = null;
+        bridge.AvailabilityChanged += available =>
+        {
+            if (available) observedTransportAtArrival = bridge.KeyFrameTransport;
+        };
+
+        var owner = bridge.Attach(transport);
+        observedTransportAtArrival.Should().Be(transport);
+
+        var inFlight = bridge.WriteKeysAsync([new RogKeyColor(0, new(10, 20, 30))], transport, default);
+        bridge.Detach(owner, reason);
+        await ((Func<Task>)(() => inFlight)).Should().ThrowAsync<RogLightingTransitionException>();
+        bridge.ShouldSuppressUnavailableWrite.Should().BeTrue();
+
+        var fresh = bridge.Attach(transport);
+        bridge.ShouldSuppressUnavailableWrite.Should().BeFalse();
+        bridge.Detach(fresh, RogLightingDetachReason.Fault);
+        bridge.ShouldSuppressUnavailableWrite.Should().BeFalse();
+    }
 }

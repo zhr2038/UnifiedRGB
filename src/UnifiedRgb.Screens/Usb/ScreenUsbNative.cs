@@ -37,7 +37,7 @@ internal struct ScreenSpDeviceInterfaceData
 
 /// <summary>
 /// The screen project's own minimal interop (no dependency on the RGB transports): SetupAPI enumeration, CreateFile and WinUSB
-/// open/query/bulk read/write/abort. No control transfers, reset, power policy or descriptor writes exist here.
+/// open/query/bulk read/write/abort/pipe-reset. No control transfers, device/port reset, power policy or descriptor writes exist here.
 /// </summary>
 internal static unsafe partial class ScreenUsbNative
 {
@@ -110,6 +110,11 @@ internal static unsafe partial class ScreenUsbNative
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static partial bool WinUsb_AbortPipe(IntPtr interfaceHandle, byte pipeId);
+
+    [LibraryImport("winusb.dll", SetLastError = true)]
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool WinUsb_ResetPipe(IntPtr interfaceHandle, byte pipeId);
 
     [LibraryImport("setupapi.dll", EntryPoint = "SetupDiGetClassDevsW", SetLastError = true, StringMarshalling = StringMarshalling.Utf16)]
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]

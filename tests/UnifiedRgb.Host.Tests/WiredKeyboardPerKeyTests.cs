@@ -4,6 +4,7 @@ using UnifiedRgb.App.ViewModels;
 using UnifiedRgb.App.Workbench;
 using UnifiedRgb.Contracts;
 using UnifiedRgb.Contracts.Dto;
+using UnifiedRgb.Core.Engine;
 using UnifiedRgb.Devices;
 using UnifiedRgb.Devices.AsusRog;
 using UnifiedRgb.Devices.Safety;
@@ -340,5 +341,75 @@ public sealed class WiredKeyboardPerKeyTests
         work!.Completion.TrySetResult();
         (await write).Should().BeTrue();
         return work.Transport;
+    }
+
+    [Theory]
+    [InlineData(RogLightingDetachReason.TransportSwitch)]
+    [InlineData(RogLightingDetachReason.CleanStop)]
+    [InlineData(RogLightingDetachReason.Standby)]
+    public async Task Clean_stop_standby_and_bidirectional_transport_switches_suppress_not_ready_errors_while_real_faults_still_surface(
+        RogLightingDetachReason cleanReason)
+    {
+        var bridge = new RogWiredLightingBridge();
+        using var adapter = new WiredKeyboardAdapter(bridge, BothRoutes, new() { Enabled = true, Maps = [Map(Wired), Map(Wireless)] });
+        var descriptor = (await adapter.DiscoverAsync(default)).Single();
+        using var bus = new FrameBus();
+        var mailbox = bus.Register(descriptor);
+        using var writer = new DeviceWriter(mailbox, adapter);
+        var colours = Distinct(81);
+
+        // 1. USB active
+        var usbOwner = bridge.Attach(Wired);
+        await adapter.OpenAsync(descriptor.Id, default);
+        var usbWrite = DrainPerKeyAsync(bus, mailbox, writer, colours);
+        SpinWait.SpinUntil(() => usbOwner.HasWork, TimeSpan.FromSeconds(5)).Should().BeTrue();
+        usbOwner.TryTakeKeys(out var usbFrame).Should().BeTrue();
+        usbFrame!.Transport.Should().Be(Wired);
+        usbFrame.Completion.TrySetResult();
+        (await usbWrite).Should().BeTrue();
+        writer.GetStats().Should().Match<WriterStats>(s => s.Written == 1 && s.Errors == 0 && s.LastError == null);
+
+        // 2. USB -> RF switch (including an in-flight frame interrupted by the clean switch)
+        var inFlight = DrainPerKeyAsync(bus, mailbox, writer, colours);
+        SpinWait.SpinUntil(() => usbOwner.HasWork, TimeSpan.FromSeconds(5)).Should().BeTrue();
+        bridge.Detach(usbOwner, cleanReason);
+        (await inFlight).Should().BeTrue();
+        (await DrainPerKeyAsync(bus, mailbox, writer, colours)).Should().BeTrue();
+        writer.GetStats().Should().Match<WriterStats>(s => s.Written == 1 && s.Errors == 0 && s.LastError == null);
+
+        // 3. RF active
+        var rfOwner = bridge.Attach(Wireless);
+        var rfWrite = DrainPerKeyAsync(bus, mailbox, writer, colours);
+        SpinWait.SpinUntil(() => rfOwner.HasWork, TimeSpan.FromSeconds(5)).Should().BeTrue();
+        rfOwner.TryTakeKeys(out var rfFrame).Should().BeTrue();
+        rfFrame!.Transport.Should().Be(Wireless);
+        rfFrame.Completion.TrySetResult();
+        (await rfWrite).Should().BeTrue();
+        writer.GetStats().Should().Match<WriterStats>(s => s.Written == 2 && s.Errors == 0 && s.LastError == null);
+
+        // 4. RF -> USB switch
+        bridge.Detach(rfOwner, cleanReason);
+        (await DrainPerKeyAsync(bus, mailbox, writer, colours)).Should().BeTrue();
+        writer.GetStats().Should().Match<WriterStats>(s => s.Written == 2 && s.Errors == 0 && s.LastError == null);
+
+        var usbAgain = bridge.Attach(Wired);
+        var usbAgainWrite = DrainPerKeyAsync(bus, mailbox, writer, colours);
+        SpinWait.SpinUntil(() => usbAgain.HasWork, TimeSpan.FromSeconds(5)).Should().BeTrue();
+        usbAgain.TryTakeKeys(out var usbAgainFrame).Should().BeTrue();
+        usbAgainFrame!.Completion.TrySetResult();
+        (await usbAgainWrite).Should().BeTrue();
+        writer.GetStats().Should().Match<WriterStats>(s => s.Written == 3 && s.Errors == 0 && s.LastError == null);
+
+        // 5. Real fault still surfaces "Keyboard USB owner is not ready."
+        bridge.Detach(usbAgain, RogLightingDetachReason.Fault);
+        (await DrainPerKeyAsync(bus, mailbox, writer, colours)).Should().BeTrue();
+        writer.GetStats().Should().Match<WriterStats>(s => s.Errors == 1 && s.LastError == "Keyboard USB owner is not ready.");
+    }
+
+    private static Task<bool> DrainPerKeyAsync(FrameBus bus, Mailbox mailbox, DeviceWriter writer, Rgb[] colours)
+    {
+        colours.CopyTo(mailbox.Back.Zones[0], 0);
+        bus.Publish(mailbox.Controller.Id, mailbox.Back);
+        return Task.Factory.StartNew(writer.DrainOnce, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
     }
 }

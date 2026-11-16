@@ -36,7 +36,14 @@ internal sealed class WpfDispatcher(Dispatcher dispatcher) : IUiDispatcher
 public partial class App : Application
 #pragma warning restore CA1001
 {
+    private const string SingleInstanceMutexName = @"Local\UnifiedRgb.App";
+    private const string ShowWindowEventName = @"Local\UnifiedRgb.App.ShowWindow";
+
     private Mutex? _single;
+    private bool _ownsSingleInstance;
+    private EventWaitHandle? _showWindowEvent;
+    private CancellationTokenSource? _wakeStop;
+    private Thread? _wakeThread;
     private PipeClient? _client;
     private MainViewModel? _vm;
     private TrayIcon? _tray;
@@ -60,13 +67,22 @@ public partial class App : Application
             Shutdown();
             return;
         }
-        _single = new Mutex(true, @"Local\UnifiedRgb.App", out var first);
+        _single = new Mutex(true, SingleInstanceMutexName, out var first);
+        _ownsSingleInstance = first;
         if (!first)
         {
             maintenance.Dispose();
+            if (!e.Args.Contains("--minimized", StringComparer.OrdinalIgnoreCase))
+            {
+                SignalExistingWindow();
+            }
             _ = EnsureHostForExistingAppAsync();
             return;
         }
+
+        _showWindowEvent = new EventWaitHandle(false, EventResetMode.AutoReset, ShowWindowEventName);
+        _wakeStop = new CancellationTokenSource();
+        StartWakeListener(_showWindowEvent, _wakeStop.Token);
 
         Log.Logger = new LoggerConfiguration()
             .MinimumLevel.Information()
@@ -180,12 +196,97 @@ public partial class App : Application
             Log.Warning("UI exited after an unsafe fault; {Suppressed} further exceptions were counted but not logged", faults.SuppressedCount);
         }
 
+        StopWakeListener();
         _startupStop.Cancel();
         _startupStop.Dispose();
         _tray?.Dispose();
+        if (_ownsSingleInstance && _single is { } mutex)
+        {
+            try { mutex.ReleaseMutex(); }
+            catch (ApplicationException) { }
+        }
         _single?.Dispose();
+        _single = null;
         Log.CloseAndFlush();
         base.OnExit(e);
+    }
+
+    private static void SignalExistingWindow()
+    {
+        try
+        {
+            if (EventWaitHandle.TryOpenExisting(ShowWindowEventName, out var existing))
+            {
+                using (existing) existing.Set();
+                return;
+            }
+
+            using var created = new EventWaitHandle(false, EventResetMode.AutoReset, ShowWindowEventName);
+            created.Set();
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException or WaitHandleCannotBeOpenedException)
+        {
+            // Best-effort wake signal; secondary instance still checks Host startup.
+        }
+    }
+
+    private void StartWakeListener(EventWaitHandle showEvent, CancellationToken ct)
+    {
+        var handles = new WaitHandle[] { showEvent, ct.WaitHandle };
+        _wakeThread = new Thread(() =>
+        {
+            try
+            {
+                while (!ct.IsCancellationRequested)
+                {
+                    var signaled = WaitHandle.WaitAny(handles);
+                    if (signaled != 0 || ct.IsCancellationRequested)
+                    {
+                        break;
+                    }
+
+                    if (!_exiting)
+                    {
+                        _ = Dispatcher.BeginInvoke(ShowWindow);
+                    }
+                }
+            }
+            catch (ObjectDisposedException)
+            {
+                // Shutdown race guard.
+            }
+        })
+        {
+            IsBackground = true,
+            Name = "UnifiedRgb.App.ShowWindowListener",
+        };
+        _wakeThread.Start();
+    }
+
+    private void StopWakeListener()
+    {
+        if (_wakeStop is { } wakeStop)
+        {
+            try
+            {
+                if (!wakeStop.IsCancellationRequested) wakeStop.Cancel();
+            }
+            catch (ObjectDisposedException) { }
+        }
+
+        if (_wakeThread is { } thread)
+        {
+            _wakeThread = null;
+            if (thread.IsAlive)
+            {
+                thread.Join(TimeSpan.FromMilliseconds(500));
+            }
+        }
+
+        _showWindowEvent?.Dispose();
+        _showWindowEvent = null;
+        _wakeStop?.Dispose();
+        _wakeStop = null;
     }
 
     private async Task EnsureHostForExistingAppAsync()
@@ -211,18 +312,26 @@ public partial class App : Application
 
     private void ShowWindow()
     {
-        if (_window is null)
+        if (_window is null || _exiting)
         {
             return;
         }
 
-        _window.Show();
+        if (!_window.IsVisible)
+        {
+            _window.Show();
+        }
         if (_window.WindowState == WindowState.Minimized)
         {
             _window.WindowState = WindowState.Normal;
         }
 
         _window.Activate();
+        if (!_window.IsActive)
+        {
+            _window.Topmost = true;
+            _window.Topmost = false;
+        }
     }
 
     private void OnWindowClosing(object? sender, CancelEventArgs e)
@@ -237,6 +346,7 @@ public partial class App : Application
     private async Task ExitAsync()
     {
         _exiting = true;
+        StopWakeListener();
         await _startupStop.CancelAsync().ConfigureAwait(true);
         _window?.Close();
         _vm?.Dispose(); // stops the bring-up heartbeat; closing the pipe below ends this connection's sessions in the Host

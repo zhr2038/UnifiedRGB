@@ -229,9 +229,20 @@ public sealed partial class EneDramAdapter : IWholeFrameAdapter, INativeBringup,
                 return false;
             }
 
+            var bus = p.Bus;
+            var timeoutsBefore = bus?.MutexTimeouts ?? 0;
             var op = WriteLeds(p, s, colors, null);
             if (!op.Ok)
             {
+                var mutexTimeout = op.Status == StatusDropped
+                    && (string.Equals(op.FailedStep, "mutex", StringComparison.Ordinal)
+                        || (bus is not null && bus.MutexTimeouts > timeoutsBefore));
+                if (mutexTimeout)
+                {
+                    LogFrameSkippedMutexContention(s.Id.Value, op.Note ?? "SMBus mutex timeout");
+                    return false;
+                }
+
                 throw new IOException(string.Create(CultureInfo.InvariantCulture, $"ENE 0x{s.Address:X2} frame failed (status {op.Status}{(op.Note is null ? string.Empty : ": " + op.Note)})"));
             }
 
@@ -1235,44 +1246,78 @@ public sealed partial class EneDramAdapter : IWholeFrameAdapter, INativeBringup,
         return ok;
     }
 
-    /// <summary>Every LED of the stick in R,B,G: one RegBlock each, or three byte writes once a block transaction failed.</summary>
+    /// <summary>Every LED of the stick in R,B,G: one batched RegBlock sequence, or batched single-byte writes once block fails.</summary>
     private Op WriteLeds(Port p, Stick s, ReadOnlySpan<Rgb> colors, List<NativeProbeRow>? rows)
     {
-        var rbg = new byte[3];
+        if (colors.IsEmpty)
+        {
+            return default;
+        }
+
+        if (!s.ByteFallback)
+        {
+            var compounds = new SmbusCompound[colors.Length];
+            var labels = rows is null ? null : new string[colors.Length];
+            Span<byte> rbg = stackalloc byte[3];
+            for (var i = 0; i < colors.Length; i++)
+            {
+                var reg = (ushort)(s.Version!.DirectBase + (3 * i));
+                rbg[0] = colors[i].R;
+                rbg[1] = colors[i].B;
+                rbg[2] = colors[i].G;
+                compounds[i] = SmbusCompound.RegBlock(s.Address, reg, rbg);
+                if (labels is not null)
+                {
+                    labels[i] = $"0x{s.Address:X2} LED {i} block 0x{reg:X4}";
+                }
+            }
+
+            var batch = ExecuteBatch(p, compounds, labels, rows, out var failedIndex);
+            if (batch.Ok || batch.FailedStep != "block")
+            {
+                return batch; // succeeded, or pointer/port-select failed, dropped or refused: stop, no retry
+            }
+
+            s.ByteFallback = true; // reference: a failed block write falls back to single bytes
+            LogByteFallback(s.Id.Value, batch.Status);
+            return WriteLedsBytes(p, s, colors[failedIndex..], failedIndex, rows);
+        }
+
+        return WriteLedsBytes(p, s, colors, startLed: 0, rows);
+    }
+
+    private Op WriteLedsBytes(Port p, Stick s, ReadOnlySpan<Rgb> colors, int startLed, List<NativeProbeRow>? rows)
+    {
+        if (colors.IsEmpty)
+        {
+            return default;
+        }
+
+        var compounds = new SmbusCompound[colors.Length * 3];
+        var labels = rows is null ? null : new string[colors.Length * 3];
+        Span<byte> rbg = stackalloc byte[3];
+        var idx = 0;
         for (var i = 0; i < colors.Length; i++)
         {
-            var reg = (ushort)(s.Version!.DirectBase + (3 * i));
+            var led = startLed + i;
+            var reg = (ushort)(s.Version!.DirectBase + (3 * led));
             rbg[0] = colors[i].R;
             rbg[1] = colors[i].B;
             rbg[2] = colors[i].G;
-            if (!s.ByteFallback)
-            {
-                var b = Step(p, SmbusCompound.RegBlock(s.Address, reg, rbg), $"0x{s.Address:X2} LED {i} block 0x{reg:X4}", rows);
-                if (b.Ok)
-                {
-                    continue;
-                }
-
-                if (b.FailedStep != "block")
-                {
-                    return b; // pointer failed, dropped or refused: stop, no retry
-                }
-
-                s.ByteFallback = true; // reference: a failed block write falls back to single bytes
-                LogByteFallback(s.Id.Value, b.Status);
-            }
-
             for (var k = 0; k < 3; k++)
             {
-                var w = Step(p, SmbusCompound.RegWrite(s.Address, (ushort)(reg + k), rbg[k]), $"0x{s.Address:X2} LED {i} byte 0x{reg + k:X4}", rows);
-                if (!w.Ok)
+                var byteReg = (ushort)(reg + k);
+                compounds[idx] = SmbusCompound.RegWrite(s.Address, byteReg, rbg[k]);
+                if (labels is not null)
                 {
-                    return w;
+                    labels[idx] = $"0x{s.Address:X2} LED {led} byte 0x{byteReg:X4}";
                 }
+
+                idx++;
             }
         }
 
-        return default;
+        return ExecuteBatch(p, compounds, labels, rows, out _);
     }
 
     /// <summary>§9: under hold-black a failed black send latches; nothing more is sent to that controller in this process.</summary>
@@ -1291,18 +1336,12 @@ public sealed partial class EneDramAdapter : IWholeFrameAdapter, INativeBringup,
     /// </summary>
     private Op Step(Port p, SmbusCompound c, string label, List<NativeProbeRow>? rows)
     {
-        var wire = c.ToWire();
+        byte[]? wire = null;
         var started = Stopwatch.GetTimestamp();
         Op op;
         try
         {
-            p.Firewall.Ensure(c);
-            var verdict = FrameValidator.Validate(wire, WireRules, _online);
-            if (verdict != FrameRejectReason.None)
-            {
-                throw new FrameRejectedException(verdict, wire.Length);
-            }
-
+            wire = ValidateCompound(p, c);
             p.Budget.CountOperation();
             var bus = p.Bus ?? throw new InvalidOperationException($"PawnIO port {p.Number} is not open");
             var r = bus.Execute(c);
@@ -1311,12 +1350,11 @@ public sealed partial class EneDramAdapter : IWholeFrameAdapter, INativeBringup,
                 PacketLog.Shared.Record(p.Channel, wire[0], wire.Length);
             }
 
-            op = r.Ok ? new Op(0, r.Value, null, null)
-                : r.Dropped ? new Op(StatusDropped, 0, r.Failure, r.Step)
-                : new Op(r.Status != 0 ? r.Status : StatusNoData, 0, r.Failure, r.Step);
+            op = ToOp(r);
         }
         catch (InvalidOperationException ex) // ForbiddenSmbusException, FrameRejectedException, out-of-scope send, port not open
         {
+            wire ??= c.ToWire();
             op = new Op(StatusRefused, 0, ex.Message, null);
         }
 
@@ -1324,6 +1362,92 @@ public sealed partial class EneDramAdapter : IWholeFrameAdapter, INativeBringup,
             Stopwatch.GetElapsedTime(started).TotalMilliseconds, op.Note));
         return op;
     }
+
+    /// <summary>
+    /// Validates every compound in a per-frame batch before the bus, then executes them under one bounded mutex acquisition.
+    /// </summary>
+    private Op ExecuteBatch(Port p, SmbusCompound[] compounds, string[]? labels, List<NativeProbeRow>? rows, out int failedIndex)
+    {
+        failedIndex = 0;
+        var wires = new byte[compounds.Length][];
+        var started = Stopwatch.GetTimestamp();
+        var current = 0;
+        try
+        {
+            for (var i = 0; i < compounds.Length; i++)
+            {
+                current = i;
+                wires[i] = ValidateCompound(p, compounds[i]);
+            }
+
+            p.Budget.CountOperation();
+            var bus = p.Bus ?? throw new InvalidOperationException($"PawnIO port {p.Number} is not open");
+            var results = bus.ExecuteBatch(compounds);
+            if (results.Count == 0)
+            {
+                return new Op(StatusNoData, 0, "SMBus batch returned no results", null);
+            }
+
+            for (var i = 0; i < results.Count; i++)
+            {
+                if (i > 0)
+                {
+                    p.Budget.CountOperation();
+                }
+
+                var c = compounds[i];
+                var wire = wires[i];
+                var r = results[i];
+                if (!r.Dropped)
+                {
+                    PacketLog.Shared.Record(p.Channel, wire[0], wire.Length);
+                }
+
+                var op = ToOp(r);
+                rows?.Add(new NativeProbeRow(labels![i], Convert.ToHexString(wire), op.Status, op.Ok && IsRead(c.Kind) ? $"{op.Value:X2}" : null,
+                    r.WallMs, op.Note));
+                if (!op.Ok)
+                {
+                    failedIndex = i;
+                    return op;
+                }
+            }
+
+            if (results.Count < compounds.Length)
+            {
+                failedIndex = results.Count;
+                return new Op(StatusNoData, 0, $"SMBus batch returned {results.Count} of {compounds.Length} results", null);
+            }
+
+            return default;
+        }
+        catch (InvalidOperationException ex) // ForbiddenSmbusException, FrameRejectedException, out-of-scope send, port not open
+        {
+            var refusedWire = wires[current] ?? compounds[current].ToWire();
+            rows?.Add(new NativeProbeRow(labels![current], Convert.ToHexString(refusedWire), StatusRefused, null,
+                Stopwatch.GetElapsedTime(started).TotalMilliseconds, ex.Message));
+            return new Op(StatusRefused, 0, ex.Message, null);
+        }
+    }
+
+    private byte[] ValidateCompound(Port p, SmbusCompound c)
+    {
+        p.Firewall.Ensure(c);
+        var wire = c.ToWire();
+        var verdict = FrameValidator.Validate(wire, WireRules, _online);
+        if (verdict != FrameRejectReason.None)
+        {
+            throw new FrameRejectedException(verdict, wire.Length);
+        }
+
+        return wire;
+    }
+
+    private static Op ToOp(SmbusResult r) => r.Ok
+        ? new Op(0, r.Value, null, null)
+        : r.Dropped
+            ? new Op(StatusDropped, 0, r.Failure, r.Step)
+            : new Op(r.Status != 0 ? r.Status : StatusNoData, 0, r.Failure, r.Step);
 
     [LoggerMessage(EventId = 6201, Level = LogLevel.Warning, Message = "ENE SMBus port {Port}: PawnIO blocked ({Why})")]
     private partial void LogPortBlocked(int port, string why);
@@ -1345,6 +1469,9 @@ public sealed partial class EneDramAdapter : IWholeFrameAdapter, INativeBringup,
 
     [LoggerMessage(EventId = 6207, Level = LogLevel.Information, Message = "ENE SMBus port {Port} verified discovery: {Summary}")]
     private partial void LogVerifiedScan(int port, string summary);
+
+    [LoggerMessage(EventId = 6208, Level = LogLevel.Debug, Message = "ENE {Id}: frame skipped on transient SMBus mutex contention ({Why}); direct mode preserved")]
+    private partial void LogFrameSkippedMutexContention(string id, string why);
 
     /// <summary>A compound's outcome: status 0 = success (Value read), else the row status; FailedStep from the transport.</summary>
     private readonly record struct Op(int Status, byte Value, string? Note, string? FailedStep)

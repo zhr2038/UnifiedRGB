@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Windows;
 using System.Windows.Media;
+using UnifiedRgb.App.Views;
 using UnifiedRgb.Devices;
 
 namespace UnifiedRgb.App.Preview;
@@ -17,12 +18,12 @@ public sealed class ZonePreviewControl : FrameworkElement
 
     private static readonly Stopwatch Clock = Stopwatch.StartNew();
     private readonly Dictionary<Rgb, SolidColorBrush> _brushes = [];
+    private readonly WindowActivityWatcher _activity;
     private bool _hooked;
 
     public ZonePreviewControl()
     {
-        IsVisibleChanged += (_, _) => Hook(IsVisible);
-        Unloaded += (_, _) => Hook(false);
+        _activity = new WindowActivityWatcher(this, (active, _) => Hook(active));
     }
 
     public PreviewRenderer? Renderer

@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Runtime.ExceptionServices;
 using Microsoft.Extensions.Logging;
 using UnifiedRgb.Core.Clock;
 using UnifiedRgb.Core.Engine;
@@ -60,8 +61,12 @@ public sealed partial class AdapterHost(
     private static readonly TimeSpan RecoveryInterval = TimeSpan.FromSeconds(30);
     private readonly object _gate = new();
     private readonly ConcurrentQueue<ControllerId> _arrivals = new();
+    private readonly ConcurrentQueue<ControllerId> _removals = new();
     private int _rescanRequested;
     private bool _stopping;
+
+    /// <summary>Optional test seam overriding the per-writer shutdown timeout in <see cref="DeviceWriter"/>.</summary>
+    internal TimeSpan? WriterStopTimeout { get; init; }
 
     /// <summary>Raised on a writer thread after each completed loop upload (UploadedLoop controllers).</summary>
     public event Action<ControllerId, PendingLoop, LoopUploadStats?>? LoopUploaded;
@@ -136,6 +141,23 @@ public sealed partial class AdapterHost(
         ct.ThrowIfCancellationRequested();
         Interlocked.Exchange(ref _rescanRequested, 0);
         var changed = false;
+        var removed = DrainRemovals();
+        if (removed.Count > 0)
+        {
+            ControllerEntry[] toDetach;
+            lock (_gate)
+            {
+                toDetach = _entries.Where(e => removed.Contains(e.Descriptor.Id) && e.IsActive && e.BringupLease is null).ToArray();
+            }
+
+            foreach (var entry in toDetach)
+            {
+                if (Volatile.Read(ref _stopping)) break;
+                await DetachAsync(entry, GuardVerdict.Clear).ConfigureAwait(false);
+                changed = true;
+            }
+        }
+
         foreach (var adapter in Adapters)
         {
             if (Volatile.Read(ref _stopping)) break;
@@ -149,10 +171,21 @@ public sealed partial class AdapterHost(
                 continue;
             }
 
-            changed |= await DiscoverAndApplyAsync(adapter, ct).ConfigureAwait(false);
+            changed |= await DiscoverAndApplyAsync(adapter, ct, removed: removed).ConfigureAwait(false);
         }
 
         return changed;
+    }
+
+    private HashSet<ControllerId> DrainRemovals()
+    {
+        HashSet<ControllerId>? set = null;
+        while (_removals.TryDequeue(out var id))
+        {
+            (set ??= []).Add(id);
+        }
+
+        return set ?? [];
     }
 
     /// <summary>
@@ -257,10 +290,57 @@ public sealed partial class AdapterHost(
             try { await DiscoverAndApplyAsync(adapter, ct, throwOnError: true).ConfigureAwait(false); }
             catch (Exception ex) when (ex is not OutOfMemoryException) { errors.Add(ex); }
         }
+        HashSet<ControllerId> deferredSleepable;
+        lock (_gate) deferredSleepable = [.. _mouseStartupRetries];
         foreach (var entry in Controllers.Where(e => added.Contains(e.Adapter, ReferenceEqualityComparer.Instance)
                      && e.Writer is null && e.Adapter is INativeBringup native && native.IsControlVerified(e.Descriptor.Id)))
+        {
+            if (deferredSleepable.Contains(entry.Descriptor.Id))
+            {
+                LogMouseResumeDeferred(entry.Descriptor.Id.Value);
+                continue;
+            }
+
             errors.Add(new IOException($"Fresh ROG resource {entry.Descriptor.Id.Value} is present but could not open: {entry.Verdict.Writer ?? "offline, asleep or busy"}."));
+        }
         if (errors.Count != 0) throw new AggregateException("Fresh ROG adapter construction, discovery or current-settings open was incomplete.", errors);
+    }
+
+    /// <summary>
+    /// Post-sleep / S0ix resume recovery: closes and reopens Direct-mode adapters (so dropped Direct mode, stale GPU/HID
+    /// handles and static-frame dedup caches are reset) and performs a full rescan while preserving current Host configuration.
+    /// </summary>
+    internal Task<bool> RecoverAfterPowerResumeAsync(CancellationToken ct) => configurationGate is null
+        ? RecoverAfterPowerResumeCoreAsync(ct)
+        : configurationGate.RunExclusiveAsync(RecoverAfterPowerResumeCoreAsync, ct);
+
+    private async Task<bool> RecoverAfterPowerResumeCoreAsync(CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        if (Volatile.Read(ref _stopping)) return false;
+        var changed = false;
+        if (options?.Bringup.HoldBlackOnRelease != true)
+        {
+            ControllerEntry[] directEntries;
+            lock (_gate)
+            {
+                directEntries = _entries
+                    .Where(e => e.IsActive && e.BringupLease is null
+                        && e.Descriptor.Capabilities.Delivery == Delivery.Streamed
+                        && e.Descriptor.Class != DeviceClass.AsusRog)
+                    .ToArray();
+            }
+
+            foreach (var entry in directEntries)
+            {
+                if (Volatile.Read(ref _stopping)) break;
+                await DetachAsync(entry, GuardVerdict.Clear).ConfigureAwait(false);
+                changed = true;
+            }
+        }
+
+        changed |= await RescanCoreAsync(ct).ConfigureAwait(false);
+        return changed;
     }
 
     internal void ReserveBringup(ControllerEntry entry, string owner)
@@ -384,12 +464,51 @@ public sealed partial class AdapterHost(
             _entries.Clear();
         }
 
-        // Bound all writers together. On a timeout do not close adapters or restore foreign writers while I/O is uncertain.
-        await Task.WhenAll(entries.Where(e => e.Writer is not null).Select(e => e.Writer!.StopAsync())).ConfigureAwait(false);
+        // Bound all writers together. If any writer fails/times out, isolate its adapter (and all sibling entries sharing
+        // that physical adapter) from CloseAsync/DisposeAsync, and retain the failure so foreign writers are not restored.
+        var activeEntries = entries.Where(e => e.Writer is not null).ToArray();
+        var stopTasks = activeEntries.Select(e => e.Writer!.StopAsync()).ToArray();
+        try
+        {
+            await Task.WhenAll(stopTasks).ConfigureAwait(false);
+        }
+#pragma warning disable CA1031 // per-entry failures are inspected and rethrown after healthy adapters clean up
+        catch (Exception)
+#pragma warning restore CA1031
+        {
+        }
 
-        foreach (var e in entries.Where(e => e.IsActive))
+        var stopFailures = new List<Exception>();
+        var uncertainAdapters = new HashSet<IDeviceAdapter>(ReferenceEqualityComparer.Instance);
+        for (var i = 0; i < activeEntries.Length; i++)
+        {
+            var t = stopTasks[i];
+            if (t.IsFaulted)
+            {
+                var ex = t.Exception?.InnerExceptions.Count == 1
+                    ? t.Exception.InnerExceptions[0]
+                    : (Exception?)t.Exception ?? new InvalidOperationException($"Writer {activeEntries[i].Descriptor.Id} stop faulted.");
+                stopFailures.Add(ex);
+                uncertainAdapters.Add(activeEntries[i].Adapter);
+                LogWriterStopFailed(activeEntries[i].Descriptor.Id.Value, ex);
+            }
+            else if (t.IsCanceled)
+            {
+                var ex = new OperationCanceledException($"Writer {activeEntries[i].Descriptor.Id} stop was cancelled.");
+                stopFailures.Add(ex);
+                uncertainAdapters.Add(activeEntries[i].Adapter);
+                LogWriterStopFailed(activeEntries[i].Descriptor.Id.Value, ex);
+            }
+        }
+
+        foreach (var e in activeEntries)
         {
             bus.Unregister(e.Descriptor.Id);
+            if (uncertainAdapters.Contains(e.Adapter))
+            {
+                continue;
+            }
+
             try
             {
                 await e.Adapter.CloseAsync(e.Descriptor.Id).ConfigureAwait(false);
@@ -403,7 +522,10 @@ public sealed partial class AdapterHost(
 
             e.Writer?.Dispose();
             e.Writer = null;
-            ReleaseSleeper(e);
+            if (stopFailures.Count == 0)
+            {
+                ReleaseSleeper(e);
+            }
         }
 
         IDeviceAdapter[] adapters;
@@ -419,6 +541,11 @@ public sealed partial class AdapterHost(
 
         foreach (var a in adapters.OfType<IAsyncDisposable>())
         {
+            if (uncertainAdapters.Contains((IDeviceAdapter)a))
+            {
+                continue;
+            }
+
             try
             {
                 await a.DisposeAsync().ConfigureAwait(false);
@@ -436,6 +563,16 @@ public sealed partial class AdapterHost(
             _adapters.Clear();
             _adapterFactories.Clear();
             _deferredDiscovery.Clear();
+        }
+
+        if (stopFailures.Count == 1)
+        {
+            ExceptionDispatchInfo.Capture(stopFailures[0]).Throw();
+        }
+
+        if (stopFailures.Count > 1)
+        {
+            throw new AggregateException("One or more device writers did not stop cleanly; uncertain adapters were left unclosed.", stopFailures);
         }
     }
 
@@ -457,6 +594,10 @@ public sealed partial class AdapterHost(
         if (e.Kind == HotplugKind.Arrived)
         {
             _arrivals.Enqueue(e.Id);
+        }
+        else if (e.Kind == HotplugKind.Removed)
+        {
+            _removals.Enqueue(e.Id);
         }
 
         RequestRescan();
@@ -484,7 +625,7 @@ public sealed partial class AdapterHost(
 
     /// <summary>Discovery admitted by the guard; only a completed, uncancelled discovery consumes a deferred retry.</summary>
     private async Task<bool> DiscoverAndApplyAsync(IDeviceAdapter adapter, CancellationToken ct, bool throwOnError = false,
-        IReadOnlySet<ControllerId>? retryOnly = null)
+        IReadOnlySet<ControllerId>? retryOnly = null, IReadOnlySet<ControllerId>? removed = null)
     {
         ct.ThrowIfCancellationRequested();
         if (Volatile.Read(ref _stopping)) return false;
@@ -504,6 +645,7 @@ public sealed partial class AdapterHost(
 
         ct.ThrowIfCancellationRequested();
         var changed = false;
+        var foundIds = new HashSet<ControllerId>(found.Select(d => d.Id));
         lock (_gate)
         {
             if (Volatile.Read(ref _stopping)) return false;
@@ -516,12 +658,21 @@ public sealed partial class AdapterHost(
             }
         }
 
+        HashSet<ControllerId>? skipReopen = null;
+        if (removed is { Count: > 0 })
+        {
+            foreach (var id in removed)
+            {
+                if (!foundIds.Contains(id)) (skipReopen ??= []).Add(id);
+            }
+        }
+
         // Discovery may have awaited while another writer appeared: recheck before any controller open.
-        return await ApplyAsync(adapter, guard.Check(adapter.Class), retryOpen: true, ct, retryOnly).ConfigureAwait(false) || changed;
+        return await ApplyAsync(adapter, guard.Check(adapter.Class), retryOpen: true, ct, retryOnly, skipReopen).ConfigureAwait(false) || changed;
     }
 
     private async Task<bool> ApplyAsync(IDeviceAdapter adapter, GuardVerdict verdict, bool retryOpen, CancellationToken ct,
-        IReadOnlySet<ControllerId>? retryOnly = null)
+        IReadOnlySet<ControllerId>? retryOnly = null, HashSet<ControllerId>? skipReopen = null)
     {
         ControllerEntry[] mine;
         lock (_gate)
@@ -567,6 +718,7 @@ public sealed partial class AdapterHost(
             }
             else if (verdict.State == GuardState.Clear)
             {
+                if (skipReopen is not null && skipReopen.Contains(e.Descriptor.Id)) continue;
                 if (retryOnly is not null && !retryOnly.Contains(e.Descriptor.Id)) continue;
                 var previous = e.Verdict;
                 e.Verdict = GuardVerdict.Clear;
@@ -698,7 +850,7 @@ public sealed partial class AdapterHost(
         entry.Sleeper = sleeper;
 
         var mailbox = bus.Register(entry.Descriptor);
-        var writer = new DeviceWriter(mailbox, entry.Adapter, sleeper, OnWriteError, (c, l, s) => LoopUploaded?.Invoke(c, l, s));
+        var writer = new DeviceWriter(mailbox, entry.Adapter, sleeper, OnWriteError, (c, l, s) => LoopUploaded?.Invoke(c, l, s), WriterStopTimeout);
         entry.Writer = writer;
         writer.Start();
         LogOpened(id.Value, entry.Descriptor.Name, writer.MaxFps);
@@ -796,4 +948,10 @@ public sealed partial class AdapterHost(
 
     [LoggerMessage(EventId = 2006, Level = LogLevel.Warning, Message = "Close failed for {Id}")]
     private partial void LogCloseFailed(string id, Exception ex);
+
+    [LoggerMessage(EventId = 2012, Level = LogLevel.Error, Message = "Writer {Id} did not stop cleanly; leaving its adapter unclosed")]
+    private partial void LogWriterStopFailed(string id, Exception ex);
+
+    [LoggerMessage(EventId = 2013, Level = LogLevel.Information, Message = "Sleepable ROG peripheral {Id} deferred for wake recovery after configuration resume")]
+    private partial void LogMouseResumeDeferred(string id);
 }

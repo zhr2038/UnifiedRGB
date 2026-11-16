@@ -6,6 +6,8 @@ using System.Windows;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
+using UnifiedRgb.App.Views;
+using UnifiedRgb.Contracts.Dto;
 
 namespace UnifiedRgb.App.Workbench;
 
@@ -17,9 +19,13 @@ public sealed class CaseTopology : FrameworkElement
     public static readonly DependencyProperty ColorHexProperty = DependencyProperty.Register(nameof(ColorHex), typeof(string), typeof(CaseTopology), new FrameworkPropertyMetadata("#FF0000", FrameworkPropertyMetadataOptions.AffectsRender));
     public static readonly DependencyProperty PlayingProperty = DependencyProperty.Register(nameof(Playing), typeof(bool), typeof(CaseTopology), new FrameworkPropertyMetadata(false, ChangedPlaying));
     public static readonly DependencyProperty DraftProperty = DependencyProperty.Register(nameof(Draft), typeof(SceneDraft), typeof(CaseTopology), new FrameworkPropertyMetadata(null, FrameworkPropertyMetadataOptions.AffectsRender));
+    public static readonly DependencyProperty DeviceStatusesProperty = DependencyProperty.Register(nameof(DeviceStatuses), typeof(IReadOnlyList<DeviceStatusDto>), typeof(CaseTopology), new FrameworkPropertyMetadata(null, FrameworkPropertyMetadataOptions.AffectsRender));
+    public static readonly DependencyProperty ScreensProperty = DependencyProperty.Register(nameof(Screens), typeof(IReadOnlyList<ScreenDeviceDto>), typeof(CaseTopology), new FrameworkPropertyMetadata(null, FrameworkPropertyMetadataOptions.AffectsRender));
+    public static readonly DependencyProperty KeyboardStatusProperty = DependencyProperty.Register(nameof(KeyboardStatus), typeof(KeyboardDisplayStatusDto), typeof(CaseTopology), new FrameworkPropertyMetadata(null, FrameworkPropertyMetadataOptions.AffectsRender));
     private readonly DispatcherTimer _timer;
     private readonly Stopwatch _time = new();
     private readonly List<(Rect Rect, StudioZone Zone)> _hits = [];
+    private readonly WindowActivityWatcher _activity;
     private INotifyCollectionChanged? _collection;
     private double _scale = 1;
     private Point _origin;
@@ -31,9 +37,7 @@ public sealed class CaseTopology : FrameworkElement
         System.Windows.Automation.AutomationProperties.SetName(this, "机箱分区示意图，可用方向键选择分区");
         _timer = new DispatcherTimer(TimeSpan.FromMilliseconds(40), DispatcherPriority.Render, (_, _) => InvalidateVisual(), Dispatcher);
         _timer.Stop();
-        Unloaded += (_, _) => _timer.Stop();
-        Loaded += (_, _) => UpdateTimer();
-        IsVisibleChanged += (_, _) => UpdateTimer();
+        _activity = new WindowActivityWatcher(this, (_, _) => UpdateTimer());
     }
 
     public IEnumerable? Zones { get => (IEnumerable?)GetValue(ZonesProperty); set => SetValue(ZonesProperty, value); }
@@ -41,6 +45,9 @@ public sealed class CaseTopology : FrameworkElement
     public string ColorHex { get => (string)GetValue(ColorHexProperty); set => SetValue(ColorHexProperty, value); }
     public bool Playing { get => (bool)GetValue(PlayingProperty); set => SetValue(PlayingProperty, value); }
     public SceneDraft? Draft { get => (SceneDraft?)GetValue(DraftProperty); set => SetValue(DraftProperty, value); }
+    public IReadOnlyList<DeviceStatusDto>? DeviceStatuses { get => (IReadOnlyList<DeviceStatusDto>?)GetValue(DeviceStatusesProperty); set => SetValue(DeviceStatusesProperty, value); }
+    public IReadOnlyList<ScreenDeviceDto>? Screens { get => (IReadOnlyList<ScreenDeviceDto>?)GetValue(ScreensProperty); set => SetValue(ScreensProperty, value); }
+    public KeyboardDisplayStatusDto? KeyboardStatus { get => (KeyboardDisplayStatusDto?)GetValue(KeyboardStatusProperty); set => SetValue(KeyboardStatusProperty, value); }
 
     private static void ZonesChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
@@ -53,7 +60,7 @@ public sealed class CaseTopology : FrameworkElement
     private static void ChangedPlaying(DependencyObject d, DependencyPropertyChangedEventArgs e) => ((CaseTopology)d).UpdateTimer();
     private void UpdateTimer()
     {
-        if (Playing && IsLoaded && IsVisible && SystemParameters.ClientAreaAnimation) { _time.Restart(); _timer.Start(); }
+        if (Playing && _activity.IsActive && SystemParameters.ClientAreaAnimation) { _time.Restart(); _timer.Start(); }
         else { _timer.Stop(); _time.Reset(); InvalidateVisual(); }
     }
     protected override void OnRender(DrawingContext drawingContext)
@@ -72,91 +79,135 @@ public sealed class CaseTopology : FrameworkElement
         dc.DrawLine(new Pen(Brush("#393939"), 5), new Point(487, 565), new Point(537, 565));
         dc.DrawRoundedRectangle(null, new Pen(Brush("#2E2E2E"), 1), new Rect(150, 139, 281, 159), 8, 8);
         var zones = Zones?.OfType<StudioZone>().ToArray() ?? [];
+        var statuses = new Dictionary<string, DeviceStatusDto>(StringComparer.OrdinalIgnoreCase);
+        foreach (var d in DeviceStatuses ?? []) statuses[d.Id] = d;
+        var screens = Screens ?? [];
+        var hasTlLcdScreenError = screens.Any(s => string.Equals(s.Family, "TlLcd", StringComparison.OrdinalIgnoreCase)
+            && (s.LastError is not null || string.Equals(s.State, "Error", StringComparison.OrdinalIgnoreCase)));
+        var hasH2ScreenError = screens.Any(s => string.Equals(s.Family, "H2", StringComparison.OrdinalIgnoreCase)
+            && (s.LastError is not null || string.Equals(s.State, "Error", StringComparison.OrdinalIgnoreCase)));
+        var controllers = zones.Select(z => z.Controller).DistinctBy(c => c.Id, StringComparer.OrdinalIgnoreCase).ToArray();
         foreach (var z in zones)
         {
-            var id = z.Controller.Id.ToUpperInvariant();
-            var rgb = z.Controller.State == "Active" ? Color(z) : Brush("#444444");
+            var slot = CaseDeviceMetadata.ResolveSlot(z.Controller, z.Zone);
+            if (slot == CaseSlotKind.Unknown) continue;
+            statuses.TryGetValue(z.Controller.Id, out var status);
+            var rfState = status?.LastUpload?.ReceiverDelivery?.State;
+            var hasRfIssue = rfState is "ReportedMismatch" or "RetryExhausted";
+            var hasDeviceError = z.Controller.State != ControllerStates.Active;
+            var rgb = !hasDeviceError ? Color(z) : Brush("#444444");
             var line = new Pen(rgb, 2.8);
             var selected = z.Ref == SelectedZone?.Ref;
             Rect hit;
-            if (id.Contains("1B-7B-F1", StringComparison.Ordinal))
+            switch (slot)
             {
-                hit = new(116, 62, 323, 70);
-                for (var n = 0; n < 3; n++) Fan(dc, new Rect(123 + n * 106, 65, 91, 63), line, false, false);
-                Text(dc, "顶排  TL120", 126, 45, 12, "#A9A39A");
-            }
-            else if (id.Contains("06-A8-F0", StringComparison.Ordinal))
-            {
-                hit = new(453, 145, 87, 290);
-                for (var n = 0; n < 3; n++) Fan(dc, new Rect(460, 150 + n * 96, 70, 85), line, true, false);
-                Text(dc, "侧排", 484, 440, 12, "#A9A39A");
-            }
-            else if (id.Contains("35-F7-EF", StringComparison.Ordinal))
-            {
-                hit = new(116, 453, 323, 73);
-                for (var n = 0; n < 3; n++) Fan(dc, new Rect(123 + n * 106, 458, 91, 63), line, false, true);
-                Text(dc, "底排  TL140 LCD", 126, 530, 12, "#A9A39A");
-            }
-            else if (id.Contains("EF-7E-63", StringComparison.Ordinal))
-            {
-                hit = new(227, 176, 110, 110);
-                dc.DrawEllipse(Brush("#141414"), new Pen(Brush("#3F3F3F"), 1), new Point(282, 230), 49, 49);
-                dc.DrawEllipse(null, new Pen(rgb, 6), new Point(282, 230), 43, 43);
-                Text(dc, "H2", 269, 212, 19, "#F3EFE8");
-                Text(dc, "水冷头", 264, 239, 12, "#A9A39A");
-            }
-            else if (id.StartsWith("ENEDRAM:", StringComparison.Ordinal))
-            {
-                var x = id.EndsWith("0X71", StringComparison.Ordinal) ? 351 : 378;
-                hit = new(x - 5, 169, 23, 122);
-                dc.DrawRoundedRectangle(Brush("#2D2D2D"), null, new Rect(x, 174, 12, 111), 3, 3);
-                for (var n = 0; n < 8; n++) dc.DrawRoundedRectangle(rgb, null, new Rect(x + 2, 177 + n * 13, 8, 9), 2, 2);
-                Text(dc, "内存", 351, 298, 12, "#A9A39A");
-            }
-            else if (id.StartsWith("ASUSAURA:", StringComparison.Ordinal))
-            {
-                hit = new(160, 168, 54, 55);
-                var geometry = Geometry.Parse("M164,178 L209,186 L192,210 L174,201 L193,197 L184,187 Z M177,187 L165,184 L166,194 L181,201 L173,193 Z");
-                dc.DrawGeometry(rgb, null, geometry);
-                Text(dc, "ROG", 169, 219, 12, "#A9A39A");
-            }
-            else if (id.StartsWith("MSIGPU:", StringComparison.Ordinal))
-            {
-                if (z.Zone.Id == 0)
-                {
+                case CaseSlotKind.TopFans:
+                    hit = new(116, 62, 323, 70);
+                    for (var n = 0; n < 3; n++) Fan(dc, new Rect(123 + n * 106, 65, 91, 63), line, false, false);
+                    Text(dc, "顶排  TL120", 126, 45, 12, "#A9A39A");
+                    break;
+                case CaseSlotKind.SideFans:
+                    hit = new(453, 145, 87, 290);
+                    for (var n = 0; n < 3; n++) Fan(dc, new Rect(460, 150 + n * 96, 70, 85), line, true, false);
+                    Text(dc, "侧排", 484, 440, 12, "#A9A39A");
+                    break;
+                case CaseSlotKind.BottomFans:
+                    hit = new(116, 453, 323, 73);
+                    for (var n = 0; n < 3; n++) Fan(dc, new Rect(123 + n * 106, 458, 91, 63), line, false, true);
+                    Text(dc, "底排  TL140 LCD", 126, 530, 12, "#A9A39A");
+                    break;
+                case CaseSlotKind.WaterblockRing:
+                    hit = new(227, 176, 110, 110);
+                    dc.DrawEllipse(Brush("#141414"), new Pen(Brush("#3F3F3F"), 1), new Point(282, 230), 49, 49);
+                    dc.DrawEllipse(null, new Pen(rgb, 6), new Point(282, 230), 43, 43);
+                    Text(dc, "H2", 269, 212, 19, "#F3EFE8");
+                    Text(dc, "水冷头", 264, 239, 12, "#A9A39A");
+                    break;
+                case CaseSlotKind.RamInner:
+                case CaseSlotKind.RamOuter:
+                    var x = slot == CaseSlotKind.RamInner ? 351 : 378;
+                    hit = new(x - 5, 169, 23, 122);
+                    dc.DrawRoundedRectangle(Brush("#2D2D2D"), null, new Rect(x, 174, 12, 111), 3, 3);
+                    for (var n = 0; n < 8; n++) dc.DrawRoundedRectangle(rgb, null, new Rect(x + 2, 177 + n * 13, 8, 9), 2, 2);
+                    Text(dc, "内存", 351, 298, 12, "#A9A39A");
+                    break;
+                case CaseSlotKind.MotherboardLogo:
+                    hit = new(160, 168, 54, 55);
+                    var geometry = Geometry.Parse("M164,178 L209,186 L192,210 L174,201 L193,197 L184,187 Z M177,187 L165,184 L166,194 L181,201 L173,193 Z");
+                    dc.DrawGeometry(rgb, null, geometry);
+                    Text(dc, "ROG", 169, 219, 12, "#A9A39A");
+                    break;
+                case CaseSlotKind.GpuFront:
                     hit = new(150, 342, 285, 87);
                     dc.DrawRoundedRectangle(Brush("#282828"), edge, new Rect(150, 324, 285, 105), 9, 9);
                     for (var n = 0; n < 3; n++)
                     {
-                        var x = 202 + n * 90;
-                        dc.DrawEllipse(Brush("#1C1C1C"), new Pen(Brush("#3F3F3F"), 2), new Point(x, 380), 33, 33);
-                        dc.DrawEllipse(Brush("#3C3C3C"), null, new Point(x, 380), 10, 10);
+                        var gx = 202 + n * 90;
+                        dc.DrawEllipse(Brush("#1C1C1C"), new Pen(Brush("#3F3F3F"), 2), new Point(gx, 380), 33, 33);
+                        dc.DrawEllipse(Brush("#3C3C3C"), null, new Point(gx, 380), 10, 10);
                     }
                     for (var n = 0; n < 2; n++)
                     {
-                        var x = 241 + n * 90;
-                        dc.DrawLine(line, new Point(x, 345), new Point(x + 10, 376));
-                        dc.DrawLine(line, new Point(x + 10, 376), new Point(x + 4, 412));
+                        var gx = 241 + n * 90;
+                        dc.DrawLine(line, new Point(gx, 345), new Point(gx + 10, 376));
+                        dc.DrawLine(line, new Point(gx + 10, 376), new Point(gx + 4, 412));
                     }
-                }
-                else
-                {
+                    break;
+                case CaseSlotKind.GpuTop:
                     hit = new(155, 325, 275, 17);
                     dc.DrawLine(line, new Point(160, 333), new Point(425, 333));
                     Text(dc, "MSI  RTX 5090", 163, 301, 12, "#A9A39A");
-                }
+                    break;
+                default:
+                    continue;
             }
-            else continue;
             _hits.Add((hit, z));
+            var hasScreenSlotError = (slot == CaseSlotKind.BottomFans && hasTlLcdScreenError)
+                || (slot == CaseSlotKind.WaterblockRing && hasH2ScreenError);
+            if (hasRfIssue || hasScreenSlotError)
+            {
+                var warnHit = hit;
+                warnHit.Inflate(3, 3);
+                dc.DrawRoundedRectangle(null, new Pen(Brush("#F0B58A"), 1.5), warnHit, 7, 7);
+            }
+            if (hasRfIssue)
+            {
+                var badge = rfState == "RetryExhausted" ? "RF 重试耗尽" : "RF 回读失配";
+                var badgePoint = slot switch
+                {
+                    CaseSlotKind.TopFans => new Point(hit.Right - 84, 45),
+                    CaseSlotKind.SideFans => new Point(455, 456),
+                    CaseSlotKind.BottomFans => new Point(hit.Right - 84, 530),
+                    CaseSlotKind.WaterblockRing => new Point(242, 260),
+                    _ => new Point(hit.Left + 4, Math.Max(42, hit.Top - 16)),
+                };
+                Text(dc, badge, badgePoint.X, badgePoint.Y, 11, "#F0B58A");
+            }
+            if (hasScreenSlotError)
+            {
+                var screenPoint = slot == CaseSlotKind.BottomFans ? new Point(236, 530) : new Point(242, 160);
+                Text(dc, "LCD 传输异常", screenPoint.X, screenPoint.Y, 11, "#F0B58A");
+            }
             if (selected)
             {
                 hit.Inflate(5, 5);
                 dc.DrawRoundedRectangle(null, new Pen(Brush("#D8B578"), 1.4) { DashStyle = DashStyles.Dash }, hit, 8, 8);
             }
         }
-        // Screen silhouette only: it does not imply a connected or configured screen transport.
-        dc.DrawRoundedRectangle(Brush("#2B2B2B"), new Pen(Brush("#534B3F"), 1), new Rect(441, 88, 105, 33), 5, 5);
-        Text(dc, "机箱屏幕", 470, 97, 12, "#F3EFE8");
+        // Screen silhouette only: it does not imply a connected or configured screen transport unless a screen error is reported.
+        var hasScreenError = screens.Any(s => s.LastError is not null || string.Equals(s.State, "Error", StringComparison.OrdinalIgnoreCase));
+        var screenBorder = Brush(hasScreenError ? "#F0B58A" : "#534B3F");
+        var screenBg = Brush(hasScreenError ? "#332219" : "#2B2B2B");
+        dc.DrawRoundedRectangle(screenBg, new Pen(screenBorder, hasScreenError ? 1.5 : 1), new Rect(441, 88, 105, 33), 5, 5);
+        Text(dc, hasScreenError ? "屏幕传输异常" : "机箱屏幕", hasScreenError ? 454 : 470, 97, 12, hasScreenError ? "#F0B58A" : "#F3EFE8");
+        var hasKeyboardError = KeyboardStatus is { State: "Error" }
+            || !string.IsNullOrWhiteSpace(KeyboardStatus?.LastError)
+            || (DeviceStatuses ?? []).Any(d => CaseDeviceMetadata.IsKeyboardDevice(d, controllers) && !string.IsNullOrWhiteSpace(d.LastError));
+        if (hasKeyboardError)
+        {
+            dc.DrawRoundedRectangle(Brush("#332219"), new Pen(Brush("#F0B58A"), 1.2), new Rect(90, 573, 128, 22), 4, 4);
+            Text(dc, "键盘通信异常", 114, 577, 11, "#F0B58A");
+        }
         Text(dc, "分区示意 · 点击选择", 246, 578, 12, "#A9A39A");
         dc.Pop(); dc.Pop();
     }
@@ -229,5 +280,3 @@ public sealed class CaseTopology : FrameworkElement
         e.Handled = true;
     }
 }
-
-

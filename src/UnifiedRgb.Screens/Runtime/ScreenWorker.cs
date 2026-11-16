@@ -270,6 +270,8 @@ internal sealed partial class ScreenWorker : IDisposable
         var offIssued = false;
         bool? lastPowerRequest = null;
         string? powerError = null;
+        var powerAttempts = 0;
+        const int MaxPowerAttempts = 2;
         // Source-frame diagnostics only (never read by selection, pacing or transfer): a new continuity generation starts after a
         // command, trial, channel or native session change, or after an attempt that did not complete a successful submission.
         var sourceBreak = true;
@@ -304,7 +306,7 @@ internal sealed partial class ScreenWorker : IDisposable
                 }
 
                 var powerOff = backlight is not null && _ctx.WholeCaseBlackout();
-                if (lastPowerRequest != powerOff) { lastPowerRequest = powerOff; powerError = null; offIssued = false; }
+                if (lastPowerRequest != powerOff) { lastPowerRequest = powerOff; powerError = null; powerAttempts = 0; offIssued = false; retryAt = 0; _backoff.Reset(); }
                 if (powerError is not null)
                 {
                     CloseChannel(); SetState(ScreenStates.Error, null, keepError: false, powerError);
@@ -343,7 +345,7 @@ internal sealed partial class ScreenWorker : IDisposable
                     var wait = retryAt == 0 ? 0 : (int)Math.Ceiling((retryAt - _ctx.Time.GetTimestamp()) * 1000.0 / _ctx.Time.TimestampFrequency);
                     if (wait > 0)
                     {
-                        _mailbox.Wait(wait);
+                        _mailbox.Wait(backlight is null ? wait : Math.Min(wait, 250));
                         continue;
                     }
 
@@ -385,8 +387,23 @@ internal sealed partial class ScreenWorker : IDisposable
                     {
                         backlight!.Save(true); // recovery survives a crash between the native off and a later restore
                         TransferBacklight(0, stamp!, response);
+                        powerAttempts = 0;
+                        _backoff.Reset();
+                        retryAt = 0;
                         offIssued = true;
                         CloseChannel(); SetState(ScreenStates.Sleeping, null, keepError: false);
+                    }
+                    catch (ScreenTransferException ex)
+                    {
+                        TryResetChannelPipes();
+                        CloseChannel();
+                        powerAttempts++;
+                        var msg = "screen backlight off: " + ex.Message;
+                        if (powerAttempts >= MaxPowerAttempts)
+                        {
+                            powerError = msg;
+                        }
+                        retryAt = Fail(ex.Kind, msg, countDrop: false);
                     }
                     catch (IOException ex) { CloseChannel(); powerError = "screen backlight off: " + ex.Message; }
                     continue;
@@ -575,6 +592,7 @@ internal sealed partial class ScreenWorker : IDisposable
                         TransferBacklight(backlight.RestoreLevel, stamp!, response);
                         backlight.Save(false);
                         powerChanging = false;
+                        powerAttempts = 0;
                     }
                     _backoff.Reset();
                     retryAt = 0;
@@ -604,17 +622,32 @@ internal sealed partial class ScreenWorker : IDisposable
                         CloseChannel();
                         continue; // handle the pending pause, assignment or stop before opening a new video channel
                     }
-                    if (powerChanging) powerError = "screen backlight wake: " + ex.Message;
                     if (ex.Kind == ScreenTransferError.ResponseMismatch) correlationDisabled = true;
                     _ctx.AbortTrial(_device.Id);
+                    if (!_stopping && ex.Kind != ScreenTransferError.Aborted)
+                    {
+                        TryResetChannelPipes();
+                    }
                     CloseChannel();
                     if (_stopping)
                     {
                         break;
                     }
 
+                    if (powerChanging)
+                    {
+                        powerAttempts++;
+                        var msg = "screen backlight wake: " + ex.Message;
+                        if (powerAttempts >= MaxPowerAttempts)
+                        {
+                            powerError = msg;
+                        }
+                        retryAt = Fail(ex.Kind, msg, countDrop: false);
+                        continue;
+                    }
+
                     // a failed layer clear is not a dropped content frame; the reopened channel clears again
-                    retryAt = powerChanging ? Fail(ex.Kind, powerError!, countDrop: false) : bootstrapping
+                    retryAt = bootstrapping
                         ? Fail(ex.Kind, "H2 layer clear: " + ex.Message, countDrop: false)
                         : Fail(ex.Kind, ex.Message, countDrop: true);
                     continue;
@@ -811,6 +844,20 @@ internal sealed partial class ScreenWorker : IDisposable
         return span <= 0 ? 0 : Math.Round((_writes.Count - 1) / span, 2);
     }
 
+    private void TryResetChannelPipes()
+    {
+        IScreenUsbChannel? channel;
+        lock (_channelGate)
+        {
+            channel = _channel;
+        }
+
+        if ((channel as IScreenUsbPipeReset)?.TryResetPipes() == true)
+        {
+            LogPipesReset(_ctx.Log, _device.Id);
+        }
+    }
+
     private void CloseChannel()
     {
         try { StopVideo(); }
@@ -846,6 +893,9 @@ internal sealed partial class ScreenWorker : IDisposable
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Screen {Id} is unsupported and will not be written: {Message}")]
     private static partial void LogUnsupported(ILogger logger, string id, string message);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Screen {Id} USB pipes reset before channel reopen")]
+    private static partial void LogPipesReset(ILogger logger, string id);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Screen {Id} worker did not stop within 10 s")]
     private static partial void LogJoinTimeout(ILogger logger, string id);

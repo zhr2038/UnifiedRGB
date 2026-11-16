@@ -9,19 +9,19 @@ public sealed class CodexActivationStaWorkerTests
     {
         Thread? worker = null;
         var apartment = ApartmentState.Unknown;
-        var foreground = false;
+        var background = false;
         var result = await Task.Run(async () =>
         {
             Thread.CurrentThread.GetApartmentState().Should().Be(ApartmentState.MTA);
             return await CodexStaActivationWorker.RunAsync(() =>
             {
                 worker = Thread.CurrentThread; apartment = worker.GetApartmentState();
-                foreground = !worker.IsBackground;
+                background = worker.IsBackground;
                 return new("Requested", 0);
             });
         });
         result.Status.Should().Be("Requested"); apartment.Should().Be(ApartmentState.STA);
-        worker.Should().NotBeNull(); worker!.IsAlive.Should().BeFalse(); foreground.Should().BeTrue();
+        worker.Should().NotBeNull(); worker!.IsAlive.Should().BeFalse(); background.Should().BeTrue();
     }
 
     [Fact]

@@ -506,6 +506,29 @@ public class MsiNv5000AdapterTests
         _nv.Log.Count(l => l == Release).Should().Be(1);
     }
 
+    [Fact]
+    public async Task Reopen_and_rediscovery_refresh_physical_gpu_handle_after_sleep_or_tdr()
+    {
+        _nv.Reads.Enqueue((0, [0x91, 0x50, 0x00, 0x09], 4));
+        var (adapter, descriptor) = await Make(new MsiGpuOptions { ControlVerified = true });
+        await adapter.OpenAsync(descriptor.Id, default);
+        adapter.WriteFrame(descriptor.Id, [[new Rgb(1, 2, 3)]]).Should().BeTrue();
+        await adapter.CloseAsync(descriptor.Id);
+
+        // Simulate sleep/TDR replacing the physical GPU handle returned by NVAPI.
+        var pci = _nv.Gpus[FakeNvapi.Gpu0];
+        _nv.Gpus.Remove(FakeNvapi.Gpu0);
+        _nv.Gpus[FakeNvapi.Gpu2] = pci;
+        _nv.Log.Clear();
+
+        await adapter.OpenAsync(descriptor.Id, default);
+        _now += Ms(50);
+        adapter.WriteFrame(descriptor.Id, [[new Rgb(1, 2, 3)]]).Should().BeTrue("fresh handle clears frame cache and sends to new handle");
+        _nv.Log.Should().Equal(
+            "W 3000 68 06 00",
+            "W 3000 68 04 " + Hex(Enumerable.Repeat(new Rgb(1, 2, 3), 34).ToArray()));
+    }
+
     private static long Ms(int ms) => ms * 1000L;
 
     private async Task<(MsiNv5000Adapter Adapter, ControllerDescriptor Descriptor)> Make(MsiGpuOptions options, INativeMapSource? maps = null)

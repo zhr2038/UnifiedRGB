@@ -111,6 +111,8 @@ public sealed class CaseControlPanelViewModel : ObservableObject
     public AsyncCommand OnCommand { get; }
     public AsyncCommand ToggleKeyboardDisplayCommand { get; }
     public AsyncCommand ReconnectKeyboardLightingCommand { get; }
+    public event EventHandler? CasePowerCompleted;
+    public KeyboardDisplayStatusDto? KeyboardStatus => _keyboardStatus;
     public bool CanRecoverKeyboardCommunication => _connected && _keyboardDisplay is not null && _peripherals is not null && !KeyboardRequestInFlight;
     public string KeyboardCommunicationRecoveryNote => _keyboardCommunicationMessage;
     public bool CanControl => _connected && _requests == 0;
@@ -162,11 +164,17 @@ public sealed class CaseControlPanelViewModel : ObservableObject
     private static string PageState(bool enabled) => enabled ? "开启" : "未启用";
     private sealed record KeyboardIntent(bool Enabled, string Request, string Action, string Outcome);
 
+    internal Task RefreshKeyboardOnlyAsync()
+    {
+        if (!_connected || _keyboardDisplay is null) return Task.CompletedTask;
+        return RefreshKeyboardAsync();
+    }
+
     private async Task RefreshKeyboardAsync()
     {
         var epoch = Volatile.Read(ref _epoch);
         // An in-flight toggle owns the keyboard feedback until its own bounded readback.
-        if (_keyboardDisplay is null || _keyboardRequestEpoch == epoch) return;
+        if (!_connected || _keyboardDisplay is null || _keyboardRequestEpoch == epoch) return;
         var version = Interlocked.Increment(ref _keyboardVersion);
         var (state, error) = await ReadKeyboardAsync(_keyboardDisplay).ConfigureAwait(true);
         PostKeyboard(epoch, version, state, error is null ? TransportNote : "键盘状态未知：本次未读到，不能确认是否已发送；下次回读时重试。");
@@ -363,7 +371,11 @@ public sealed class CaseControlPanelViewModel : ObservableObject
         {
             var result = await action(CancellationToken.None).ConfigureAwait(true);
             // A request the Host state already satisfied sent nothing; do not present it as a submitted command.
-            _ui.Post(() => { if (CurrentRequest(epoch, request)) Display = new(CaseControlState.Pending, result.Changed ? "指令已提交" : "未发送新指令", "正在读取设备状态"); });
+            _ui.Post(() =>
+            {
+                if (CurrentRequest(epoch, request)) Display = new(CaseControlState.Pending, result.Changed ? "指令已提交" : "未发送新指令", "正在读取设备状态");
+                if (result.Changed) CasePowerCompleted?.Invoke(this, EventArgs.Empty);
+            });
             return result;
         }
         catch
@@ -469,6 +481,7 @@ public sealed class CaseControlPanelViewModel : ObservableObject
     private void RaiseKeyboardCommands() { ToggleKeyboardDisplayCommand.RaiseCanExecuteChanged(); ReconnectKeyboardLightingCommand.RaiseCanExecuteChanged(); }
     private void NotifyKeyboard()
     {
+        OnPropertyChanged(nameof(KeyboardStatus));
         OnPropertyChanged(nameof(KeyboardTransportNote)); OnPropertyChanged(nameof(KeyboardToggleLabel));
         OnPropertyChanged(nameof(HasKeyboardDisplayService)); OnPropertyChanged(nameof(CanToggleKeyboardDisplay));
         OnPropertyChanged(nameof(CanReconnectKeyboardLighting)); OnPropertyChanged(nameof(KeyboardReconnectNote));

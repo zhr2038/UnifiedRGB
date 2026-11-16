@@ -167,6 +167,11 @@ public sealed partial class ScenePackagesViewModel
         catch (OperationCanceledException) { }
     }
 
+    internal void ResetPreviewTick()
+    {
+        if (_previewPlaying) _previewTick = Stopwatch.GetTimestamp();
+    }
+
     public void AdvancePreview()
     {
         if (!PreviewPlaying || PreviewData is null) return;

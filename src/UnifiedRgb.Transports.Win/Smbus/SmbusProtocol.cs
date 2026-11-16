@@ -208,6 +208,27 @@ public interface ISmbusPort
     /// <summary>Executes one compound under one bounded mutex acquisition; never throws for a bus error (status in the result).</summary>
     SmbusResult Execute(SmbusCompound compound);
 
+    /// <summary>
+    /// Executes a sequence of compounds under one bounded mutex acquisition (stopping at the first failure); never throws
+    /// for a bus error. Default implementation runs each compound individually.
+    /// </summary>
+    IReadOnlyList<SmbusResult> ExecuteBatch(IReadOnlyList<SmbusCompound> compounds)
+    {
+        ArgumentNullException.ThrowIfNull(compounds);
+        var results = new List<SmbusResult>(compounds.Count);
+        for (var i = 0; i < compounds.Count; i++)
+        {
+            var r = Execute(compounds[i]);
+            results.Add(r);
+            if (!r.Ok)
+            {
+                break;
+            }
+        }
+
+        return results;
+    }
+
     /// <summary>Compounds dropped whole because the global mutex was not acquired within the bound.</summary>
     long MutexTimeouts { get; }
     long AbandonedMutexAcquisitions => 0;

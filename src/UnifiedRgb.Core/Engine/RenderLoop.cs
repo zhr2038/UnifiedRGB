@@ -33,6 +33,7 @@ public sealed partial class RenderLoop : IDisposable
     private readonly FrameBus _bus;
     private readonly LoopCompiler _loops;
     private readonly object _gate = new();
+    private readonly object _compileGate = new();
     private readonly Dictionary<(ControllerId, ZoneId), LoopFrames> _lastLoops = [];
     private readonly Dictionary<(ControllerId, ZoneId), LoopAnchor> _anchors = [];
     private readonly Dictionary<(ControllerId, ZoneId), UploadedTiming> _uploaded = []; // NATIVE-RF-CLOCK R2: actual transmitted timing
@@ -212,7 +213,16 @@ public sealed partial class RenderLoop : IDisposable
     /// <summary>True when <see cref="PlayedSliceCount"/> &gt; 0.</summary>
     public bool HasPlayedSlices => PlayedSliceCount > 0;
 
-    public IReadOnlyList<ControllerDescriptor> Controllers => _controllers.Select(c => c.Descriptor).ToArray();
+    public IReadOnlyList<ControllerDescriptor> Controllers
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _controllers.Select(c => c.Descriptor).ToArray();
+            }
+        }
+    }
 
     /// <summary>
     /// Diagnostics of the CURRENT compilation (the last scene/controller change): UploadedLoop zones published or kept, plus
@@ -236,18 +246,21 @@ public sealed partial class RenderLoop : IDisposable
     public StrictPreflight PreflightStrict(Scene scene)
     {
         ArgumentNullException.ThrowIfNull(scene);
+        ControllerSlot[] controllers;
         lock (_gate)
         {
-            ValidatePaths(scene);
-            var plan = Compile(scene, skipMissing: true);
-            var loops = plan.Items.SelectMany(it => it.Loops.Where(l => l.Strict).Select(l =>
-                new StrictLoop(l.Key.Item1, l.Key.Item2, new LoopFrames(l.Timing.Frames, l.Rgb.Length / 3 / l.Timing.Frames, l.Timing.IntervalMs, 0, l.Rgb)
-                {
-                    Geometry = l.Geometry,
-                    Strict = true,
-                }))).ToArray();
-            return new StrictPreflight(loops, plan.Blocked ?? []);
+            controllers = _controllers;
         }
+
+        ValidatePaths(scene, controllers);
+        var plan = Compile(scene, skipMissing: true, controllers);
+        var loops = plan.Items.SelectMany(it => it.Loops.Where(l => l.Strict).Select(l =>
+            new StrictLoop(l.Key.Item1, l.Key.Item2, new LoopFrames(l.Timing.Frames, l.Rgb.Length / 3 / l.Timing.Frames, l.Timing.IntervalMs, 0, l.Rgb)
+            {
+                Geometry = l.Geometry,
+                Strict = true,
+            }))).ToArray();
+        return new StrictPreflight(loops, plan.Blocked ?? []);
     }
 
     /// <summary>
@@ -316,29 +329,45 @@ public sealed partial class RenderLoop : IDisposable
     public void SetControllers(IEnumerable<ControllerDescriptor> controllers, Func<ControllerId, OutputStage>? stageFor = null)
     {
         ArgumentNullException.ThrowIfNull(controllers);
-        lock (_gate)
+        var list = controllers.ToArray();
+        lock (_compileGate)
         {
-            var list = controllers.ToArray();
-            foreach (var old in _controllers)
+            Scene scene;
+            lock (_gate)
             {
-                if (!list.Any(c => c.Id == old.Descriptor.Id))
-                {
-                    _bus.Unregister(old.Descriptor.Id);
-                }
+                scene = _scene;
             }
 
-            foreach (var key in _lastLoops.Keys.Where(k => !list.Any(c => c.Id == k.Item1)).ToArray())
-            {
-                _lastLoops.Remove(key); // a controller that comes back gets its loop again
-                _uploaded.Remove(key);
-            }
-
-            _controllers = list
-                .Select(c => new ControllerSlot(c, _bus.Register(c), stageFor?.Invoke(c.Id) ?? OutputStage.Identity,
+            var nextSlots = list
+                .Select(c => new ControllerSlot(c, null!, stageFor?.Invoke(c.Id) ?? OutputStage.Identity,
                     c.Capabilities.Delivery == Delivery.UploadedLoop))
                 .ToArray();
-            Activate(_scene, skipMissing: true, force: false);
-            CompileFollowers(_scene);
+            var compiled = Compile(scene, skipMissing: true, nextSlots);
+            lock (_gate)
+            {
+                foreach (var old in _controllers)
+                {
+                    if (!list.Any(c => c.Id == old.Descriptor.Id))
+                    {
+                        _bus.Unregister(old.Descriptor.Id);
+                    }
+                }
+
+                foreach (var key in _lastLoops.Keys.Where(k => !list.Any(c => c.Id == k.Item1)).ToArray())
+                {
+                    _lastLoops.Remove(key); // a controller that comes back gets its loop again
+                    _uploaded.Remove(key);
+                }
+
+                for (var i = 0; i < nextSlots.Length; i++)
+                {
+                    nextSlots[i] = nextSlots[i] with { Mailbox = _bus.Register(nextSlots[i].Descriptor) };
+                }
+
+                _controllers = nextSlots;
+                Activate(compiled, force: false, forceFor: null);
+                CompileFollowers(scene);
+            }
         }
     }
 
@@ -356,14 +385,23 @@ public sealed partial class RenderLoop : IDisposable
     public void SetScene(Scene scene, bool allowMissingZones, Action? beforePublish)
     {
         ArgumentNullException.ThrowIfNull(scene);
-        lock (_gate)
+        lock (_compileGate)
         {
-            ValidatePaths(scene);
-            var compiled = Compile(scene, allowMissingZones);
+            ControllerSlot[] controllers;
+            lock (_gate)
+            {
+                controllers = _controllers;
+            }
+
+            ValidatePaths(scene, controllers);
+            var compiled = Compile(scene, allowMissingZones, controllers);
             beforePublish?.Invoke();
-            Activate(compiled, force: false, forceFor: null);
-            _scene = scene;
-            CompileFollowers(scene);
+            lock (_gate)
+            {
+                Activate(compiled, force: false, forceFor: null);
+                _scene = scene;
+                CompileFollowers(scene);
+            }
         }
     }
 
@@ -373,10 +411,22 @@ public sealed partial class RenderLoop : IDisposable
     /// </summary>
     public LoopCompileReport? RepublishLoops()
     {
-        lock (_gate)
+        lock (_compileGate)
         {
-            Activate(_scene, skipMissing: true, force: true);
-            return LastLoopCompile;
+            Scene scene;
+            ControllerSlot[] controllers;
+            lock (_gate)
+            {
+                scene = _scene;
+                controllers = _controllers;
+            }
+
+            var compiled = Compile(scene, skipMissing: true, controllers);
+            lock (_gate)
+            {
+                Activate(compiled, force: true, forceFor: null);
+                return LastLoopCompile;
+            }
         }
     }
 
@@ -388,10 +438,22 @@ public sealed partial class RenderLoop : IDisposable
     /// </summary>
     public LoopCompileReport? RepublishLoops(ControllerId controller)
     {
-        lock (_gate)
+        lock (_compileGate)
         {
-            Activate(_scene, skipMissing: true, force: false, forceFor: controller);
-            return LastLoopCompile;
+            Scene scene;
+            ControllerSlot[] controllers;
+            lock (_gate)
+            {
+                scene = _scene;
+                controllers = _controllers;
+            }
+
+            var compiled = Compile(scene, skipMissing: true, controllers);
+            lock (_gate)
+            {
+                Activate(compiled, force: false, forceFor: controller);
+                return LastLoopCompile;
+            }
         }
     }
 
@@ -431,15 +493,27 @@ public sealed partial class RenderLoop : IDisposable
     /// </summary>
     public LoopCompileReport? EndCalibration(ControllerId controller, bool republish)
     {
-        lock (_gate)
+        lock (_compileGate)
         {
-            if (!_held.Remove(controller) || !republish)
+            Scene scene;
+            ControllerSlot[] controllers;
+            lock (_gate)
             {
-                return LastLoopCompile;
+                if (!_held.Remove(controller) || !republish)
+                {
+                    return LastLoopCompile;
+                }
+
+                scene = _scene;
+                controllers = _controllers;
             }
 
-            Activate(_scene, skipMissing: true, force: false, forceFor: controller);
-            return LastLoopCompile;
+            var compiled = Compile(scene, skipMissing: true, controllers);
+            lock (_gate)
+            {
+                Activate(compiled, force: false, forceFor: controller);
+                return LastLoopCompile;
+            }
         }
     }
 
@@ -470,16 +544,25 @@ public sealed partial class RenderLoop : IDisposable
     /// </summary>
     public void ReleaseHold(ControllerId controller)
     {
-        lock (_gate)
+        lock (_compileGate)
         {
-            if (!_bringup.Remove(controller))
+            Scene scene;
+            ControllerSlot[] controllers;
+            lock (_gate)
             {
-                return;
+                if (!_bringup.Remove(controller) || !_controllers.Any(c => c.Descriptor.Id == controller && c.IsLoop))
+                {
+                    return;
+                }
+
+                scene = _scene;
+                controllers = _controllers;
             }
 
-            if (_controllers.Any(c => c.Descriptor.Id == controller && c.IsLoop))
+            var compiled = Compile(scene, skipMissing: true, controllers);
+            lock (_gate)
             {
-                Activate(_scene, skipMissing: true, force: false, forceFor: controller);
+                Activate(compiled, force: false, forceFor: controller);
             }
         }
     }
@@ -724,8 +807,11 @@ public sealed partial class RenderLoop : IDisposable
             return Fallback(cb, ClockFallback.Future);
         }
 
-        var counter = s0.TicksAt(now);
-        var ticks = (counter - (trimMs / 1000.0 * s0.TicksPerSecond)) * rate;
+        // Apply trim before wrapping against the 32-bit unsigned counter modulus (2^32) so PhaseTrimMs stays continuous
+        // when the extrapolated hardware counter crosses 2^32 -> 0 (or 0 -> 2^32 under negative trim), then scale by rate.
+        var trimTicks = trimMs / 1000.0 * s0.TicksPerSecond;
+        var counter = Wrap(s0.TicksAt(now) - trimTicks, DeviceClockSample.CounterModulus);
+        var ticks = counter * rate;
         var phase = Wrap(ticks, cb.RefPeriodTicks) / cb.RefPeriodTicks;
         if (phase >= 1)
         {
@@ -859,13 +945,6 @@ public sealed partial class RenderLoop : IDisposable
         return r < 0 ? r + period : r;
     }
 
-    /// <summary>Compiles the plan, then publishes the loops it produced (caller holds the lock).</summary>
-    private void Activate(Scene scene, bool skipMissing, bool force, ControllerId? forceFor = null)
-    {
-        var compiled = Compile(scene, skipMissing);
-        Activate(compiled, force, forceFor);
-    }
-
     private void Activate(Plan compiled, bool force, ControllerId? forceFor)
     {
         var now = _clock?.Now ?? _lastT;
@@ -997,7 +1076,7 @@ public sealed partial class RenderLoop : IDisposable
     /// shared-Stacking path whose present TL zone's stage is not 12 per fan.
     /// Absent targets are checked when they appear: a recompile then falls back to Program with the reason, never throws.
     /// </summary>
-    private void ValidatePaths(Scene scene)
+    private static void ValidatePaths(Scene scene, ControllerSlot[] controllers)
     {
         foreach (var a in scene.Assignments)
         {
@@ -1011,7 +1090,7 @@ public sealed partial class RenderLoop : IDisposable
             var spans = a.Path.Resolve();
             foreach (var (target, span) in spans)
             {
-                var c = _controllers.FirstOrDefault(c => c.Descriptor.Id == target.Controller)?.Descriptor;
+                var c = controllers.FirstOrDefault(c => c.Descriptor.Id == target.Controller)?.Descriptor;
                 var zi = c is null ? -1 : FindZone(c, target.Zone);
                 if (zi >= 0 && c!.Zones[zi].Family == LConnectLoops.Tl && span.Length != c.Zones[zi].Units * 12)
                 {
@@ -1029,8 +1108,11 @@ public sealed partial class RenderLoop : IDisposable
         a.Frames == b.Frames && a.Leds == b.Leds && a.IntervalMs.Equals(b.IntervalMs) && a.Brightness.Equals(b.Brightness)
         && a.Pixels.AsSpan().SequenceEqual(b.Pixels);
 
-    private Plan Compile(Scene scene, bool skipMissing)
+    private Plan Compile(Scene scene, bool skipMissing, ControllerSlot[] controllers)
     {
+        var chainReversed = ChainReversed;
+        var ring = Ring;
+        var frameSets = FrameSets;
         var items = new List<PlanItem>();
         var truncated = new List<string>();
         var variants = new List<string>();
@@ -1057,8 +1139,8 @@ public sealed partial class RenderLoop : IDisposable
             var programSpans = new List<SpatialSpan>();
             foreach (var target in a.Targets)
             {
-                var slot = Array.FindIndex(_controllers, c => c.Descriptor.Id == target.Controller);
-                var zoneIndex = slot < 0 ? -1 : FindZone(_controllers[slot].Descriptor, target.Zone);
+                var slot = Array.FindIndex(controllers, c => c.Descriptor.Id == target.Controller);
+                var zoneIndex = slot < 0 ? -1 : FindZone(controllers[slot].Descriptor, target.Zone);
                 if (zoneIndex < 0)
                 {
                     if (skipMissing)
@@ -1070,17 +1152,17 @@ public sealed partial class RenderLoop : IDisposable
                     throw new ArgumentException($"Unknown zone {target}.", nameof(scene));
                 }
 
-                var zone = _controllers[slot].Descriptor.Zones[zoneIndex];
+                var zone = controllers[slot].Descriptor.Zones[zoneIndex];
                 layoutOf.TryAdd((slot, zoneIndex), layouts.Count);
                 layouts.Add(zone.Layout);
                 placements.Add(zone.Placement);
                 perKeyPoints.Add(zone.PerKeyPoints);
-                members.Add((new Slice(slot, zoneIndex, offset), _controllers[slot].IsLoop));
+                members.Add((new Slice(slot, zoneIndex, offset), controllers[slot].IsLoop));
                 if (spanOf is not null)
                 {
                     var span = spanOf[target];
                     spans.Add(span);
-                    var chainFlip = zone.Family == LConnectLoops.Tl && ChainReversed?.Invoke(target.Controller) == true;
+                    var chainFlip = zone.Family == LConnectLoops.Tl && chainReversed?.Invoke(target.Controller) == true;
                     programSpans.Add(chainFlip ? span with { Reverse = !span.Reverse } : span);
                 }
 
@@ -1124,14 +1206,14 @@ public sealed partial class RenderLoop : IDisposable
             {
                 // OPUS-GENERIC-SCENE-PACKAGES: an id the source claims is strict content: no effect fallback, no decimation, and a
                 // physical-ms set is uploaded at its exact raw-tick interval or blocked
-                var strict = !string.IsNullOrEmpty(a.FrameSetId) && FrameSets?.Claims(a.FrameSetId) == true;
-                var set = ResolveFrameSet(a, members, out var why);
-                if (set is null && strict && FrameSets!.Problem(a.FrameSetId!) is { } problem)
+                var strict = !string.IsNullOrEmpty(a.FrameSetId) && frameSets?.Claims(a.FrameSetId) == true;
+                var set = ResolveFrameSet(a, members, controllers, frameSets, out var why);
+                if (set is null && strict && frameSets!.Problem(a.FrameSetId!) is { } problem)
                 {
                     why = problem;
                 }
 
-                if (set is not null && strict && FrameSets!.BoundTargets(a.FrameSetId!) is { } bound && !bound.SequenceEqual(a.Targets))
+                if (set is not null && strict && frameSets!.BoundTargets(a.FrameSetId!) is { } bound && !bound.SequenceEqual(a.Targets))
                 {
                     why = $"frame set {set.Id}: the assignment targets are not exactly the bound targets of its binding snapshot (never retargeted)";
                     set = null;
@@ -1167,11 +1249,11 @@ public sealed partial class RenderLoop : IDisposable
                     for (var i = 0; i < members.Count; i++)
                     {
                         var (s, isLoop) = members[i];
-                        var c = _controllers[s.ControllerSlot].Descriptor;
+                        var c = controllers[s.ControllerSlot].Descriptor;
                         var z = c.Zones[s.ZoneIndex];
                         if (isLoop)
                         {
-                            list.Add(new CompiledLoop((c.Id, z.Id), Staged(_controllers[s.ControllerSlot].Stage, set.ZoneRgb[i], p.Brightness),
+                            list.Add(new CompiledLoop((c.Id, z.Id), Staged(controllers[s.ControllerSlot].Stage, set.ZoneRgb[i], p.Brightness),
                                 new LoopTiming(set.Frames, wireInterval), IsH2(z) ? "ring" : null, strict));
                         }
                         else
@@ -1192,13 +1274,13 @@ public sealed partial class RenderLoop : IDisposable
             {
                 // §7.3 per-device route (RainbowMorph, Twinkle): Lian Li zones keep their family bodies (no shared phase in the
                 // vendor either); streamed members render the Program equivalent live
-                var vendor = LConnectLoops.TryPlan(a.EffectId, p, colors, loopSlices.Select(VendorZoneOf).ToArray(), out var why);
+                var vendor = LConnectLoops.TryPlan(a.EffectId, p, colors, loopSlices.Select(s => VendorZoneOf(s, controllers, chainReversed, ring)).ToArray(), out var why);
                 fallback = $"LConnect: {why}";
                 if (vendor is not null)
                 {
                     period = vendor.PeriodSeconds;
                     livePeriod = 0;
-                    loops = VendorLoops(a.EffectId, vendor, loopSlices.Select(sl => (sl, true)).ToList(), played);
+                    loops = VendorLoops(a.EffectId, vendor, loopSlices.Select(sl => (sl, true)).ToList(), played, controllers, chainReversed, ring);
                     planned = true;
                     variants.Add($"{label}: Vendor:{a.EffectId}+program({slices.Count}) {vendor.Variant}: {vendor.Summary}");
                 }
@@ -1207,15 +1289,15 @@ public sealed partial class RenderLoop : IDisposable
             {
                 // §7.3: one plan over the whole strip in target order; streamed members get their slice of it, played (§7.5)
                 var zones = members.Select(m => m.IsLoop
-                    ? VendorZoneOf(m.Slice)
-                    : new LConnectZone(LConnectLoops.Streamed, 0, _controllers[m.Slice.ControllerSlot].Descriptor.Zones[m.Slice.ZoneIndex].LedCount)).ToArray();
+                    ? VendorZoneOf(m.Slice, controllers, chainReversed, ring)
+                    : new LConnectZone(LConnectLoops.Streamed, 0, controllers[m.Slice.ControllerSlot].Descriptor.Zones[m.Slice.ZoneIndex].LedCount)).ToArray();
                 var vendor = LConnectLoops.TryPlan(a.EffectId, p, colors, zones, spanOf is null ? null : spans, a.LoopReturn, out var why);
                 fallback = $"LConnect: {why}";
                 if (vendor is not null)
                 {
                     // WP-11: L-Connect's own frames, frame count and interval; no MaxLoopFrames cap (the adapter's size fallback applies)
                     period = vendor.PeriodSeconds;
-                    loops = VendorLoops(a.EffectId, vendor, members, played, explicitPath: spanOf is not null);
+                    loops = VendorLoops(a.EffectId, vendor, members, played, controllers, chainReversed, ring, explicitPath: spanOf is not null);
                     slices.Clear();
                     planned = true;
                     variants.Add($"{label}: Vendor:{a.EffectId} {vendor.Variant}: {vendor.Summary}{pathNote}");
@@ -1229,7 +1311,7 @@ public sealed partial class RenderLoop : IDisposable
 
             if (!planned && loopSlices.Count > 0)
             {
-                var caps = loopSlices.Select(s => _controllers[s.ControllerSlot].Descriptor.Capabilities).ToArray();
+                var caps = loopSlices.Select(s => controllers[s.ControllerSlot].Descriptor.Capabilities).ToArray();
                 var natural = LoopCompiler.NaturalPeriod(gen, p with { Colors = colors });
                 period = LoopCompiler.GroupPeriod(natural, caps, out var cut);
                 if (cut)
@@ -1240,8 +1322,8 @@ public sealed partial class RenderLoop : IDisposable
                 var timings = caps.Select(c => LoopCompiler.TimingFor(period, c)).ToArray();
                 var targets = loopSlices.Select((s, i) => new LoopTarget(
                     s.SourceOffset,
-                    _controllers[s.ControllerSlot].Descriptor.Zones[s.ZoneIndex].LedCount,
-                    _controllers[s.ControllerSlot].Stage,
+                    controllers[s.ControllerSlot].Descriptor.Zones[s.ZoneIndex].LedCount,
+                    controllers[s.ControllerSlot].Stage,
                     timings[i].Frames)).ToArray();
                 // WP-14 (H2-VERTICAL-FILL §1): a vertical-fill H2 of a multi-zone translational group is rendered as Linear(24)
                 // along the group's u, then placed by height with the same RingFillMap as the vendor slices. "Multi-zone" counts
@@ -1249,9 +1331,10 @@ public sealed partial class RenderLoop : IDisposable
                 var shape = EffectGeometry.Of(a.EffectId);
                 var fills = loopSlices.Select(s =>
                 {
-                    var c = _controllers[s.ControllerSlot].Descriptor;
+                    var c = controllers[s.ControllerSlot].Descriptor;
                     var z = c.Zones[s.ZoneIndex];
-                    return (members.Count > 1 || spanOf is not null) && IsH2(z) && z.LedCount == RingFillMap.Leds && RingOf(c.Id).FaceOnFill && shape.IsTranslational
+                    var ringGeom = ring?.Invoke(c.Id) ?? default;
+                    return (members.Count > 1 || spanOf is not null) && IsH2(z) && z.LedCount == RingFillMap.Leds && ringGeom.FaceOnFill && shape.IsTranslational
                         ? shape.Bottom
                         : null;
                 }).ToArray();
@@ -1274,15 +1357,16 @@ public sealed partial class RenderLoop : IDisposable
                 var sampling = RingFillMap.SamplingFor(a.EffectId);
                 loops = loopSlices.Select((s, i) =>
                 {
-                    var c = _controllers[s.ControllerSlot].Descriptor;
+                    var c = controllers[s.ControllerSlot].Descriptor;
                     var z = c.Zones[s.ZoneIndex];
-                    var data = fills[i] is { } bottom ? RingFillMap.ApplyFrames(rgb[i], bottom, RingOf(c.Id).HalfStep, sampling) : rgb[i];
-                    return new CompiledLoop((c.Id, z.Id), data, timings[i], GeometryTag(z, RingOf(c.Id), shape, fills[i], members.Count == 1 && spanOf is null, sampling));
+                    var ringGeom = ring?.Invoke(c.Id) ?? default;
+                    var data = fills[i] is { } bottom ? RingFillMap.ApplyFrames(rgb[i], bottom, ringGeom.HalfStep, sampling) : rgb[i];
+                    return new CompiledLoop((c.Id, z.Id), data, timings[i], GeometryTag(z, ringGeom, shape, fills[i], members.Count == 1 && spanOf is null, sampling));
                 }).ToArray();
                 var filledAt = Array.FindIndex(fills, f => f is not null);
-                var flagged = loopSlices.Any(s => IsH2(_controllers[s.ControllerSlot].Descriptor.Zones[s.ZoneIndex]) && RingOf(_controllers[s.ControllerSlot].Descriptor.Id).FaceOnFill);
+                var flagged = loopSlices.Any(s => IsH2(controllers[s.ControllerSlot].Descriptor.Zones[s.ZoneIndex]) && (ring?.Invoke(controllers[s.ControllerSlot].Descriptor.Id) ?? default).FaceOnFill);
                 var suffix = filledAt >= 0
-                    ? $"; H2 vertical-fill (bottom={fills[filledAt]}{(RingOf(_controllers[loopSlices[filledAt].ControllerSlot].Descriptor.Id).HalfStep ? ", half-step" : string.Empty)}{(sampling == RingSampling.Linear ? ", interpolated" : string.Empty)})"
+                    ? $"; H2 vertical-fill (bottom={fills[filledAt]}{((ring?.Invoke(controllers[loopSlices[filledAt].ControllerSlot].Descriptor.Id) ?? default).HalfStep ? ", half-step" : string.Empty)}{(sampling == RingSampling.Linear ? ", interpolated" : string.Empty)})"
                     : flagged ? "; H2 ring" : string.Empty;
                 variants.Add($"{label}: Program:{a.EffectId} generic ({fallback}){suffix}{pathNote}{returnNote}");
             }
@@ -1304,8 +1388,8 @@ public sealed partial class RenderLoop : IDisposable
     /// The compiled loops of a vendor plan whose zones are <paramref name="members"/> in order: uploaded-loop members become
     /// loops (staged at full scale, the body applied its brightness), streamed members are added to <paramref name="played"/>.
     /// </summary>
-    private CompiledLoop[] VendorLoops(string effectId, LConnectPlan vendor, List<(Slice Slice, bool IsLoop)> members, List<PlayedSlice> played,
-        bool explicitPath = false)
+    private static CompiledLoop[] VendorLoops(string effectId, LConnectPlan vendor, List<(Slice Slice, bool IsLoop)> members, List<PlayedSlice> played,
+        ControllerSlot[] controllers, Func<ControllerId, bool>? chainReversed, Func<ControllerId, RingGeometry>? ring, bool explicitPath = false)
     {
         var shape = EffectGeometry.Of(effectId);
         var shared = LConnectLoops.IsSharedGroup(effectId, members.Count, explicitPath);
@@ -1314,7 +1398,7 @@ public sealed partial class RenderLoop : IDisposable
         for (var i = 0; i < members.Count; i++)
         {
             var (s, isLoop) = members[i];
-            var c = _controllers[s.ControllerSlot].Descriptor;
+            var c = controllers[s.ControllerSlot].Descriptor;
             var z = c.Zones[s.ZoneIndex];
             var zl = vendor.Zones[i];
             if (!isLoop)
@@ -1323,12 +1407,12 @@ public sealed partial class RenderLoop : IDisposable
                 continue;
             }
 
-            var filled = shared ? LConnectLoops.FillFor(VendorZone(c, s.ZoneIndex), shape) : null;
+            var filled = shared ? LConnectLoops.FillFor(VendorZone(c, s.ZoneIndex, chainReversed, ring), shape) : null;
             list.Add(new CompiledLoop(
                 (c.Id, z.Id),
-                Staged(_controllers[s.ControllerSlot].Stage, zl.Rgb),
+                Staged(controllers[s.ControllerSlot].Stage, zl.Rgb),
                 new LoopTiming(zl.Frames, zl.IntervalMs),
-                GeometryTag(z, RingOf(c.Id), shape, filled, !shared, sampling)));
+                GeometryTag(z, ring?.Invoke(c.Id) ?? default, shape, filled, !shared, sampling)));
         }
 
         return [.. list];
@@ -1353,7 +1437,7 @@ public sealed partial class RenderLoop : IDisposable
     }
 
     /// <summary>The assignment's frame set when it exists, is well formed and matches the targets zone by zone; else null and why.</summary>
-    private FrameSet? ResolveFrameSet(Assignment a, List<(Slice Slice, bool IsLoop)> members, out string why)
+    private static FrameSet? ResolveFrameSet(Assignment a, List<(Slice Slice, bool IsLoop)> members, ControllerSlot[] controllers, IFrameSetSource? frameSets, out string why)
     {
         if (string.IsNullOrEmpty(a.FrameSetId))
         {
@@ -1361,7 +1445,7 @@ public sealed partial class RenderLoop : IDisposable
             return null;
         }
 
-        if (FrameSets is null || !FrameSets.TryGet(a.FrameSetId, out var set))
+        if (frameSets is null || !frameSets.TryGet(a.FrameSetId, out var set))
         {
             why = $"frame set {a.FrameSetId} not found";
             return null;
@@ -1382,7 +1466,7 @@ public sealed partial class RenderLoop : IDisposable
 
         for (var i = 0; i < members.Count; i++)
         {
-            var leds = _controllers[members[i].Slice.ControllerSlot].Descriptor.Zones[members[i].Slice.ZoneIndex].LedCount;
+            var leds = controllers[members[i].Slice.ControllerSlot].Descriptor.Zones[members[i].Slice.ZoneIndex].LedCount;
             if (set.ZoneLedCounts[i] != leds)
             {
                 why = $"frame set {set.Id} zone {i} has {set.ZoneLedCounts[i]} LEDs, the target {leds}";
@@ -1394,14 +1478,15 @@ public sealed partial class RenderLoop : IDisposable
         return set;
     }
 
-    private LConnectZone VendorZoneOf(Slice s) => VendorZone(_controllers[s.ControllerSlot].Descriptor, s.ZoneIndex);
+    private static LConnectZone VendorZoneOf(Slice s, ControllerSlot[] controllers, Func<ControllerId, bool>? chainReversed, Func<ControllerId, RingGeometry>? ring) =>
+        VendorZone(controllers[s.ControllerSlot].Descriptor, s.ZoneIndex, chainReversed, ring);
 
     /// <summary>The vendor view of a loop zone (family/units tagged by the adapter's Describe).</summary>
-    private LConnectZone VendorZone(ControllerDescriptor c, int zoneIndex)
+    private static LConnectZone VendorZone(ControllerDescriptor c, int zoneIndex, Func<ControllerId, bool>? chainReversed, Func<ControllerId, RingGeometry>? ring)
     {
         var z = c.Zones[zoneIndex];
-        var ring = RingOf(c.Id);
-        return new(z.Family ?? string.Empty, z.Units, z.LedCount, ChainReversed?.Invoke(c.Id) == true, ring.FaceOnFill, ring.HalfStep);
+        var ringGeom = ring?.Invoke(c.Id) ?? default;
+        return new(z.Family ?? string.Empty, z.Units, z.LedCount, chainReversed?.Invoke(c.Id) == true, ringGeom.FaceOnFill, ringGeom.HalfStep);
     }
 
     private RingGeometry RingOf(ControllerId id) => Ring?.Invoke(id) ?? default;

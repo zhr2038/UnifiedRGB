@@ -154,6 +154,121 @@ public sealed class LianLiBacklightTests
         finally { Directory.Delete(dir, true); }
     }
 
+    [Fact]
+    public async Task Transient_backlight_off_failure_retries_once_with_backoff_and_recovers()
+    {
+        var dir = NewDirectory();
+        var writes = 0;
+        var opener = new FakeOpener
+        {
+            Configure = c =>
+            {
+                c.ConsumeReply = true;
+                c.FailWrite = _ => Interlocked.Increment(ref writes) == 1
+                    ? new UnifiedRgb.Screens.Usb.ScreenTransferException(UnifiedRgb.Screens.Usb.ScreenTransferError.Timeout, "WinUsb_WritePipe failed (121)", 121)
+                    : null;
+                c.Reply = p => Ack(ScreenFamily.TlLcd, p);
+            }
+        };
+        var options = Options();
+        options.BackoffInitialMs = 30;
+        options.BackoffMaxMs = 30;
+        var platform = new ScreenPlatform(new FakeEnumerator(Devices.Tl1), opener, new FakeContention(), new FakeOs(), null, TimeProvider.System);
+        try
+        {
+            await using var manager = new ScreenManager(options, dir, platform, wholeCaseBlackout: () => true);
+            await manager.SetScreenSceneAsync(new([new(Devices.Tl1.Id)]));
+            await UntilAsync(async () => (await manager.ListScreensAsync()).Single().State == ScreenStates.Sleeping);
+            opener.Opens.Should().Be(2);
+            opener.Channels.Sum(c => c.Writes.Count).Should().Be(1);
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
+    [Theory]
+    [InlineData(ScreenFamily.TlLcd)]
+    [InlineData(ScreenFamily.H2)]
+    public async Task Transient_backlight_wake_failure_reopens_and_writes_fresh_content_before_second_restore(ScreenFamily family)
+    {
+        var device = family == ScreenFamily.TlLcd ? Devices.Tl1 : Devices.H2;
+        var dir = NewDirectory();
+        var dark = true;
+        var wakeBacklightAttempts = 0;
+        var opener = new FakeOpener
+        {
+            Configure = c =>
+            {
+                c.ConsumeReply = true;
+                c.FailWrite = _ =>
+                {
+                    // Fail only the 1st wake cmd-14 attempt; Inspect packet after write or trigger on 1st cmd-14 after dark==false
+                    return null;
+                };
+                c.Reply = p =>
+                {
+                    if (!Volatile.Read(ref dark) && Header(family, p)[0] == 14 && Interlocked.Increment(ref wakeBacklightAttempts) == 1)
+                    {
+                        throw new UnifiedRgb.Screens.Usb.ScreenTransferException(UnifiedRgb.Screens.Usb.ScreenTransferError.Timeout, "WinUsb_ReadPipe failed (121)", 121);
+                    }
+                    return Ack(family, p);
+                };
+            }
+        };
+        var options = Options();
+        options.BackoffInitialMs = 30;
+        options.BackoffMaxMs = 30;
+        options.TlLcdRestoreBacklight = 75;
+        options.H2RestoreBacklight = 75;
+        var platform = new ScreenPlatform(new FakeEnumerator(device), opener, new FakeContention(), new FakeOs(), null, TimeProvider.System);
+        try
+        {
+            await using var manager = new ScreenManager(options, dir, platform, wholeCaseBlackout: () => Volatile.Read(ref dark));
+            await manager.SetScreenSceneAsync(new([new(device.Id)]));
+            await UntilAsync(async () => (await manager.ListScreensAsync()).Single().State == ScreenStates.Sleeping);
+
+            Volatile.Write(ref dark, false);
+            await UntilAsync(async () => (await manager.ListScreensAsync()).Single().State == ScreenStates.Running);
+            wakeBacklightAttempts.Should().Be(2);
+            var retryChannel = opener.Last.Writes.ToArray();
+            if (family == ScreenFamily.H2)
+            {
+                Header(family, retryChannel[0])[0].Should().Be(102, "H2 PNG layer clear precedes fresh content");
+            }
+
+            var imageIndex = family == ScreenFamily.H2 ? 1 : 0;
+            Header(family, retryChannel[imageIndex])[0].Should().Be(101, "fresh valid content must precede backlight restore on the reopened retry channel");
+            Header(family, retryChannel[imageIndex + 1])[0].Should().Be(14);
+            Header(family, retryChannel[imageIndex + 1])[8].Should().Be(75);
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
+    [Fact]
+    public async Task Persistent_backlight_failure_latches_error_after_two_attempts()
+    {
+        var dir = NewDirectory();
+        var opener = new FakeOpener { Configure = c => { c.ConsumeReply = true; c.Reply = _ => []; } };
+        var options = Options();
+        options.BackoffInitialMs = 25;
+        options.BackoffMaxMs = 25;
+        var platform = new ScreenPlatform(new FakeEnumerator(Devices.Tl1), opener, new FakeContention(), new FakeOs(), null, TimeProvider.System);
+        try
+        {
+            await using var manager = new ScreenManager(options, dir, platform, wholeCaseBlackout: () => true);
+            await manager.SetScreenSceneAsync(new([new(Devices.Tl1.Id)]));
+            await UntilAsync(async () =>
+            {
+                var screens = await manager.ListScreensAsync();
+                return opener.Channels.Sum(c => c.Writes.Count) >= 2 && screens.Single().State == ScreenStates.Error;
+            });
+            await Task.Delay(200);
+            opener.Opens.Should().Be(2);
+            opener.Channels.Sum(c => c.Writes.Count).Should().Be(2, "bounded retry stops permanently after 2 attempts");
+            (await manager.ListScreensAsync()).Single().State.Should().Be(ScreenStates.Error);
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
     private static ScreensOptions Options()
     {
         var options = new ScreensOptions { Enabled = true, NvmlTelemetry = false }; options.TlLcd.Output = true; options.H2.Output = true; return options;

@@ -14,6 +14,17 @@
    <Button Content="保存为开机灯效" Command="{Binding SaveToFansCommand}" IsEnabled="{Binding HasLianLi}" Padding="14,9" Margin="0,0,8,6" ToolTip="Write the current lighting into the fans' flash (shown at power-on). At most once per minute." />
    <TextBlock Text="{Binding LianLiMessage}" Margin="8,0,0,0" VerticalAlignment="Center" TextWrapping="Wrap" />
   </WrapPanel>
+  <Border DockPanel.Dock="Top" Background="#2A2018" BorderBrush="#6B4D36" BorderThickness="1" CornerRadius="6" Padding="14,10" Margin="0,0,0,14" Visibility="{Binding HasHealthNotice, Converter={StaticResource Visible}}">
+   <DockPanel LastChildFill="True">
+    <WrapPanel DockPanel.Dock="Right" VerticalAlignment="Center" Margin="12,0,0,0">
+     <Button Content="重新同步联力" Command="{Binding ResyncLianLiCommand}" IsEnabled="{Binding HasLianLi}" Visibility="{Binding HasRfDeliveryIssue, Converter={StaticResource Visible}}" ToolTip="重新上传当前联力无线灯效循环" Style="{StaticResource RecoveryButton}" Padding="12,6" MinHeight="30" Margin="0,0,6,0" />
+     <Button Content="重启风扇 LCD" Command="{Binding RestartFanLcdCommand}" Visibility="{Binding CanShowRestartFanLcd, Converter={StaticResource Visible}}" ToolTip="重启底排三块风扇 LCD，完成后恢复原播放状态" Style="{StaticResource RecoveryButton}" Padding="12,6" MinHeight="30" Margin="0,0,6,0" />
+     <Button Content="前往机箱屏幕" Command="{Binding OpenScreensCommand}" Visibility="{Binding CanOpenScreens, Converter={StaticResource Visible}}" Style="{StaticResource QuietButton}" Padding="12,6" MinHeight="30" Margin="0,0,6,0" />
+     <Button Content="前往键盘与鼠标" Command="{Binding OpenKeyboardCommand}" Visibility="{Binding CanOpenKeyboard, Converter={StaticResource Visible}}" Style="{StaticResource QuietButton}" Padding="12,6" MinHeight="30" />
+    </WrapPanel>
+    <TextBlock Text="{Binding HealthNotice}" Foreground="#F0B58A" TextWrapping="Wrap" VerticalAlignment="Center" />
+   </DockPanel>
+  </Border>
   <TabControl AutomationProperties.Name="设备管理功能">
    <TabItem Header="设备列表">
     <ListView ItemsSource="{Binding VisibleControllers}" Margin="0,16,0,0" ScrollViewer.HorizontalScrollBarVisibility="Auto">

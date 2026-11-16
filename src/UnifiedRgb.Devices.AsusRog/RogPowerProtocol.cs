@@ -15,6 +15,7 @@ public sealed record RogPowerChange(RogPowerState Before, RogPowerState After);
 public static class RogPowerProtocol
 {
     public const byte Never = 255;
+    public const byte MaxBatteryPercent = 100;
 
     public static byte[] Query(RogPairedDevice target)
     {
@@ -33,7 +34,8 @@ public static class RogPowerProtocol
         if (reply.Length != RogProtocol.ReportLength) throw new InvalidDataException("ROG power reply must be a complete vendor report.");
         var idle = reply[target.IsAzothX ? 7 : 6];
         var battery = reply[target.IsAzothX ? 6 : 5];
-        if (!IsKnownIdle(idle) || battery is < 1 or > 100) throw new InvalidDataException("ROG power state is unavailable, asleep or outside known ranges.");
+        // A fully drained but still answering device legitimately reports 0%; only values above 100 are unknown.
+        if (!IsKnownIdle(idle) || battery > MaxBatteryPercent) throw new InvalidDataException("ROG power state is unavailable, asleep or outside known ranges.");
         if (target.IsAzothX)
             return new(target.ProductId, idle, reply[10], reply[8], 0, 0, 0, Convert.ToHexString(reply));
         if (reply[7] > 100 || reply[12] > 1 || reply[13] > 1 || reply[14] is not (0 or 1 or 255))

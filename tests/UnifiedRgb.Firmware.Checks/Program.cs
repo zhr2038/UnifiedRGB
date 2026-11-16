@@ -66,6 +66,11 @@ try
     await using (var broker = new FirmwareJobBroker(new(directory), defaultMaintenance, new(defaultPhysical), defaultRunner, Dir("default-jobs")))
     {
         Check(await broker.GetFirmwareJobAsync().ConfigureAwait(false) is null, "default getter has no device or worker action");
+        foreach (var badPath in new[] { @"\\server\share\pkg.zip", "//server/share/pkg.zip", @"\\.\C:\pkg.zip", @"\\?\C:\pkg.zip", @"\\.\pipe\UnifiedRgb" })
+        {
+            Deny(() => ReleasePackage.Load(badPath), "unc/device path rejected " + badPath);
+            await DenyAsync(() => broker.LoadFirmwarePackageAsync(badPath), "broker unc/device load rejected " + badPath).ConfigureAwait(false);
+        }
         var loaded = await broker.LoadFirmwarePackageAsync(bundlePath).ConfigureAwait(false);
         var request = new FirmwareRequest(Guid.NewGuid(), loaded.JobId, loaded.Revision, loaded.Package.ReleaseId, loaded.Package.BundleSha256);
         await DenyAsync(() => broker.PrepareFirmwareAsync(request), "default prepare blocked").ConfigureAwait(false);

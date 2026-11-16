@@ -125,6 +125,52 @@ public sealed class TelemetryTests
     }
 
     [Fact]
+    public async Task Latest_snapshot_is_never_blocked_by_in_flight_gpu_sampling()
+    {
+        using var entered = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        var gpu = new BlockingGpu(entered, release);
+        using var s = new PcTelemetrySampler(new FakeOs(), () => (gpu, null), new ManualTime(T0));
+
+        var initial = s.Sample();
+        gpu.BlockNextRead = true;
+
+        var sampling = Task.Run(s.Sample);
+        entered.Wait(TimeSpan.FromSeconds(5)).Should().BeTrue();
+        try
+        {
+            var reader = Task.Run(() => s.Latest);
+            var completed = await Task.WhenAny(reader, Task.Delay(TimeSpan.FromSeconds(2)));
+            completed.Should().BeSameAs(reader, "Latest must read the published immutable snapshot lock-free");
+            (await reader).Should().BeSameAs(initial);
+        }
+        finally
+        {
+            release.Set();
+        }
+
+        var updated = await sampling.WaitAsync(TimeSpan.FromSeconds(5));
+        s.Latest.Should().BeSameAs(updated);
+    }
+
+    private sealed class BlockingGpu(ManualResetEventSlim entered, ManualResetEventSlim release) : IGpuReader
+    {
+        public bool BlockNextRead { get; set; }
+        public string Name => "Blocking";
+        public GpuSample Read()
+        {
+            if (BlockNextRead)
+            {
+                BlockNextRead = false;
+                entered.Set();
+                release.Wait(TimeSpan.FromSeconds(5));
+            }
+            return new GpuSample(42, 61, 8L << 30, 32L << 30, null);
+        }
+        public void Dispose() { }
+    }
+
+    [Fact]
     public async Task The_service_warms_up_so_the_first_answer_has_cpu_even_while_disabled()
     {
         await using var rig = new Rig();

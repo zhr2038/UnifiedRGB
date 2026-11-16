@@ -31,7 +31,14 @@ public static partial class LianLiDiscovery
             .ToArray();
     }
 
-    public static IReadOnlyList<RfDevice> Discover(LianLiOptions options, IUsbEnumerator enumerator, ILogger logger)
+    public static IReadOnlyList<RfDevice> Discover(LianLiOptions options, IUsbEnumerator enumerator, ILogger logger) =>
+        Discover(options, enumerator, logger, rfList: null);
+
+    public static IReadOnlyList<RfDevice> Discover(
+        LianLiOptions options,
+        IUsbEnumerator enumerator,
+        ILogger logger,
+        IReadOnlyList<RfDeviceRecord>? rfList)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(logger);
@@ -52,11 +59,43 @@ public static partial class LianLiDiscovery
                 continue;
             }
 
-            var slave = (byte)list.Count(d => d.Sender == senders[c.Sender]);
+            var fallback = (byte)list.Count(d => d.Sender == senders[c.Sender]);
+            var slave = ResolveSlaveIndex(mac, fallback, rfList);
             list.Add(new RfDevice(mac, c.Name ?? $"{family.Family} {mac}", family, c.Leds, senders[c.Sender], new RfAddress((byte)c.Channel, (byte)c.Rx), slave));
         }
 
         return list;
+    }
+
+    /// <summary>
+    /// Resolves the zero-based <c>rfList</c> slave slot index (excluding master records with <see cref="RfLcdGroupReset.MasterDevType"/>)
+    /// from live receiver records when available, falling back to <paramref name="fallbackIndex"/> if unmatched.
+    /// </summary>
+    public static byte ResolveSlaveIndex(RfMac mac, byte fallbackIndex, IReadOnlyList<RfDeviceRecord>? rfList)
+    {
+        if (rfList is not { Count: > 0 })
+        {
+            return fallbackIndex;
+        }
+
+        var slot = 0;
+        for (var i = 0; i < rfList.Count; i++)
+        {
+            var record = rfList[i];
+            if (record.DevType == RfLcdGroupReset.MasterDevType)
+            {
+                continue;
+            }
+
+            if (record.Mac == mac)
+            {
+                return slot <= byte.MaxValue ? (byte)slot : fallbackIndex;
+            }
+
+            slot++;
+        }
+
+        return fallbackIndex;
     }
 
     /// <summary>The configured family; when <c>Family</c> is empty, the single family whose RecTypes contain <c>RecType</c>.</summary>

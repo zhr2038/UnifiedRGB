@@ -17,6 +17,9 @@ public interface IRgbService
     /// <summary>Raised every second with read-only telemetry of active controllers that provide it.</summary>
     event EventHandler<IReadOnlyList<TelemetryDto>>? TelemetryTick;
 
+    /// <summary>Raised after any scene, assignment, profile or package commit changes the active RGB scene.</summary>
+    event EventHandler<SceneDto>? SceneChanged { add { } remove { } }
+
     Task<IReadOnlyList<ControllerDto>> ListControllersAsync(CancellationToken ct = default);
 
     Task<IReadOnlyList<EffectDto>> ListEffectsAsync(CancellationToken ct = default);

@@ -18,7 +18,35 @@ public sealed class H2NativeVideoTests
         FluentActions.Invoking(()=>session.SendFrame(picture)).Should().Throw<IOException>();
         channel.WriteAttempts.Should().Be(3,"an uncertain native packet must never be resent");
         session.AccessUnits.Should().Be(0);
-        session.Stop();channel.WriteAttempts.Should().Be(4,"a bounded StopPlay is attempted separately");
+        session.Stop();channel.WriteAttempts.Should().Be(3,"a faulted channel skips StopPlay instead of waiting for ACKs on broken USB");
+        FluentActions.Invoking(()=>session.SendFrame(picture)).Should().Throw<InvalidOperationException>();
+    }
+
+    [Fact]
+    public void H2_healthy_session_sends_Stop_while_faulted_read_skips_Stop()
+    {
+        var stamp = new ScreenTimestamp(ScreenFamily.H2, () => DateTime.UtcNow, () => DateTime.Now);
+        using (var healthy = new FakeChannel { Reply = Reply })
+        {
+            var s = new H2VideoSession(healthy, stamp, () => false, 30);
+            s.Begin([]);
+            s.Stop();
+            healthy.WriteAttempts.Should().Be(3, "healthy session sends Stop + FrameRate + Stop");
+        }
+
+        using (var broken = new FakeChannel { Reply = Reply })
+        {
+            var s = new H2VideoSession(broken, stamp, () => false, 30);
+            s.Begin([]);
+            broken.FailRead = () => new UnifiedRgb.Screens.Usb.ScreenTransferException(UnifiedRgb.Screens.Usb.ScreenTransferError.Timeout, "USB 121", 121);
+            var picture = File.ReadAllBytes(Path.Combine(AppContext.BaseDirectory, "Fixtures", "h264-unspecified-colour.h264"));
+            FluentActions.Invoking(() => s.SendFrame(picture)).Should().Throw<UnifiedRgb.Screens.Usb.ScreenTransferException>();
+            var writesBeforeStop = broken.WriteAttempts;
+            var readsBeforeStop = broken.Reads;
+            s.Stop();
+            broken.WriteAttempts.Should().Be(writesBeforeStop);
+            broken.Reads.Should().Be(readsBeforeStop);
+        }
     }
     private static byte[] Reply(byte[] packet)
     {

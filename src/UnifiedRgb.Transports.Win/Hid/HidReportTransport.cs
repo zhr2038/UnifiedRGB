@@ -221,6 +221,35 @@ internal static unsafe partial class HidCapsNative
     [LibraryImport("hid.dll")]
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     public static partial int HidP_GetCaps(IntPtr preparsed, ushort* caps);
+
+    [LibraryImport("hid.dll", SetLastError = true)]
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [return: MarshalAs(UnmanagedType.U1)]
+    public static partial bool HidD_SetNumInputBuffers(SafeFileHandle device, uint numberBuffers);
+}
+
+/// <summary>
+/// Best-effort input ring depth for read/write HID handles (wired keyboard and 2.4G receiver alike). The Windows
+/// default (32) can overflow during OLED upload ACK bursts; failure (fake, unsupported or already-closed handles,
+/// drivers that cap the ring) is never fatal: the handle keeps the driver default.
+/// </summary>
+internal static class HidInputBuffers
+{
+    public const uint Requested = 256;
+
+    internal static bool TryConfigure(SafeFileHandle handle, Func<SafeFileHandle, uint, bool>? setter = null)
+    {
+        if (handle is null || handle.IsInvalid || handle.IsClosed) return false;
+        try
+        {
+            return (setter ?? HidCapsNative.HidD_SetNumInputBuffers)(handle, Requested);
+        }
+        catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException
+            or ObjectDisposedException or InvalidOperationException or IOException or Win32Exception)
+        {
+            return false;
+        }
+    }
 }
 
 /// <summary>
@@ -264,7 +293,15 @@ public sealed unsafe class WinHidReportDevices : IHidReportDevices
     public static IHidReportChannel OpenExclusiveWriter(HidCollectionInfo collection)
         => OpenCore(collection, exclusiveWriter: true);
 
-    private static Channel OpenCore(HidCollectionInfo collection, bool exclusiveWriter)
+    private static Channel OpenCore(HidCollectionInfo collection, bool exclusiveWriter) =>
+        new(new FileStream(OpenVerifiedHandle(collection, exclusiveWriter), FileAccess.ReadWrite, 0, isAsync: true));
+
+    internal static SafeFileHandle OpenVerifiedHandle(
+        HidCollectionInfo collection,
+        bool exclusiveWriter,
+        Func<string, uint, uint, SafeFileHandle>? createFile = null,
+        Func<SafeFileHandle, (bool Ok, ushort Vid, ushort Pid)>? getAttributes = null,
+        Func<SafeFileHandle, uint, bool>? setInputBuffers = null)
     {
         ArgumentNullException.ThrowIfNull(collection);
         if (collection.Interface == 0 || collection.Path.Contains("mi_00", StringComparison.OrdinalIgnoreCase))
@@ -272,21 +309,38 @@ public sealed unsafe class WinHidReportDevices : IHidReportDevices
             throw new InvalidOperationException("MI_00 is never opened");
         }
 
-        var handle = WinUsbNative.CreateFile(collection.Path, WinUsbNative.GenericRead | WinUsbNative.GenericWrite, exclusiveWriter ? 1u : WinUsbNative.FileShareReadWrite,
-            IntPtr.Zero, WinUsbNative.OpenExisting, WinUsbNative.FileFlagOverlapped, IntPtr.Zero);
+        var handle = (createFile ?? ((path, access, share) =>
+            WinUsbNative.CreateFile(path, access, share, IntPtr.Zero, WinUsbNative.OpenExisting, WinUsbNative.FileFlagOverlapped, IntPtr.Zero)))(
+            collection.Path,
+            WinUsbNative.GenericRead | WinUsbNative.GenericWrite,
+            exclusiveWriter ? 1u : WinUsbNative.FileShareReadWrite);
         if (handle.IsInvalid)
         {
             throw new Win32Exception(Marshal.GetLastPInvokeError(), $"CreateFile({collection.Path}) failed");
         }
 
-        var attr = new HiddAttributes { Size = (uint)Marshal.SizeOf<HiddAttributes>() };
-        if (!HidNative.HidD_GetAttributes(handle, ref attr) || attr.VendorId != collection.Vid || attr.ProductId != collection.Pid)
+        bool valid;
+        if (getAttributes is not null)
+        {
+            var (ok, vid, pid) = getAttributes(handle);
+            valid = ok && vid == collection.Vid && pid == collection.Pid;
+        }
+        else
+        {
+            var attr = new HiddAttributes { Size = (uint)Marshal.SizeOf<HiddAttributes>() };
+            valid = HidNative.HidD_GetAttributes(handle, ref attr) && attr.VendorId == collection.Vid && attr.ProductId == collection.Pid;
+        }
+
+        if (!valid)
         {
             handle.Dispose();
             throw new InvalidOperationException($"{collection.Path} is not the expected HID device {collection.Vid:X4}:{collection.Pid:X4}");
         }
 
-        return new Channel(new FileStream(handle, FileAccess.ReadWrite, 0, isAsync: true));
+        // Same read/write open for the wired keyboard and the 2.4G receiver routes: deepen the driver ring so
+        // bursty input (OLED ACKs, menu/lever events) is not dropped while the reader is between reads.
+        HidInputBuffers.TryConfigure(handle, setInputBuffers);
+        return handle;
     }
 
     private static HidCollectionInfo Caps(UsbDeviceInfo d)

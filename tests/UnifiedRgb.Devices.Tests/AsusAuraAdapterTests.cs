@@ -533,6 +533,26 @@ public class AsusAuraAdapterTests
         _hid.Writes.Should().BeEmpty();
     }
 
+    [Fact]
+    public async Task CloseAsync_disposes_hid_transport_and_reopen_uses_a_fresh_channel()
+    {
+        Identity(onboard: 21, addressable: 0);
+        var (a, d) = await Make(new AsusAuraOptions { ControlVerified = true });
+        await a.OpenAsync(d.Id, default);
+        _hid.Opens.Should().Be(1);
+        a.WriteFrame(d.Id, [[new Rgb(5, 6, 7)]]).Should().BeTrue();
+        _hid.Disposed.Should().BeFalse();
+
+        await a.CloseAsync(d.Id);
+        _hid.Disposed.Should().BeTrue("closing the writer must dispose the HID transport handle");
+
+        await a.OpenAsync(d.Id, default);
+        _hid.Opens.Should().Be(2, "reopen opens a fresh transport handle instead of reusing the disposed one");
+        _now += Ms(50);
+        a.WriteFrame(d.Id, [[new Rgb(5, 6, 7)]]).Should().BeTrue("CloseAsync cleared LastFrame so static color reasserts");
+        await a.DisposeAsync();
+    }
+
     internal static byte[] Table(int onboard, int rgbHeaders, int addressable)
     {
         var t = new byte[60];

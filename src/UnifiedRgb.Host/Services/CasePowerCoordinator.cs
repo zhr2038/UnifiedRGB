@@ -1,3 +1,4 @@
+using System.Runtime.ExceptionServices;
 using System.Text.Json;
 using UnifiedRgb.Contracts;
 using UnifiedRgb.Contracts.Dto;
@@ -128,9 +129,72 @@ public sealed class CasePowerCoordinator(IRgbService service) : IDisposable
         if (!CaseStatusSummary.IsBlackout(await _service.GetSceneAsync(ct).ConfigureAwait(false)))
             return new(false, "A newer scene started while the recovery point was loading; it was kept and nothing was restored.");
         ct.ThrowIfCancellationRequested();
-        await _service.SetSceneAsync(new(backup.Scene.Assignments, Screens: null, Package: backup.Scene.Package), ct)
-            .ConfigureAwait(false);
-        return new(true, $"The Host accepted the '{BackupProfileName}' scene.");
+        try
+        {
+            await _service.SetSceneAsync(new(backup.Scene.Assignments, Screens: null, Package: backup.Scene.Package), ct)
+                .ConfigureAwait(false);
+            return new(true, $"The Host accepted the '{BackupProfileName}' scene.");
+        }
+        catch (ArgumentException ex)
+        {
+            var controllers = await _service.ListControllersAsync(ct).ConfigureAwait(false);
+            ct.ThrowIfCancellationRequested();
+            var offlineIds = controllers.Where(c => c.State == ControllerStates.Offline)
+                .Select(c => c.Id)
+                .ToHashSet(StringComparer.Ordinal);
+            var filtered = FilterOfflineTargets(backup.Scene.Assignments, offlineIds, out var skippedOffline);
+            if (!skippedOffline || filtered.Count == 0)
+            {
+                ExceptionDispatchInfo.Capture(ex).Throw();
+            }
+
+            await _service.SetSceneAsync(new(filtered, Screens: null, Package: backup.Scene.Package), ct)
+                .ConfigureAwait(false);
+            return new(true, $"The Host accepted the '{BackupProfileName}' scene for active zones; offline/asleep peripherals remain saved in '{BackupProfileName}'.");
+        }
+    }
+
+    private static IReadOnlyList<AssignmentDto> FilterOfflineTargets(
+        IReadOnlyList<AssignmentDto> assignments,
+        HashSet<string> offlineIds,
+        out bool skippedOffline)
+    {
+        skippedOffline = false;
+        if (offlineIds.Count == 0)
+        {
+            return assignments;
+        }
+
+        var kept = new List<AssignmentDto>(assignments.Count);
+        foreach (var a in assignments)
+        {
+            if (!a.Targets.Any(t => offlineIds.Contains(t.ControllerId)))
+            {
+                kept.Add(a);
+                continue;
+            }
+
+            skippedOffline = true;
+            var remaining = a.Targets.Where(t => !offlineIds.Contains(t.ControllerId)).ToArray();
+            if (remaining.Length == 0)
+            {
+                continue;
+            }
+
+            var path = a.SpatialPath;
+            if (path is not null)
+            {
+                var stages = path.Stages
+                    .Select(s => s with { Bindings = s.Bindings.Where(b => !offlineIds.Contains(b.Target.ControllerId)).ToArray() })
+                    .Where(s => s.Bindings.Count > 0)
+                    .ToArray();
+                path = stages.Length > 0 ? new SpatialPathDto(stages) : null;
+            }
+
+            kept.Add(a with { Targets = remaining, SpatialPath = path });
+        }
+
+        return kept;
     }
 
     // Wire-form comparison of the RGB part: every reply is a fresh copy and record equality compares lists by reference.

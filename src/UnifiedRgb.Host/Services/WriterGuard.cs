@@ -199,7 +199,12 @@ public sealed class WriterGuard : IWriterGuard, IDisposable
             if (!enabled)
             {
                 var still = set.Select(c => Enum.TryParse<DeviceClass>(c, true, out var v) ? v : (DeviceClass?)null).OfType<DeviceClass>().ToArray();
-                var error = await Task.Run(() => RestoreWhere(name => !NeededBy(name, still)), ct).ConfigureAwait(false);
+                var error = await Task.Run(() =>
+                {
+                    var res = RestoreWhere(name => !NeededBy(name, still));
+                    _scanner.InvalidateSnapshot();
+                    return res;
+                }, ct).ConfigureAwait(false);
                 return new TakeoverResult(deviceClass, false, [], [], error);
             }
         }
@@ -235,7 +240,12 @@ public sealed class WriterGuard : IWriterGuard, IDisposable
         await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            var error = await Task.Run(() => RestoreWhere(_ => true), ct).ConfigureAwait(false);
+            var error = await Task.Run(() =>
+            {
+                var res = RestoreWhere(_ => true);
+                _scanner.InvalidateSnapshot();
+                return res;
+            }, ct).ConfigureAwait(false);
             if (error is not null)
             {
                 throw new InvalidOperationException(error);
@@ -325,6 +335,7 @@ public sealed class WriterGuard : IWriterGuard, IDisposable
             .Select(f => f.Writer.Name)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
+        _scanner.InvalidateSnapshot();
         return new TakeoverResult(deviceClass, true, stopped, processes, error);
     }
 

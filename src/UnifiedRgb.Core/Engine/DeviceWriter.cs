@@ -54,6 +54,8 @@ public sealed class DeviceWriter : IDisposable
     private int _stopTimeoutReported;
     private volatile bool _running;
     private volatile bool _paused;
+    // Set by StopAsync (lifecycle), cleared by Start: an ObjectDisposedException after it is shutdown noise, not a device fault.
+    private bool _stopRequested;
     private long _written;
     private long _errors;
     private int _consecutiveIoFailures;
@@ -162,6 +164,7 @@ public sealed class DeviceWriter : IDisposable
 
         _stopTask = null;
         _stopTimeoutReported = 0;
+        Volatile.Write(ref _stopRequested, false);
         _running = true;
         (_loopAdapter as ILoopRecoveryControl)?.SetRecoveryAllowed(Controller, !_paused);
         _thread = new Thread(Run) { IsBackground = true, Name = $"DeviceWriter {Controller}", Priority = ThreadPriority.AboveNormal };
@@ -174,6 +177,7 @@ public sealed class DeviceWriter : IDisposable
         Task stopping;
         lock (_lifecycle)
         {
+            Volatile.Write(ref _stopRequested, true);
             _running = false;
             // Recovery revocation may itself wait for committed device I/O. Include it in the same bound.
             // A dedicated shutdown helper avoids starving a small test/Host thread pool with blocking joins.
@@ -425,9 +429,27 @@ public sealed class DeviceWriter : IDisposable
 
     private void RecordIoOutcome(Exception ex)
     {
-        if (ex is System.IO.IOException or TimeoutException) Interlocked.Increment(ref _consecutiveIoFailures);
+        if (CountsAsIoFailure(ex, Volatile.Read(ref _stopRequested))) Interlocked.Increment(ref _consecutiveIoFailures);
         else Volatile.Write(ref _consecutiveIoFailures, 0);
     }
+
+    /// <summary>
+    /// Device-path failures that the 3-strike close/reopen recovery can heal: I/O and timeouts, a transport that disposed
+    /// itself after a timeout (<see cref="ObjectDisposedException"/> while this writer's own lifecycle has not stopped it), and
+    /// hardware/driver state failures surfaced as <see cref="InvalidOperationException"/> (e.g. NVAPI status, a dropped Direct
+    /// mode) or Win32/COM errors. A standing <see cref="DeviceBlockedException"/>, cancellation and argument/contract errors are
+    /// not device faults and reset the streak.
+    /// </summary>
+    internal static bool CountsAsIoFailure(Exception ex, bool stoppedByLifecycle) => ex switch
+    {
+        OperationCanceledException => false,
+        DeviceBlockedException => false,
+        ObjectDisposedException => !stoppedByLifecycle,
+        System.IO.IOException or TimeoutException => true,
+        System.Runtime.InteropServices.ExternalException => true,
+        InvalidOperationException => true,
+        _ => false,
+    };
 
     /// <remarks>
     /// Writes are paced on a grid of 1/MaxFps that advances by exactly one interval per write, so long-run rate never

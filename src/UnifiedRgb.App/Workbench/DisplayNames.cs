@@ -12,30 +12,17 @@ public static class DisplayNames
         : name.StartsWith("Morning 12", StringComparison.OrdinalIgnoreCase) ? "全机堆积 · 波浪回退"
         : name.StartsWith("Morning 11", StringComparison.OrdinalIgnoreCase) ? "全机堆积 · 已验证版本"
         : name.StartsWith("Morning 00", StringComparison.OrdinalIgnoreCase) ? "全机熄灯" : name;
-    public static string Controller(string id, string? fallback = null) => id.ToUpperInvariant() switch
-    {
-        var s when s.Contains("06-A8-F0", StringComparison.Ordinal) => "侧排风扇 · TL140 × 3",
-        var s when s.Contains("1B-7B-F1", StringComparison.Ordinal) => "顶排风扇 · TL120 × 3",
-        var s when s.Contains("EF-7E-63", StringComparison.Ordinal) => "水冷头 · H2 灯环",
-        var s when s.Contains("35-F7-EF", StringComparison.Ordinal) => "底排风扇 · TL140 LCD × 3",
-        var s when s.StartsWith("MSIGPU:", StringComparison.Ordinal) => "显卡 · MSI RTX 5090",
-        var s when s.StartsWith("ASUSAURA:", StringComparison.Ordinal) => "主板 · ROG 标志",
-        var s when s.StartsWith("ASUSR:", StringComparison.Ordinal) => s.EndsWith(":RECEIVER", StringComparison.Ordinal) ? "ROG 接收器 · 身份探测"
-            : fallback?.Contains("Harpe", StringComparison.OrdinalIgnoreCase) == true ? "鼠标 · ROG 20 周年（本机绑定）" : "键盘 · ROG 夜魔 X（本机绑定）",
-        var s when s.EndsWith(":0X71", StringComparison.Ordinal) => "内存 · 靠近冷头",
-        var s when s.EndsWith(":0X73", StringComparison.Ordinal) => "内存 · 外侧",
-        _ => fallback ?? id,
-    };
+    public static string Controller(ControllerDto controller) => CaseDeviceMetadata.ResolveControllerName(controller);
+
+    public static string Controller(string id, string? fallback = null) => CaseDeviceMetadata.ResolveControllerName(id, fallback);
 
     public static string Zone(ControllerDto c, ZoneDto z) => c.DeviceClass == "MsiGpu"
         ? z.Id == 0 ? "显卡 · 正面双灯条" : "显卡 · 横条与菱形联动"
-        : Controller(c.Id, c.Name);
+        : Controller(c);
 
-    public static bool IsDiscoveryPort(ControllerDto c) => c.Zones.Count == 0 &&
-        (c.Id == "enedram:p0" || c.Id == "enedram:p1" || c.DeviceClass == "AsusRog");
+    public static bool IsDiscoveryPort(ControllerDto c) => CaseDeviceMetadata.IsDiscoveryPort(c);
 
-    public static bool IsDiscoveryPortId(string id) => id is "enedram:p0" or "enedram:p1"
-        || id.StartsWith("asusr:", StringComparison.OrdinalIgnoreCase) && id.EndsWith(":receiver", StringComparison.OrdinalIgnoreCase);
+    public static bool IsDiscoveryPortId(string id) => CaseDeviceMetadata.IsDiscoveryPortId(id);
 
     public static string State(string? state) => state switch
     {

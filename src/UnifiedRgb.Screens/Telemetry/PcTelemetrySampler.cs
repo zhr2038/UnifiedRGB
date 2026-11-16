@@ -36,17 +36,8 @@ public sealed class PcTelemetrySampler : IDisposable
         _time = time;
     }
 
-    /// <summary>The most recent sample, or null before the first.</summary>
-    public PcTelemetryDto? Latest
-    {
-        get
-        {
-            lock (_gate)
-            {
-                return _latest;
-            }
-        }
-    }
+    /// <summary>The most recent immutable sample, or null before the first (lock-free so GPU/NVML calls never block workers).</summary>
+    public PcTelemetryDto? Latest => Volatile.Read(ref _latest);
 
     public PcTelemetryDto Sample()
     {
@@ -93,9 +84,10 @@ public sealed class PcTelemetrySampler : IDisposable
             }
 
             var source = _gpu is null ? BaseSource : BaseSource + "+" + _gpu.Name;
-            _latest = new PcTelemetryDto(now, cpu, memUsed, memTotal, gpu.UsagePercent, gpu.TemperatureC, gpu.MemoryUsedBytes,
+            var snapshot = new PcTelemetryDto(now, cpu, memUsed, memTotal, gpu.UsagePercent, gpu.TemperatureC, gpu.MemoryUsedBytes,
                 gpu.MemoryTotalBytes, source, errors.Count == 0 ? null : string.Join("; ", errors));
-            return _latest;
+            Volatile.Write(ref _latest, snapshot);
+            return snapshot;
         }
     }
 

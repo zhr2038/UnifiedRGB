@@ -117,7 +117,9 @@ internal static class CodexStaActivationWorker
             }
             catch (Exception ex) when (ex is not OutOfMemoryException)
             { answer.TrySetResult(CodexActivationDiagnostics.Failure("Activation.STAWorker.Callback", ex)); }
-        }) { IsBackground = false, Name = "UnifiedRgb Codex activation" };
+        }) { IsBackground = true, Name = "UnifiedRgb Codex activation" };
+        // Background: a blocked COM activation must never keep the Host process alive after shutdown.
+        // Lifetime ownership is still explicit: the returned task joins the thread before completing.
         try
         {
             CodexActivationDiagnostics.Stage("Activation.STAWorker.Start");

@@ -57,9 +57,16 @@ public class YuzCodecTests
         Array.Fill(still, (byte)0x40);
         enc.Encode(still).Length.Should().BeLessThan(LianLiWire.MaxCompressedAnimation, "a static 200-frame loop compresses far below 12 KiB");
         // The only repo copy is the owner's pinned codec asset (tools/lianli-codec, PROVENANCE.md, 2026-10-17); nothing else.
-        var owned = Path.GetFullPath(Path.Combine(Fixture.RepoRoot(), OwnedCodecRelative));
-        Directory.GetFiles(Fixture.RepoRoot(), "yuz.dll", SearchOption.AllDirectories)
-            .Where(f => !f.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase))
+        var root = Fixture.RepoRoot();
+        var owned = Path.GetFullPath(Path.Combine(root, OwnedCodecRelative));
+        var codecDir = Path.GetDirectoryName(owned)!;
+        new[] { "src", "tests", "tools" }
+            .Select(dir => dir == "tools" ? codecDir : Path.Combine(root, dir))
+            .Where(Directory.Exists)
+            .SelectMany(dir => Directory.GetFiles(dir, "yuz.dll", SearchOption.AllDirectories))
+            .Concat(Directory.GetFiles(root, "yuz.dll", SearchOption.TopDirectoryOnly))
+            .Where(f => !f.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase)
+                     && !f.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase))
             .Where(f => !string.Equals(Path.GetFullPath(f), owned, StringComparison.OrdinalIgnoreCase))
             .Should().BeEmpty("no copy other than the pinned tools/lianli-codec asset");
         if (File.Exists(owned))

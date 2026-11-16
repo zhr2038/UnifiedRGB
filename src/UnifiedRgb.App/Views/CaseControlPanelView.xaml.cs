@@ -8,35 +8,34 @@ namespace UnifiedRgb.App.Views;
 public partial class CaseControlPanelView : UserControl
 {
     private readonly DispatcherTimer _poll;
+    private readonly WindowActivityWatcher _activity;
     public CaseControlPanelView()
     {
         InitializeComponent();
         _poll = new DispatcherTimer(TimeSpan.FromSeconds(2), DispatcherPriority.Background,
-            (_, _) =>
-            {
-                if (DataContext is not CaseControlPanelViewModel vm) return;
-                vm.ExpireObservation();
-                vm.ReadCommand.Execute(null);
-                vm.Peripherals?.ExpireObservation();
-                vm.Peripherals?.ReadCommand.Execute(null);
-                vm.NativeMenu?.ExpireObservation();
-                vm.NativeMenu?.ReadCommand.Execute(null);
-                vm.KeyboardAnimation?.ExpireObservation();
-                vm.KeyboardAnimation?.ReadCommand.Execute(null);
-                vm.KeyboardAnimation?.Codex.ReadCommand.Execute(null);
-            }, Dispatcher);
+            (_, _) => PollNow(), Dispatcher);
         _poll.Stop();
-        Loaded += (_, _) => UpdatePolling();
-        Unloaded += (_, _) => _poll.Stop();
-        IsVisibleChanged += (_, _) => UpdatePolling();
-        DataContextChanged += (_, _) => UpdatePolling();
+        _activity = new WindowActivityWatcher(this, OnActivityChanged);
+        DataContextChanged += (_, _) => { if (_activity.IsActive) PollNow(expire: false); };
     }
 
-    private void UpdatePolling()
+    private void OnActivityChanged(bool active, bool _)
     {
-        if (!IsLoaded || !IsVisible) { _poll.Stop(); return; }
+        if (!active) { _poll.Stop(); return; }
         _poll.Start();
+        PollNow(expire: false);
+    }
+
+    private void PollNow(bool expire = true)
+    {
         if (DataContext is not CaseControlPanelViewModel vm) return;
+        if (expire)
+        {
+            vm.ExpireObservation();
+            vm.Peripherals?.ExpireObservation();
+            vm.NativeMenu?.ExpireObservation();
+            vm.KeyboardAnimation?.ExpireObservation();
+        }
         vm.ReadCommand.Execute(null);
         vm.Peripherals?.ReadCommand.Execute(null);
         vm.NativeMenu?.ReadCommand.Execute(null);

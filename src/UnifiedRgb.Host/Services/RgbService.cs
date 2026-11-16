@@ -58,6 +58,12 @@ public sealed class RgbService(
         remove => notifier.TelemetryTick -= value;
     }
 
+    public event EventHandler<SceneDto>? SceneChanged
+    {
+        add => notifier.SceneChanged += value;
+        remove => notifier.SceneChanged -= value;
+    }
+
     public Task<IReadOnlyList<ControllerDto>> ListControllersAsync(CancellationToken ct = default) =>
         Task.FromResult<IReadOnlyList<ControllerDto>>(Controllers());
 

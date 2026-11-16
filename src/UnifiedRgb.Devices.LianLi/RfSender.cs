@@ -35,6 +35,7 @@ public sealed class RfSender : IDisposable
     private uint _lastEffectIndex;
     private int _closing;
     private bool _disposed;
+    private Exception? _fault;
 
     /// <summary>The master counter of USB 17 replies: <c>time_tmos</c>, 0.625 ms per tick (<c>SysClock = time_tmos × 0.625</c>).</summary>
     public const double ClockTicksPerSecond = 1600;
@@ -111,7 +112,7 @@ public sealed class RfSender : IDisposable
     {
         lock (_gate)
         {
-            ObjectDisposedException.ThrowIf(_disposed, this);
+            ThrowIfFaulted();
             var sent = _timestamp();
             Send(UsbFrames.GetMac(_masterChannel));
             var reply = new byte[LianLiWire.ShortFrame];
@@ -127,9 +128,11 @@ public sealed class RfSender : IDisposable
     /// <summary>One 240-byte packet as four relay frames, after taking one token of the packet budget.</summary>
     public void Relay(RfAddress to, ReadOnlySpan<byte> packet)
     {
+        ThrowIfFaulted();
         var frames = RfRelay.Frames(to, packet);
         while (!Packets.TryTake(out var wait))
         {
+            ThrowIfFaulted();
             _sleep(TimeSpan.FromSeconds(Math.Max(wait, 0.001)));
         }
 
@@ -220,14 +223,14 @@ public sealed class RfSender : IDisposable
     /// </remarks>
     public void Tick()
     {
-        if (Volatile.Read(ref _closing) != 0 || _elapsed() - _lastKeepAlive < KeepAlivePeriod || !UploadGate.Wait(0))
+        if (Volatile.Read(ref _closing) != 0 || Volatile.Read(ref _fault) is not null || _elapsed() - _lastKeepAlive < KeepAlivePeriod || !UploadGate.Wait(0))
         {
             return;
         }
 
         try
         {
-            if (Volatile.Read(ref _closing) != 0) return;
+            if (Volatile.Read(ref _closing) != 0 || Volatile.Read(ref _fault) is not null) return;
             var now = _elapsed();
             if (now - _lastKeepAlive < KeepAlivePeriod)
             {
@@ -309,9 +312,28 @@ public sealed class RfSender : IDisposable
 
     private RfMac RequireMaster() => (Master ?? ReadMaster()).Mac;
 
+    internal void MarkFaulted(Exception fault)
+    {
+        ArgumentNullException.ThrowIfNull(fault);
+        if (Interlocked.CompareExchange(ref _fault, fault, null) is null)
+        {
+            _clock.Close();
+        }
+    }
+
+    private void ThrowIfFaulted()
+    {
+        if (Volatile.Read(ref _fault) is { } fault)
+        {
+            throw new IOException($"RF sender {Info.Path} transport faulted: {fault.Message}", fault);
+        }
+
+        ObjectDisposedException.ThrowIf(_disposed, this);
+    }
+
     private void Send(byte[] frame)
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
+        ThrowIfFaulted();
         var vt = _chain.SendAsync(frame, CancellationToken.None);
         if (!vt.IsCompletedSuccessfully)
         {

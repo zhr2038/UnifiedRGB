@@ -633,6 +633,159 @@ public class LianLiAdapterTests
         await write();
         await a.DisposeAsync();
     }
+
+    [Fact]
+    public async Task DisposeAsync_disposes_hotplug_source_once()
+    {
+        var usb = new FakeUsb();
+        var hotplug = new TrackingHotplug();
+        var wire = new RecordingTransport();
+        wire.EnqueueRead(Rf.MasterReply());
+        var a = new LianLiAdapter(Options(), usb, _ => wire, hotplug, NullLogger.Instance, new IdentityEncoder(), _ => { }, () => Rf.Now, startKeepAliveTimer: false);
+        var found = await a.DiscoverAsync(CancellationToken.None);
+        await a.OpenAsync(found[0].Id, CancellationToken.None);
+
+        await a.DisposeAsync();
+        await a.DisposeAsync();
+
+        hotplug.DisposedCount.Should().Be(1);
+        hotplug.Subscribers.Should().Be(0);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task KeepAlive_retires_faulted_sender_on_fatal_transport_error_for_recovery(bool objectDisposed)
+    {
+        var usb = new FakeUsb();
+        var transports = new List<FaultableTransport>();
+        var events = new List<HotplugEvent>();
+        var a = new LianLiAdapter(Options(), usb, _ =>
+        {
+            var t = new FaultableTransport();
+            t.EnqueueRead(Rf.MasterReply());
+            transports.Add(t);
+            return t;
+        }, usb, NullLogger.Instance, new IdentityEncoder(), _ => { }, () => Rf.Now, startKeepAliveTimer: false);
+        a.Hotplug += events.Add;
+
+        var found = await a.DiscoverAsync(CancellationToken.None);
+        await a.OpenAsync(found[0].Id, CancellationToken.None);
+        await a.OpenAsync(found[1].Id, CancellationToken.None);
+
+        transports[0].ReadFault = objectDisposed ? new ObjectDisposedException("WinUsb") : new IOException("handle lost");
+        a.KeepAlive();
+
+        transports[0].DisposedCount.Should().Be(1, "broken sender handle must be retired instead of kept as a zombie");
+        events.Select(e => e.Kind).Should().Equal(HotplugKind.Removed, HotplugKind.Removed);
+        var staleUpload = () => a.UploadLoopAsync(found[0].Id, LianLiAdapter.ChainZone, Loop(160, (_, _) => Rgb.White), CancellationToken.None);
+        await staleUpload.Should().ThrowAsync<IOException>("subsequent writes on the retired sender must fail rather than succeed silently");
+
+        // Second KeepAlive must not keep hammering the retired sender.
+        a.KeepAlive();
+        transports[0].DisposedCount.Should().Be(1);
+
+        // Close and reopen acquires a fresh healthy sender instead of reusing the zombie.
+        await a.CloseAsync(found[0].Id);
+        await a.CloseAsync(found[1].Id);
+        await a.OpenAsync(found[0].Id, CancellationToken.None);
+        transports.Should().HaveCount(2);
+        await a.UploadLoopAsync(found[0].Id, LianLiAdapter.ChainZone, Loop(160, (_, _) => Rgb.White), CancellationToken.None);
+        await a.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task Discovery_and_sync_switch_use_live_rfList_slave_index_with_config_fallback()
+    {
+        var mac1 = RfMac.Parse("AA-BB-CC-DD-EE-01");
+        var mac2 = RfMac.Parse("AA-BB-CC-DD-EE-02");
+        var mac3 = RfMac.Parse("AA-BB-CC-DD-EE-03");
+        var options = Options(true,
+            Dev(mac1.ToString(), "SLv3", 160, rx: 1),
+            Dev(mac2.ToString(), "CL", 96, rx: 2),
+            Dev(mac3.ToString(), "V150", 88, rx: 3));
+
+        // Live rfList order has mac2 first (slot 0), a master record (DevType 255, skipped), and mac1 third (slot 1); mac3 is unmatched.
+        RfDeviceRecord[] live =
+        [
+            new(mac2, Rf.Master, new RfAddress(8, 2), 0, 4, 1, [126, 0, 0, 0], [0, 0, 0, 0], 0),
+            new(Rf.Master, Rf.Master, new RfAddress(8, 0), 255, 0, 0, [0, 0, 0, 0], [0, 0, 0, 0], 0),
+            new(mac1, Rf.Master, new RfAddress(8, 1), 0, 4, 1, [20, 0, 0, 0], [0, 0, 0, 0], 0),
+        ];
+
+        var usb = new FakeUsb();
+        var discovered = LianLiDiscovery.Discover(options, usb, NullLogger.Instance, live);
+        discovered.Select(d => (d.Mac, d.SlaveIndex)).Should().Equal((mac1, (byte)1), (mac2, (byte)0), (mac3, (byte)2));
+
+        // Also verify ObserveReceiverFeedback updates open session SlaveIndex for SetSyncSwitchAsync.
+        var wire = new RecordingTransport();
+        wire.EnqueueRead(Rf.MasterReply());
+        var now = Rf.Now;
+        var feedbackOptions = Options(true, Dev(mac1.ToString(), "V150", 88, rx: 1), Dev(mac2.ToString(), "V150", 88, rx: 2));
+        feedbackOptions.ReceiverFeedbackEnabled = true;
+
+        var reply = new byte[4 + (3 * RfDeviceRecord.Length)];
+        reply[0] = 16; reply[1] = 3;
+        void WriteRecord(int idx, RfMac mac, byte devType, byte rx, byte fanType)
+        {
+            var span = reply.AsSpan(4 + (idx * RfDeviceRecord.Length), RfDeviceRecord.Length);
+            mac.Write(span); Rf.Master.Write(span[6..]);
+            span[12] = 8; span[13] = rx; span[18] = devType; span[19] = 1; span[24] = fanType;
+            BinaryPrimitives.WriteUInt32BigEndian(span[14..], 1600);
+            BinaryPrimitives.WriteUInt32BigEndian(span[20..], 100);
+            span[41] = RfDeviceRecord.Tag;
+        }
+        WriteRecord(0, Rf.Master, 255, 0, 0); // master skipped in rfList
+        WriteRecord(1, mac2, 66, 2, 0);       // rfList slot 0
+        WriteRecord(2, mac1, 66, 1, 0);       // rfList slot 1
+
+        await using var adapter = new LianLiAdapter(feedbackOptions, usb, _ => wire, usb, NullLogger.Instance, new IdentityEncoder(),
+            _ => { }, () => now, receiverProbe: () => reply, startKeepAliveTimer: false, feedbackElapsed: () => now - Rf.Now);
+        var found = await adapter.DiscoverAsync(CancellationToken.None);
+        await adapter.OpenAsync(found[0].Id, CancellationToken.None);
+        await adapter.OpenAsync(found[1].Id, CancellationToken.None);
+        await adapter.UploadLoopAsync(found[0].Id, LianLiAdapter.ChainZone, Loop(88, (_, _) => Rgb.Black), CancellationToken.None);
+
+        now = now.AddSeconds(2);
+        adapter.ObserveReceiverFeedback();
+        await adapter.SetSyncSwitchAsync(found[0].Id, RfCmd.V150MBSyncSwitch, true, CancellationToken.None);
+        await adapter.SetSyncSwitchAsync(found[1].Id, RfCmd.V150MBSyncSwitch, true, CancellationToken.None);
+
+        var controls = Rf.Group(wire.SentFrames).Where(g => g.Packet?[1] == (byte)RfCmd.V150MBSyncSwitch).Select(g => g.Packet!).ToList();
+        controls.Should().HaveCount(2);
+        controls[0][16].Should().Be(1, "mac1 sits at rfList slot 1 even though config index is 0");
+        controls[1][16].Should().Be(0, "mac2 sits at rfList slot 0 even though config index is 1");
+    }
+
+    private sealed class TrackingHotplug : IHotplugSource
+    {
+        public int DisposedCount { get; private set; }
+        public int Subscribers { get; private set; }
+        public event Action<DeviceInterfaceChange, string>? Changed
+        {
+            add => Subscribers++;
+            remove => Subscribers--;
+        }
+        public void Dispose() => DisposedCount++;
+    }
+
+    private sealed class FaultableTransport : ITransport, IDisposable
+    {
+        private readonly Queue<byte[]> _reads = new();
+        public Exception? ReadFault { get; set; }
+        public int DisposedCount { get; private set; }
+        public void EnqueueRead(byte[] reply) => _reads.Enqueue(reply);
+        public ValueTask SendAsync(ReadOnlyMemory<byte> frame, CancellationToken ct) => ValueTask.CompletedTask;
+        public ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct)
+        {
+            if (ReadFault is { } ex) throw ex;
+            if (_reads.Count == 0) return ValueTask.FromResult(0);
+            var r = _reads.Dequeue();
+            r.CopyTo(buffer.Span);
+            return ValueTask.FromResult(r.Length);
+        }
+        public void Dispose() => DisposedCount++;
+    }
 }
 
 internal static class LianLiTestExtensions

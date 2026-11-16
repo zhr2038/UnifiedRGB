@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.ServiceProcess;
 using UnifiedRgb.Devices;
 
@@ -15,50 +16,147 @@ public interface ISystemSnapshot
     IReadOnlyList<ServiceInfo> Services();
 }
 
-public sealed class WindowsSystemSnapshot : ISystemSnapshot
+/// <summary>Optional snapshot invalidation hook after local SCM mutations.</summary>
+public interface IInvalidatableSystemSnapshot
 {
+    void Invalidate();
+}
+
+/// <summary>Caches process and service enumeration for a short TTL so multi-class guard polls avoid repeated full scans.</summary>
+public sealed class CachedSystemSnapshot : ISystemSnapshot, IInvalidatableSystemSnapshot
+{
+    private readonly ISystemSnapshot _inner;
+    private readonly TimeSpan _ttl;
+    private readonly TimeProvider _time;
+    private readonly object _gate = new();
+    private IReadOnlyList<ProcessInfo>? _processes;
+    private long _processesAt;
+    private IReadOnlyList<ServiceInfo>? _services;
+    private long _servicesAt;
+
+    public CachedSystemSnapshot(ISystemSnapshot inner, TimeSpan? ttl = null, TimeProvider? time = null)
+    {
+        _inner = inner ?? throw new ArgumentNullException(nameof(inner));
+        _ttl = ttl ?? TimeSpan.FromSeconds(1);
+        if (_ttl <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(ttl));
+        _time = time ?? TimeProvider.System;
+    }
+
     public IReadOnlyList<ProcessInfo> Processes()
     {
-        var all = System.Diagnostics.Process.GetProcesses();
-        var list = new List<ProcessInfo>(all.Length);
-        foreach (var p in all)
+        var now = _time.GetTimestamp();
+        lock (_gate)
         {
-            using (p)
+            if (_processes is not null && _time.GetElapsedTime(_processesAt, now) < _ttl)
             {
-                try
-                {
-                    list.Add(new ProcessInfo(p.Id, p.ProcessName));
-                }
-                catch (InvalidOperationException)
-                {
-                    // exited while enumerating
-                }
+                return _processes;
             }
         }
 
-        return list;
+        var fresh = _inner.Processes();
+        lock (_gate)
+        {
+            _processes = fresh;
+            _processesAt = _time.GetTimestamp();
+            return fresh;
+        }
     }
 
     public IReadOnlyList<ServiceInfo> Services()
     {
-        var all = ServiceController.GetServices();
-        var list = new List<ServiceInfo>(all.Length);
-        foreach (var s in all)
+        var now = _time.GetTimestamp();
+        lock (_gate)
         {
-            using (s)
+            if (_services is not null && _time.GetElapsedTime(_servicesAt, now) < _ttl)
             {
-                try
-                {
-                    list.Add(new ServiceInfo(s.ServiceName, s.Status == ServiceControllerStatus.Running, s.StartType.ToString()));
-                }
-                catch (InvalidOperationException)
-                {
-                    // service removed while enumerating
-                }
+                return _services;
             }
         }
 
-        return list;
+        var fresh = _inner.Services();
+        lock (_gate)
+        {
+            _services = fresh;
+            _servicesAt = _time.GetTimestamp();
+            return fresh;
+        }
+    }
+
+    public void Invalidate()
+    {
+        lock (_gate)
+        {
+            _processes = null;
+            _services = null;
+        }
+    }
+}
+
+public sealed class WindowsSystemSnapshot : ISystemSnapshot, IInvalidatableSystemSnapshot
+{
+    private readonly CachedSystemSnapshot _cache;
+
+    public WindowsSystemSnapshot()
+        : this(TimeSpan.FromSeconds(1))
+    {
+    }
+
+    public WindowsSystemSnapshot(TimeSpan cacheTtl, TimeProvider? time = null)
+    {
+        _cache = new CachedSystemSnapshot(new LiveSnapshot(), cacheTtl, time);
+    }
+
+    public IReadOnlyList<ProcessInfo> Processes() => _cache.Processes();
+
+    public IReadOnlyList<ServiceInfo> Services() => _cache.Services();
+
+    public void Invalidate() => _cache.Invalidate();
+
+    private sealed class LiveSnapshot : ISystemSnapshot
+    {
+        public IReadOnlyList<ProcessInfo> Processes()
+        {
+            var all = System.Diagnostics.Process.GetProcesses();
+            var list = new List<ProcessInfo>(all.Length);
+            foreach (var p in all)
+            {
+                using (p)
+                {
+                    try
+                    {
+                        list.Add(new ProcessInfo(p.Id, p.ProcessName));
+                    }
+                    catch (InvalidOperationException)
+                    {
+                        // exited while enumerating
+                    }
+                }
+            }
+
+            return list;
+        }
+
+        public IReadOnlyList<ServiceInfo> Services()
+        {
+            var all = ServiceController.GetServices();
+            var list = new List<ServiceInfo>(all.Length);
+            foreach (var s in all)
+            {
+                using (s)
+                {
+                    try
+                    {
+                        list.Add(new ServiceInfo(s.ServiceName, s.Status == ServiceControllerStatus.Running, s.StartType.ToString()));
+                    }
+                    catch (InvalidOperationException)
+                    {
+                        // service removed while enumerating
+                    }
+                }
+            }
+
+            return list;
+        }
     }
 }
 
@@ -150,4 +248,6 @@ public sealed class ProcessScanner
                 || services.Any(s => s.Running && string.Equals(s.Name, c.Name, StringComparison.OrdinalIgnoreCase)))
             .ToArray();
     }
+
+    public void InvalidateSnapshot() => (_snapshot as IInvalidatableSystemSnapshot)?.Invalidate();
 }

@@ -14,11 +14,15 @@ public sealed class RgbNotifier
 
     public event EventHandler<IReadOnlyList<TelemetryDto>>? TelemetryTick;
 
+    public event EventHandler<SceneDto>? SceneChanged;
+
     public void PublishControllers(IReadOnlyList<ControllerDto> controllers) => Raise(ControllersChanged, controllers);
 
     public void PublishStatus(StatusDto status) => Raise(StatusChanged, status);
 
     public void PublishTelemetry(IReadOnlyList<TelemetryDto> telemetry) => Raise(TelemetryTick, telemetry);
+
+    public void PublishScene(SceneDto scene) => Raise(SceneChanged, scene);
 
     private void Raise<T>(EventHandler<T>? handler, T args)
     {

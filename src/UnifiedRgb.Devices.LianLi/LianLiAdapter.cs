@@ -143,7 +143,7 @@ public sealed partial class LianLiAdapter : ILoopUploadAdapter, IDeviceClockProv
     private readonly Dictionary<ControllerId, RfDevice> _found = [];
     private readonly Dictionary<ControllerId, Session> _sessions = [];
     private readonly Dictionary<string, RfSender> _senders = new(StringComparer.OrdinalIgnoreCase);
-    private readonly DeviceState _senderState = new();
+    private readonly Dictionary<string, DeviceState> _senderStates = new(StringComparer.OrdinalIgnoreCase);
     private readonly IHotplugSource? _hotplug;
     private readonly Func<IRgbAnimationEncoder>? _encoderFactory;
     private readonly Dictionary<ControllerId, LoopUploadStats> _lastUploads = [];
@@ -165,6 +165,9 @@ public sealed partial class LianLiAdapter : ILoopUploadAdapter, IDeviceClockProv
     private TimeSpan _lastReceiverQuery = -TimeSpan.FromDays(1);
     private readonly bool _startKeepAliveTimer;
     private readonly Func<TimeSpan> _feedbackElapsed;
+    private IReadOnlyList<RfDeviceRecord>? _lastRfList;
+    private int _disposing;
+    private int _hotplugDisposed;
 
     public LianLiAdapter(
         LianLiOptions options,
@@ -210,7 +213,13 @@ public sealed partial class LianLiAdapter : ILoopUploadAdapter, IDeviceClockProv
     /// <summary>Passive: enumerates sender dongle interfaces (no I/O to the device) and pairs them with the configured devices.</summary>
     public Task<IReadOnlyList<ControllerDescriptor>> DiscoverAsync(CancellationToken ct)
     {
-        var devices = LianLiDiscovery.Discover(_options, _enumerator, _logger);
+        IReadOnlyList<RfDeviceRecord>? rfList;
+        lock (_gate)
+        {
+            rfList = _lastRfList;
+        }
+
+        var devices = LianLiDiscovery.Discover(_options, _enumerator, _logger, rfList);
         lock (_gate)
         {
             _found.Clear();
@@ -694,7 +703,7 @@ public sealed partial class LianLiAdapter : ILoopUploadAdapter, IDeviceClockProv
 
         if (s is not null)
         {
-            ReleaseSender(s.Device.Sender);
+            ReleaseSender(s.Sender);
         }
 
         return Task.CompletedTask;
@@ -702,9 +711,11 @@ public sealed partial class LianLiAdapter : ILoopUploadAdapter, IDeviceClockProv
 
     public async ValueTask DisposeAsync()
     {
-        if (_hotplug is not null)
+        Volatile.Write(ref _disposing, 1);
+        if (_hotplug is not null && Interlocked.Exchange(ref _hotplugDisposed, 1) == 0)
         {
             _hotplug.Changed -= OnInterfaceChanged;
+            _hotplug.Dispose();
         }
 
         ControllerId[] open;
@@ -739,6 +750,10 @@ public sealed partial class LianLiAdapter : ILoopUploadAdapter, IDeviceClockProv
             try
             {
                 r.Tick();
+            }
+            catch (Exception ex) when (ex is IOException or ObjectDisposedException)
+            {
+                RetireFaultedSender(r, ex);
             }
 #pragma warning disable CA1031 // a failed heartbeat is logged; the write path reports device errors
             catch (Exception ex) when (ex is not ForbiddenOpcodeException)
@@ -780,6 +795,28 @@ public sealed partial class LianLiAdapter : ILoopUploadAdapter, IDeviceClockProv
             {
                 _lastReceiverQuery = _feedbackElapsed();
                 var reports = RfReceiverReport.ParseComplete(_receiverProbe());
+                if (sender.Master is { } masterInfo
+                    && reports.All(r => r.Device.DevType == RfLcdGroupReset.MasterDevType || r.Device.MasterMac == masterInfo.Mac))
+                {
+                    var liveRecords = reports.Select(r => r.Device).ToArray();
+                    lock (_gate)
+                    {
+                        _lastRfList = liveRecords;
+                        foreach (var kv in _sessions)
+                        {
+                            if (!ReferenceEquals(kv.Value.Sender, sender)) continue;
+                            var updated = kv.Value.Device with
+                            {
+                                SlaveIndex = LianLiDiscovery.ResolveSlaveIndex(kv.Value.Device.Mac, kv.Value.Device.SlaveIndex, liveRecords),
+                            };
+                            kv.Value.Device = updated;
+                            if (_found.ContainsKey(kv.Key))
+                            {
+                                _found[kv.Key] = updated;
+                            }
+                        }
+                    }
+                }
                 var now = new DateTimeOffset(_now?.Invoke() ?? DateTime.Now); // actual receipt time, not query start
                 var observedElapsed = _feedbackElapsed();
                 var retriedThisPass = false; // let master clock queries and owner uploads run between receiver recoveries
@@ -946,6 +983,17 @@ public sealed partial class LianLiAdapter : ILoopUploadAdapter, IDeviceClockProv
         return c;
     }
 
+    private DeviceState SenderState(string path)
+    {
+        if (!_senderStates.TryGetValue(path, out var state))
+        {
+            state = new DeviceState();
+            _senderStates[path] = state;
+        }
+
+        return state;
+    }
+
     private RfSender AcquireSender(UsbDeviceInfo info)
     {
         lock (_senderLifecycleGate)
@@ -954,7 +1002,8 @@ public sealed partial class LianLiAdapter : ILoopUploadAdapter, IDeviceClockProv
         {
             if (!_senders.TryGetValue(info.Path, out var r))
             {
-                r = new RfSender(info, _open(info), _senderState, _options.MasterChannel, _now, _sleep, _timestamp);
+                var state = SenderState(info.Path);
+                r = new RfSender(info, _open(info), state, _options.MasterChannel, _now, _sleep, _timestamp);
                 MasterInfo master;
                 try
                 {
@@ -966,6 +1015,7 @@ public sealed partial class LianLiAdapter : ILoopUploadAdapter, IDeviceClockProv
                     throw;
                 }
 
+                state.IsOnline = true;
                 LogSender(info.Path, master.Mac);
                 _senders[info.Path] = r;
                 if (_startKeepAliveTimer) { _keepAlive ??= new Timer(_ => KeepAlive(), null, TimeSpan.Zero, TimeSpan.FromMilliseconds(250)); }
@@ -977,7 +1027,7 @@ public sealed partial class LianLiAdapter : ILoopUploadAdapter, IDeviceClockProv
         }
     }
 
-    private void ReleaseSender(UsbDeviceInfo info)
+    private void ReleaseSender(RfSender sender)
     {
         lock (_senderLifecycleGate)
         {
@@ -985,9 +1035,9 @@ public sealed partial class LianLiAdapter : ILoopUploadAdapter, IDeviceClockProv
         RfSender? retired = null;
         lock (_gate)
         {
-            if (_senders.TryGetValue(info.Path, out var r) && --r.RefCount <= 0)
+            if (_senders.TryGetValue(sender.Info.Path, out var r) && ReferenceEquals(r, sender) && --r.RefCount <= 0)
             {
-                _senders.Remove(info.Path);
+                _senders.Remove(sender.Info.Path);
                 retired = r;
                 if (_senders.Count == 0)
                 {
@@ -1004,6 +1054,67 @@ public sealed partial class LianLiAdapter : ILoopUploadAdapter, IDeviceClockProv
         }
     }
 
+    private void RetireFaultedSender(RfSender r, Exception ex)
+    {
+        r.MarkFaulted(ex);
+        LogKeepAliveTransportFaulted(r.Info.Path, ex);
+
+        var retired = false;
+        Timer? stop = null;
+        RfDevice[] affected = [];
+        lock (_senderLifecycleGate)
+        {
+            lock (_gate)
+            {
+                if (_senders.TryGetValue(r.Info.Path, out var current) && ReferenceEquals(current, r))
+                {
+                    _senders.Remove(r.Info.Path);
+                    retired = true;
+                    if (_senders.Count == 0)
+                    {
+                        stop = _keepAlive;
+                        _keepAlive = null;
+                    }
+                }
+
+                affected = _found.Values.Where(d => string.Equals(d.Sender.Path, r.Info.Path, StringComparison.OrdinalIgnoreCase)).ToArray();
+                foreach (var kv in _sessions)
+                {
+                    var session = kv.Value;
+                    if (!ReferenceEquals(session.Sender, r))
+                    {
+                        continue;
+                    }
+
+                    if (_clocks.TryGetValue(kv.Key, out var clock))
+                    {
+                        clock.Bind(null);
+                    }
+
+                    if (session.Delivery is { } pending && IsCurrent(session, pending))
+                    {
+                        pending.Tracker.Unknown($"RF sender transport faulted: {ex.Message}");
+                        PublishDelivery(session, pending);
+                    }
+                }
+            }
+
+            stop?.Dispose();
+            if (retired)
+            {
+                r.Dispose();
+            }
+        }
+
+        if (Volatile.Read(ref _disposing) == 0 && retired)
+        {
+            foreach (var d in affected)
+            {
+                Hotplug?.Invoke(new HotplugEvent(IdOf(d), HotplugKind.Removed));
+            }
+        }
+    }
+
     private void OnInterfaceChanged(DeviceInterfaceChange change, string path)
     {
         RfDevice[] affected;
@@ -1012,7 +1123,7 @@ public sealed partial class LianLiAdapter : ILoopUploadAdapter, IDeviceClockProv
             affected = _found.Values.Where(d => string.Equals(d.Sender.Path, path, StringComparison.OrdinalIgnoreCase)).ToArray();
             if (affected.Length > 0)
             {
-                _senderState.IsOnline = change == DeviceInterfaceChange.Arrived; // receiver/hub/LCD changes do not affect the sender
+                SenderState(path).IsOnline = change == DeviceInterfaceChange.Arrived; // receiver/hub/LCD changes do not affect the sender
             }
         }
 
@@ -1027,6 +1138,9 @@ public sealed partial class LianLiAdapter : ILoopUploadAdapter, IDeviceClockProv
 
     [LoggerMessage(EventId = 5002, Level = LogLevel.Warning, Message = "Lian Li keep-alive failed on {Path}")]
     private partial void LogKeepAliveFailed(string path, Exception ex);
+
+    [LoggerMessage(EventId = 5011, Level = LogLevel.Error, Message = "Lian Li RF sender transport broke on {Path}; retiring zombie handle for rescan recovery")]
+    private partial void LogKeepAliveTransportFaulted(string path, Exception ex);
 
     [LoggerMessage(EventId = 5003, Level = LogLevel.Warning, Message = "RF bind of {Mac} requested by {User} (refused: bind also sets fan PWM)")]
     private partial void LogBind(string mac, string user);
@@ -1060,15 +1174,20 @@ public sealed partial class LianLiAdapter : ILoopUploadAdapter, IDeviceClockProv
 
     private sealed class Session
     {
+        private RfDevice _device;
         private byte _cmdSeq;
 
         public Session(RfDevice device, RfSender sender)
         {
-            Device = device;
+            _device = device;
             Sender = sender;
         }
 
-        public RfDevice Device { get; }
+        public RfDevice Device
+        {
+            get => Volatile.Read(ref _device);
+            internal set => Volatile.Write(ref _device, value);
+        }
 
         public RfSender Sender { get; }
 

@@ -1,9 +1,4 @@
-using System.Globalization;
-using System.Windows;
-using System.Windows.Markup;
 using System.Windows.Media;
-using System.Windows.Media.Imaging;
-using System.Windows.Threading;
 using UnifiedRgb.Contracts;
 
 namespace UnifiedRgb.Host.Services;
@@ -11,87 +6,22 @@ namespace UnifiedRgb.Host.Services;
 /// <summary>Off-clock208x64 artwork; the compiled project logo and independently packed pixels match the accepted trial.</summary>
 internal static class KeyboardStatusArtwork
 {
-    private static readonly Lazy<Drawing> BrandMark = new(() =>
-    {
-        using var stream = typeof(KeyboardStatusArtwork).Assembly.GetManifestResourceStream("UnifiedRgb.KeyboardBrand.xaml")
-            ?? throw new InvalidOperationException("Compiled brand resource missing.");
-        var resources = (ResourceDictionary)XamlReader.Load(stream);
-        var mark = ((Drawing)resources["Brand.MarkDrawing"]).CloneCurrentValue();
-        White(mark);
-        mark.Freeze(); // One immutable logo can be shared by all short-lived rendering STA threads.
-        return mark;
-    });
+    private static readonly Lazy<KeyboardArtworkRenderer> Shared = new(() => new KeyboardArtworkRenderer());
 
-    public static byte[] Render(CaseStatusObservation state) => Rasterize((dc, mark) =>
+    static KeyboardStatusArtwork() => AppDomain.CurrentDomain.ProcessExit += (_, _) =>
     {
-        dc.PushTransform(new MatrixTransform(17d / 256, 0, 0, 17d / 256, 6, 0)); dc.DrawDrawing(mark); dc.Pop();
-        Text(dc, "光域 · 机箱状态", 13, 27, 0, 174);
-        dc.DrawLine(new Pen(Brushes.White, 1), new Point(6, 18.5), new Point(202, 18.5));
-        Text(dc, state.Title, 20, 6, 19, 196); Text(dc, state.Detail, 13, 6, 46, 196);
-    });
+        if (Shared.IsValueCreated) Shared.Value.Dispose();
+    };
+
+    public static byte[] Render(CaseStatusObservation state) => Shared.Value.Render(state);
 
     /// <summary>The Guangyu entry logo: the same compiled mark, centred with the product name and no status text.</summary>
-    public static byte[] RenderLogo() => Rasterize((dc, mark) =>
-    {
-        dc.PushTransform(new MatrixTransform(52d / 256, 0, 0, 52d / 256, 46, 6)); dc.DrawDrawing(mark); dc.Pop();
-        Text(dc, "光域", 32, 108, 8, 80);
-    });
+    public static byte[] RenderLogo() => Shared.Value.RenderLogo();
 
-    internal static void Text(DrawingContext dc, string value, double size, double x, double y, double width) => dc.DrawText(new FormattedText(value,
-        CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
-        new Typeface(new FontFamily("Microsoft YaHei UI"), FontStyles.Normal, FontWeights.SemiBold, FontStretches.Normal),
-        size, Brushes.White, 1) { MaxTextWidth = width, MaxLineCount = 1, Trimming = TextTrimming.CharacterEllipsis }, new Point(x, y));
+    internal static void Text(DrawingContext dc, string value, double size, double x, double y, double width) =>
+        KeyboardArtworkRenderer.Text(dc, value, size, x, y, width);
 
-    internal static byte[] Rasterize(Action<DrawingContext, Drawing> draw)
-    {
-        byte[]? result = null; Exception? failure = null;
-        var thread = new Thread(() =>
-        {
-            try
-            {
-                var mark = BrandMark.Value;
-                var visual = new DrawingVisual();
-                TextOptions.SetTextFormattingMode(visual, TextFormattingMode.Display);
-                TextOptions.SetTextRenderingMode(visual, TextRenderingMode.Aliased);
-                using (var dc = visual.RenderOpen())
-                {
-                    dc.DrawRectangle(Brushes.Black, null, new Rect(0, 0, 208, 64));
-                    draw(dc, mark);
-                }
-                var bitmap = new RenderTargetBitmap(208, 64, 96, 96, PixelFormats.Pbgra32); bitmap.Render(visual);
-                var bgra = new byte[208 * 64 * 4]; bitmap.CopyPixels(bgra, 208 * 4, 0);
-                result = PackBgra(bgra);
-            }
-            catch (Exception ex) { failure = ex; }
-            finally
-            {
-                // Rendering creates a hidden dispatcher window even without Dispatcher.Run().
-                // Letting this STA exit alone leaks its HWND class, USER atom and handles.
-                try { Dispatcher.FromThread(Thread.CurrentThread)?.InvokeShutdown(); }
-                catch (Exception ex) { failure ??= ex; }
-            }
-        }) { IsBackground = true, Name = "Keyboard artwork" };
-        thread.SetApartmentState(ApartmentState.STA); thread.Start();
-        if (!thread.Join(TimeSpan.FromSeconds(5))) throw new TimeoutException("Keyboard artwork exceeded its rendering bound.");
-        if (failure is not null) throw new InvalidOperationException("Keyboard artwork failed before output.", failure);
-        return result!;
-    }
+    internal static byte[] Rasterize(Action<DrawingContext, Drawing> draw) => Shared.Value.Rasterize(draw);
 
-    internal static byte[] PackBgra(ReadOnlySpan<byte> bgra)
-    {
-        if (bgra.Length != 208 * 64 * 4) throw new ArgumentException("Expected one keyboard BGRA frame.", nameof(bgra));
-        var result = new byte[6656];
-        for (var p = 0; p < result.Length; p++) result[p] = (byte)(bgra[p * 8] / 17 | (bgra[p * 8 + 4] / 17) << 4);
-        return result;
-    }
-
-    private static void White(Drawing drawing)
-    {
-        if (drawing is DrawingGroup g) foreach (var child in g.Children) White(child);
-        else if (drawing is GeometryDrawing d)
-        {
-            if (d.Brush is not null and not SolidColorBrush { Color.A: 0 }) d.Brush = Brushes.White;
-            if (d.Pen is not null) d.Pen.Brush = Brushes.White;
-        }
-    }
+    internal static byte[] PackBgra(ReadOnlySpan<byte> bgra) => KeyboardArtworkRenderer.PackBgra(bgra);
 }

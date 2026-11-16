@@ -36,9 +36,16 @@ public sealed partial class PackageRoleChoice : ObservableObject
     public IReadOnlyList<string> Colors { get; }
     public string PreviewNote => Colors.Count < Dto.PreviewColors.Count ? $"首帧 · 显示前 {Colors.Count} 个灯位" : "";
     public BitmapSource? Preview { get; }
-    public IReadOnlyList<PackageTarget> Targets { get; }
+    public IReadOnlyList<PackageTarget> Targets { get; private set; }
     public PackageTarget? Selected { get => _selected; set { if (SetProperty(ref _selected, value)) OnPropertyChanged(nameof(AllowsRegion)); } }
     public ScenePackageBindingDto Build() => new(Dto.Role, Selected?.Zone, Selected?.ScreenId);
+
+    internal void UpdateTargets(IReadOnlyList<PackageTarget> targets, PackageTarget selected)
+    {
+        Targets = targets;
+        OnPropertyChanged(nameof(Targets));
+        Selected = selected;
+    }
 }
 
 /// <summary>Immutable package content, local role bindings and explicit apply. Reading and previewing never apply content.</summary>
@@ -171,6 +178,55 @@ public sealed partial class ScenePackagesViewModel : ObservableObject, IDisposab
         else Message = "场景包列表已更新，未保存的设备绑定已保留。";
     }
 
+    public void UpdateControllers(IReadOnlyList<ControllerDto> controllers)
+    {
+        ArgumentNullException.ThrowIfNull(controllers);
+        _inventory = controllers;
+        if (!HasDetails || Busy) return;
+        _loading = true;
+        try
+        {
+            foreach (var row in Roles.Where(r => r.Dto.Kind == "lighting"))
+            {
+                var targets = TargetsFor(row.Dto).ToList();
+                var saved = _binding?.Bindings.FirstOrDefault(b => b.Role == row.Dto.Role);
+                var current = row.Selected;
+                PackageTarget? selected = null;
+                if (!Dirty && saved is not null && (saved.Zone is not null || saved.ScreenId is not null))
+                {
+                    selected = targets.FirstOrDefault(t => Matches(t, saved));
+                    if (selected is null)
+                    {
+                        selected = new("missing", "已保存设备 · 当前未发现", saved.Zone, saved.ScreenId);
+                        targets.Add(selected);
+                    }
+                }
+                else if (current is not null)
+                {
+                    selected = targets.FirstOrDefault(t => t.Zone == current.Zone && t.ScreenId == current.ScreenId);
+                    if (selected is null && (current.Zone is not null || current.ScreenId is not null))
+                    {
+                        selected = current;
+                        targets.Add(selected);
+                    }
+                }
+
+                row.UpdateTargets(targets, selected ?? targets[0]);
+            }
+        }
+        finally
+        {
+            _loading = false;
+        }
+        PreviewChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    internal ControllerDto? FindController(string? controllerId) =>
+        controllerId is null ? null : _inventory.FirstOrDefault(c => string.Equals(c.Id, controllerId, StringComparison.Ordinal));
+
+    internal ZoneDto? FindZone(ZoneRefDto? zoneRef) =>
+        zoneRef is null ? null : FindController(zoneRef.ControllerId)?.Zones.FirstOrDefault(z => z.Id == zoneRef.ZoneId);
+
     public void MarkDisconnected()
     {
         Interlocked.Increment(ref _refreshRequest); Interlocked.Increment(ref _selectionRequest);
@@ -229,7 +285,7 @@ public sealed partial class ScenePackagesViewModel : ObservableObject, IDisposab
         {
             foreach (var c in _inventory)
                 foreach (var z in c.Zones.Where(z => z.LedCount == role.LedCount))
-                    yield return new(c.Id + "/" + z.Id, $"{DisplayNames.Controller(c.Id)} · {z.Name} · {z.LedCount} 灯位" + (c.State == ControllerStates.Active ? "" : " · 暂不可用"), new(c.Id, z.Id));
+                    yield return new(c.Id + "/" + z.Id, $"{DisplayNames.Controller(c)} · {z.Name} · {z.LedCount} 灯位" + (c.State == ControllerStates.Active ? "" : " · 暂不可用"), new(c.Id, z.Id));
         }
         else
             foreach (var screen in _displays)

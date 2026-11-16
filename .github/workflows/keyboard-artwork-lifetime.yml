@@ -4,6 +4,7 @@ on:
   workflow_dispatch:
   pull_request:
     paths:
+      - 'src/UnifiedRgb.Host/Services/KeyboardArtworkRenderer.cs'
       - 'src/UnifiedRgb.Host/Services/KeyboardStatusArtwork.cs'
       - 'src/UnifiedRgb.Host/Services/KeyboardSceneCycleOverlay.cs'
       - 'tests/UnifiedRgb.Host.Tests/KeyboardArtworkLifetimeTests.cs'
@@ -69,9 +70,9 @@ jobs:
           $baselineExit = $LASTEXITCODE
           [xml]$trx = Get-Content TestResults/Artwork/baseline-lifetime.trx
           $failed = @($trx.TestRun.Results.UnitTestResult | Where-Object outcome -eq 'Failed')
-          if ($baselineExit -eq 0 -or $failed.Count -ne 3) { throw 'Expected all three frozen-baseline regressions to fail' }
+          if ($baselineExit -eq 0 -or $failed.Count -ne 2) { throw 'Expected two frozen-baseline regressions to fail' }
           $messages = ($failed | ForEach-Object { $_.Output.ErrorInfo.Message }) -join "`n"
-          if ($messages -notmatch 'HasShutdownFinished' -or $messages -notmatch 'Atoms') { throw 'Baseline failed for an unexpected reason' }
+          if ($messages -notmatch 'persistent STA thread' -or $messages -notmatch 'Atoms') { throw 'Baseline failed for an unexpected reason' }
           Write-Output 'Old code leaks native window resources; fixed code passes the identical checks.'
           exit 0
       - name: Preserve actual native resource evidence

@@ -177,11 +177,16 @@ public sealed partial class WiredKeyboardAdapter : IWholeFrameAdapter, INativeBr
     public bool WriteFrame(ControllerId id, IReadOnlyList<Rgb[]> zones)
     {
         Require(id); ArgumentNullException.ThrowIfNull(zones);
-        if (!_open || !_bridge.Available) throw new DeviceBlockedException("Keyboard USB owner is not ready.");
+        if (!_open || !_bridge.Available)
+        {
+            if (_bridge.ShouldSuppressUnavailableWrite) return false;
+            throw new DeviceBlockedException("Keyboard USB owner is not ready.");
+        }
         if (_perKey is { Ready: true } plan) return WriteKeys(plan, zones);
         if (zones.Count != 1 || zones[0].Length != 1) throw new ArgumentException("Only one whole-keyboard colour is supported.", nameof(zones));
         var colour = zones[0][0];
-        _bridge.WriteAsync(colour, CancellationToken.None).GetAwaiter().GetResult();
+        try { _bridge.WriteAsync(colour, CancellationToken.None).GetAwaiter().GetResult(); }
+        catch (RogLightingTransitionException) { return false; }
         Volatile.Write(ref _lastNormalFrame, new(colour, null, _bridge.KeyFrameTransport));
         return true;
     }
@@ -191,7 +196,16 @@ public sealed partial class WiredKeyboardAdapter : IWholeFrameAdapter, INativeBr
         var geometry = plan.Map!.Keys;
         if (zones.Count != 1 || zones[0].Length != geometry.Count) throw new ArgumentException("One colour per mapped key is required.", nameof(zones));
         var transport = _bridge.KeyFrameTransport;
-        if (transport is null || !plan.RouteMaps.TryGetValue(transport, out var routeMap))
+        if (transport is null)
+        {
+            if (!_bridge.Available)
+            {
+                if (_bridge.ShouldSuppressUnavailableWrite) return false;
+                throw new DeviceBlockedException("Keyboard USB owner is not ready.");
+            }
+            throw new DeviceBlockedException("Keyboard lighting owner does not service per-key frames on a verified map transport.");
+        }
+        if (!plan.RouteMaps.TryGetValue(transport, out var routeMap))
             throw new DeviceBlockedException("Keyboard lighting owner does not service per-key frames on a verified map transport.");
         var cells = routeMap.Keys;
         if (!_routeIndices.TryGetValue(transport, out var indices))
@@ -218,7 +232,8 @@ public sealed partial class WiredKeyboardAdapter : IWholeFrameAdapter, INativeBr
         }
         var previous = Volatile.Read(ref _lastNormalFrame);
         var enqueued = Stopwatch.GetTimestamp();
-        _bridge.WriteKeysAsync(output, transport, CancellationToken.None).GetAwaiter().GetResult();
+        try { _bridge.WriteKeysAsync(output, transport, CancellationToken.None).GetAwaiter().GetResult(); }
+        catch (RogLightingTransitionException) { return false; }
         if (overlay is not null)
         {
             if (overlay.Colors.Length == 0) Interlocked.CompareExchange(ref _keyOverlay, null, overlay);

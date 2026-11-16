@@ -57,6 +57,8 @@ public sealed class PipeClient : IHostConnection, IAsyncDisposable
 
     public event EventHandler<IReadOnlyList<TelemetryDto>>? TelemetryTick;
 
+    public event EventHandler<SceneDto>? SceneChanged;
+
     public ConnectionState State => _state;
 
     /// <summary>
@@ -220,6 +222,7 @@ public sealed class PipeClient : IHostConnection, IAsyncDisposable
                 proxy.ControllersChanged += (s, e) => ControllersChanged?.Invoke(this, e);
                 proxy.StatusChanged += (s, e) => StatusChanged?.Invoke(this, e);
                 proxy.TelemetryTick += (s, e) => TelemetryTick?.Invoke(this, e);
+                proxy.SceneChanged += (s, e) => SceneChanged?.Invoke(this, e);
                 rpc.StartListening();
                 ct.ThrowIfCancellationRequested();
                 _screens = screens;

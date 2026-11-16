@@ -131,6 +131,8 @@ public sealed class ScreensViewModel : ObservableObject
     public AsyncCommand RestartLcdCommand { get; }
     public RelayCommand DismissErrorCommand { get; }
     public event EventHandler? ErrorDismissed;
+    public event EventHandler? ScreensUpdated;
+    public IReadOnlyList<ScreenDeviceDto> ScreenDevicesSnapshot => Screens.Select(s => s.Dto).ToArray();
     public bool EditorBusy => _editorOperations != 0;
     public bool EditorIdle => !EditorBusy;
     public string BusyText { get => _busyText; private set => SetProperty(ref _busyText, value); }
@@ -224,6 +226,7 @@ public sealed class ScreensViewModel : ObservableObject
                 Message = $"已发现 {screens.Count} 块屏幕。输出门槛与实机验收状态见所选屏幕。";
             }
             finally { _loading = false; }
+            ScreensUpdated?.Invoke(this, EventArgs.Empty);
         });
         if (CurrentConnection(epoch)) await PollAsync().ConfigureAwait(true);
     }
@@ -246,11 +249,27 @@ public sealed class ScreensViewModel : ObservableObject
         catch (StreamJsonRpc.RemoteMethodNotFoundException) { _ui.Post(() => { if (!CurrentConnection(epoch)) return; Available = false; Message = "当前后台尚未提供屏幕服务。灯光功能可正常使用。"; }); }
         catch (InvalidOperationException ex) { _ui.Post(() => { if (!CurrentConnection(epoch)) return; Available = false; Message = ex.Message; }); }
     }
+    internal async Task RefreshHealthOnlyAsync()
+    {
+        var epoch = Volatile.Read(ref _connectionEpoch);
+        if (!Available) return;
+        try
+        {
+            var screens = await _service().ListScreensAsync().ConfigureAwait(true);
+            _ui.Post(() => { if (CurrentConnection(epoch) && Available) UpdateScreenChoices(screens); });
+        }
+        catch (Exception ex) when (ex is OperationCanceledException or InvalidOperationException or StreamJsonRpc.RemoteMethodNotFoundException or StreamJsonRpc.RemoteInvocationException)
+        {
+            // Passive background health probe: ignore transient disconnect / unsupported method.
+        }
+    }
+
     public void MarkDisconnected()
     {
         Interlocked.Increment(ref _connectionEpoch);
         Interlocked.Increment(ref _refreshId);
         Available = false; Message = "后台未连接，当前显示上次读取的屏幕配置。";
+        ScreensUpdated?.Invoke(this, EventArgs.Empty);
     }
     private bool CurrentConnection(long epoch) => epoch == Volatile.Read(ref _connectionEpoch);
     public async Task PollAsync()
@@ -299,6 +318,7 @@ public sealed class ScreensViewModel : ObservableObject
         finally { _updatingScreenChoices = false; }
         OnPropertyChanged(nameof(Selected)); OnPropertyChanged(nameof(ScreenDetail));
         UpdateRestartState();
+        ScreensUpdated?.Invoke(this, EventArgs.Empty);
     }
     private async Task RestartLcdAsync()
     {

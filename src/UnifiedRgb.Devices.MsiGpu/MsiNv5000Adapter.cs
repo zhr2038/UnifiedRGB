@@ -116,6 +116,15 @@ public sealed partial class MsiNv5000Adapter : IWholeFrameAdapter, INativeBringu
                     {
                         known.Descriptor = descriptor;
                         known.ZoneIndices = indices;
+                        if (known.Handle != d.Handle)
+                        {
+                            known.Handle = d.Handle;
+                            known.Chain = null;
+                            known.Firewall = null;
+                            known.LastFrame = null;
+                            known.Entered = false;
+                            known.Holding = false;
+                        }
                     }
                 }
                 else
@@ -142,11 +151,24 @@ public sealed partial class MsiNv5000Adapter : IWholeFrameAdapter, INativeBringu
             throw new DeviceBlockedException(UnverifiedReason(id));
         }
 
+        // Refresh physical GPU handles before reopening so sleep/TDR never reuses a stale NVAPI handle.
+        var freshHandle = FindFreshHandle(id);
+
         lock (g.Sync)
         {
             if (g.BlackFailed)
             {
                 throw new DeviceBlockedException("a previous black send failed; nothing more is sent in this process");
+            }
+
+            if (g.Handle != freshHandle)
+            {
+                g.Handle = freshHandle;
+                g.Chain = null;
+                g.Firewall = null;
+                g.LastFrame = null;
+                g.Entered = false;
+                g.Holding = false;
             }
 
             EnsureChain(g);
@@ -263,7 +285,18 @@ public sealed partial class MsiNv5000Adapter : IWholeFrameAdapter, INativeBringu
             _gpus.TryGetValue(id, out g);
         }
 
-        return g is null ? null : GpuTelemetry.Read(_nvapi, g.Handle);
+        if (g is null)
+        {
+            return null;
+        }
+
+        IntPtr handle;
+        lock (g.Sync)
+        {
+            handle = g.Handle;
+        }
+
+        return GpuTelemetry.Read(_nvapi, handle);
     }
 
     /// <summary>Writer close: the release sequence (hold-black: one black frame, handle kept); a never-entered card gets nothing.</summary>
@@ -274,6 +307,11 @@ public sealed partial class MsiNv5000Adapter : IWholeFrameAdapter, INativeBringu
         lock (g.Sync)
         {
             g.OpenForWriter = false;
+            if (!_options.HoldBlackOnRelease && !g.OpenForBringup)
+            {
+                g.Chain = null;
+                g.Firewall = null;
+            }
         }
 
         return Task.CompletedTask;
@@ -322,12 +360,23 @@ public sealed partial class MsiNv5000Adapter : IWholeFrameAdapter, INativeBringu
         }
     }
 
-    /// <summary>Bring-up open: builds the chain; sends nothing (enter is the first marker's job).</summary>
+    /// <summary>Bring-up open: refreshes the physical handle and builds the chain; sends nothing (enter is the first marker's job).</summary>
     public Task OpenForBringupAsync(ControllerId id, CancellationToken ct)
     {
         var g = Get(id);
+        var freshHandle = FindFreshHandle(id);
         lock (g.Sync)
         {
+            if (g.Handle != freshHandle)
+            {
+                g.Handle = freshHandle;
+                g.Chain = null;
+                g.Firewall = null;
+                g.LastFrame = null;
+                g.Entered = false;
+                g.Holding = false;
+            }
+
             EnsureChain(g);
             g.OpenForBringup = true;
         }
@@ -565,6 +614,12 @@ public sealed partial class MsiNv5000Adapter : IWholeFrameAdapter, INativeBringu
         {
             return g.OpenForBringup ? g : throw new InvalidOperationException($"{id}: probes and markers need a bring-up session.");
         }
+    }
+
+    private IntPtr FindFreshHandle(ControllerId id)
+    {
+        var refreshed = MsiGpuDiscovery.Discover(_nvapi).FirstOrDefault(d => d.Descriptor.Id == id);
+        return refreshed?.Handle ?? throw new IOException($"MSI GPU {id} is no longer enumerated by NVAPI.");
     }
 
     private void EnsureChain(Gpu g)
@@ -805,7 +860,7 @@ public sealed partial class MsiNv5000Adapter : IWholeFrameAdapter, INativeBringu
         public object ReleaseGate { get; } = new();
         public bool Releasing { get; set; }
 
-        public IntPtr Handle { get; } = handle;
+        public IntPtr Handle { get; set; } = handle;
 
         public ControllerDescriptor Descriptor { get; set; } = descriptor;
 

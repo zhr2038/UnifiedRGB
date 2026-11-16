@@ -41,6 +41,7 @@ public sealed class SceneViewModel : ObservableObject
     private string? _groupEffect = "Runway";
     private string _groupStrategy = EffectsViewModel.VendorStrategy;
     private ZoneItem? _candidate;
+    internal bool IsMounted { get; set; }
 
     public SceneViewModel(PipeClient client, IUiDispatcher ui, Action<Exception> onError)
     {

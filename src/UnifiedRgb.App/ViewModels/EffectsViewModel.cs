@@ -76,6 +76,7 @@ public sealed class EffectsViewModel : ObservableObject, IDisposable
     private string? _family;
     private FamilyMode? _familyMode;
     private PreviewRenderer? _preview;
+    internal bool IsMounted { get; set; }
 
     public EffectsViewModel(PipeClient client, IUiDispatcher ui, Action<Exception> onError, TimeSpan? debounce = null)
     {

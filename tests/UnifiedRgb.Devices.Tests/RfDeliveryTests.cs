@@ -339,4 +339,83 @@ public class RfDeliveryTests
             delivery.Retries.Should().Be(0);
         }
     }
+
+    [Fact]
+    public void Brief_mismatch_then_reported_match_then_late_mismatch_uses_remaining_retry_budget()
+    {
+        var t = Tracker();
+        var counter = 1000u;
+        var s = 1;
+        t.ObserveAt(R(5, counter), Epoch.AddSeconds(s), true).Should().BeFalse(); // initial baseline (!fresh)
+        t.ObserveAt(R(5, counter += 1600), Epoch.AddSeconds(++s), true).Should().BeFalse(); // fresh mismatch #1
+        t.ObserveAt(R(5, counter += 1600), Epoch.AddSeconds(++s), true).Should().BeTrue(); // fresh mismatch #2 -> retry 1
+        t.Retried(TimeSpan.FromSeconds(s));
+        t.Status.Retries.Should().Be(1);
+
+        // Fresh ReportedMatch clears the mismatch window without resetting the generation's retry count.
+        t.ObserveAt(R(100, counter += 1600), Epoch.AddSeconds(++s), true).Should().BeFalse();
+        t.Status.State.Should().Be("ReportedMatch");
+        t.Status.Retries.Should().Be(1);
+
+        // Sustained match beyond 12 s, then a 30-minute jump, then another mismatch.
+        for (var i = 0; i < 15; i++)
+        {
+            t.ObserveAt(R(100, counter += 1600), Epoch.AddSeconds(++s), true).Should().BeFalse();
+            t.Status.State.Should().Be("ReportedMatch");
+        }
+
+        s += 1800;
+        counter += 1800u * 1600u;
+        t.ObserveAt(R(100, counter), Epoch.AddSeconds(s), true).Should().BeFalse(); // re-anchor freshness after long gap
+        t.ObserveAt(R(100, counter += 1600), Epoch.AddSeconds(++s), true).Should().BeFalse();
+        t.Status.State.Should().Be("ReportedMatch");
+
+        t.ObserveAt(R(5, counter += 1600), Epoch.AddSeconds(++s), true).Should().BeFalse();
+        t.Status.State.Should().Be("ReportedMismatch", "the late mismatch starts a fresh 12 s recovery window instead of immediately exhausting");
+        t.ObserveAt(R(5, counter += 1600), Epoch.AddSeconds(++s), true).Should().BeTrue("remaining retry budget (2nd retry) must still be available");
+        t.CanCommitRetry(TimeSpan.FromSeconds(s)).Should().BeTrue();
+        t.Retried(TimeSpan.FromSeconds(s));
+        t.Status.Retries.Should().Be(2);
+    }
+
+    [Fact]
+    public void Repeated_match_and_mismatch_oscillation_exhausts_generation_retry_budget()
+    {
+        var t = Tracker();
+        var counter = 1000u;
+        var s = 1;
+
+        // Cycle 1: mismatch -> 1st retry -> ReportedMatch
+        t.ObserveAt(R(5, counter), Epoch.AddSeconds(s), true).Should().BeFalse();
+        t.ObserveAt(R(5, counter += 1600), Epoch.AddSeconds(++s), true).Should().BeFalse();
+        t.ObserveAt(R(5, counter += 1600), Epoch.AddSeconds(++s), true).Should().BeTrue();
+        t.Retried(TimeSpan.FromSeconds(s));
+        t.ObserveAt(R(100, counter += 1600), Epoch.AddSeconds(++s), true).Should().BeFalse();
+        t.Status.State.Should().Be("ReportedMatch");
+
+        // Cycle 2 (>12 s later): ReportedMatch -> mismatch -> 2nd retry -> ReportedMatch
+        for (var i = 0; i < 15; i++)
+        {
+            t.ObserveAt(R(100, counter += 1600), Epoch.AddSeconds(++s), true).Should().BeFalse();
+        }
+        t.ObserveAt(R(5, counter += 1600), Epoch.AddSeconds(++s), true).Should().BeFalse();
+        t.Status.State.Should().Be("ReportedMismatch");
+        t.ObserveAt(R(5, counter += 1600), Epoch.AddSeconds(++s), true).Should().BeTrue();
+        t.Retried(TimeSpan.FromSeconds(s));
+        t.Status.Retries.Should().Be(2);
+        t.ObserveAt(R(100, counter += 1600), Epoch.AddSeconds(++s), true).Should().BeFalse();
+        t.Status.State.Should().Be("ReportedMatch");
+
+        // Cycle 3 (>12 s later): ReportedMatch -> mismatch MUST hit RetryExhausted with 0 further retries
+        for (var i = 0; i < 15; i++)
+        {
+            t.ObserveAt(R(100, counter += 1600), Epoch.AddSeconds(++s), true).Should().BeFalse();
+        }
+        t.ObserveAt(R(5, counter += 1600), Epoch.AddSeconds(++s), true).Should().BeFalse();
+        t.Status.State.Should().Be("RetryExhausted");
+        t.ObserveAt(R(5, counter += 1600), Epoch.AddSeconds(++s), true).Should().BeFalse();
+        t.Status.State.Should().Be("RetryExhausted");
+        t.CanCommitRetry(TimeSpan.FromSeconds(s)).Should().BeFalse();
+        t.Status.Retries.Should().Be(2);
+    }
 }

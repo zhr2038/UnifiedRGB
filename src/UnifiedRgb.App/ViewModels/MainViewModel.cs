@@ -32,6 +32,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private TrayState _tray = TrayState.Disconnected;
     private int _workbenchSource;
     private bool _initialSourceSelected;
+    private IReadOnlyList<DeviceStatusDto> _latestDeviceStatuses = [];
+    private IReadOnlyList<ScreenDeviceDto> _latestScreens = [];
+    private KeyboardDisplayStatusDto? _latestKeyboard;
     public int WorkbenchSourceIndex { get => _workbenchSource; set => SetProperty(ref _workbenchSource, value); }
 
     /// <param name="confirm">Yes/no prompt before flash writes ("Save current lighting to fans"); null: no prompt (tests).</param>
@@ -68,13 +71,35 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         Profiles = new ProfilesViewModel(client, ui, ReportError, Packages, confirm);
         Packages.ReadPreviewTelemetry = () => client.RequireScreens().GetPcTelemetryAsync();
         Screens.PropertyChanged += (_, e) => { if (e.PropertyName == nameof(ScreensViewModel.TelemetrySnapshot)) Packages.TelemetrySnapshot = Screens.TelemetrySnapshot; };
-        Profiles.Applied += (_, _) => { _ = Studio.ReadCommand.ExecuteAsync(); _ = Screens.RefreshOptionalAsync(); };
-        Packages.Applied += (_, _) => { _ = Studio.ReadCommand.ExecuteAsync(); _ = Screens.RefreshOptionalAsync(); };
+        Screens.ScreensUpdated += (_, _) =>
+        {
+            _latestScreens = Screens.Available ? Screens.ScreenDevicesSnapshot : [];
+            Devices.UpdateScreenHealth(_latestScreens);
+            Studio.UpdateScreens(_latestScreens);
+            UpdateTray();
+        };
+        Studio.ResyncLianLiCommand = Devices.ResyncLianLiCommand;
+        Studio.RestartFanLcdCommand = Screens.RestartLcdCommand;
+        Devices.RestartFanLcdCommand = Screens.RestartLcdCommand;
+        Devices.OpenScreensCommand = new RelayCommand(() => Studio.Page = 2);
+        Devices.OpenKeyboardCommand = new RelayCommand(() => Studio.Page = 7);
+        Studio.ControlPanel.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName == nameof(CaseControlPanelViewModel.KeyboardStatus))
+            {
+                _latestKeyboard = Studio.ControlPanel.KeyboardStatus;
+                Devices.UpdateKeyboardHealth(_latestKeyboard);
+                UpdateTray();
+            }
+        };
+        Profiles.Applied += (_, _) => _ = RefreshAfterSceneChangeAsync();
+        Packages.Applied += (_, _) => _ = RefreshAfterSceneChangeAsync();
         Bringup = new NativeBringupViewModel(client, ui, ReportError);
         Diagnostics = new DiagnosticsViewModel(ui, hostDataDirectory, appLogDirectory, ReportError, () => client.Require().GetStatusAsync(diagnostics: true), Bringup);
         Settings = new SettingsViewModel(autostart, appExePath);
         if (client.State == ConnectionState.Connected) ConnectionText = "后台已连接";
         RefreshCommand = new AsyncCommand(RefreshAllAsync, ReportError);
+        RestoreRefreshCommand = new AsyncCommand(RefreshOnWindowRestoreAsync, ReportError);
         DismissErrorCommand = new RelayCommand(() => { Error = ""; Screens.DismissErrorCommand.Execute(null); });
 
         Devices.Changed += (_, _) =>
@@ -84,11 +109,18 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         };
         client.StateChanged += OnStateChanged;
         client.ControllersChanged += OnControllersChanged;
+        client.SceneChanged += OnSceneChanged;
         client.StatusChanged += (_, s) =>
         {
             Diagnostics.Update(s);
             Studio.UpdateStatus(s);
-            _ui.Post(() => Settings.Update(s));
+            Devices.UpdateStatus(s.Devices);
+            _ui.Post(() =>
+            {
+                _latestDeviceStatuses = s.Devices;
+                Settings.Update(s);
+                UpdateTray();
+            });
         };
     }
 
@@ -112,6 +144,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public SettingsViewModel Settings { get; }
 
     public AsyncCommand RefreshCommand { get; }
+    public AsyncCommand RestoreRefreshCommand { get; }
     public RelayCommand DismissErrorCommand { get; }
 
     /// <summary>Sidebar 启动后台 / 重新连接后台 next to the connection line; App's launch request runs through it too.</summary>
@@ -178,27 +211,40 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         private set => SetProperty(ref _tray, value);
     }
 
-    public static TrayState TrayStateOf(bool connected, IEnumerable<ControllerDto> controllers)
+    public static TrayState TrayStateOf(bool connected, IEnumerable<ControllerDto> controllers) =>
+        TrayStateOf(connected, controllers, null, null, null);
+
+    public static TrayState TrayStateOf(
+        bool connected,
+        IEnumerable<ControllerDto> controllers,
+        IEnumerable<DeviceStatusDto>? deviceStatuses,
+        IEnumerable<ScreenDeviceDto>? screens = null,
+        KeyboardDisplayStatusDto? keyboard = null)
     {
         ArgumentNullException.ThrowIfNull(controllers);
         if (!connected) return TrayState.Disconnected;
+        var controllerList = controllers as IReadOnlyList<ControllerDto> ?? controllers.ToArray();
         var state = TrayState.Attention;
-        foreach (var controller in controllers)
+        foreach (var controller in controllerList)
         {
             if (DisplayNames.IsDiscoveryPort(controller)) continue;
             if (controller.State != ControllerStates.Active) return TrayState.Attention;
             state = TrayState.Ok;
         }
-        return state;
+        if (state != TrayState.Ok) return state;
+
+        var report = CaseHealthSummary.Analyze(deviceStatuses, controllerList, screens, keyboard);
+        return report.HasAnyIssue ? TrayState.Attention : TrayState.Ok;
     }
 
     public async Task RefreshAllAsync()
     {
         await Devices.RefreshAsync().ConfigureAwait(true);
         await Effects.RefreshAsync().ConfigureAwait(true);
-        await Scene.RefreshAsync().ConfigureAwait(true);
+        if (Scene.IsMounted) await Scene.RefreshAsync().ConfigureAwait(true);
         await Profiles.RefreshAsync().ConfigureAwait(true);
         await Studio.RefreshAsync().ConfigureAwait(true);
+        await Studio.ControlPanel.RefreshKeyboardOnlyAsync().ConfigureAwait(true);
         await Screens.RefreshOptionalAsync().ConfigureAwait(true);
         await Packages.RefreshOptionalAsync().ConfigureAwait(true);
         await FirmwareUpdate.RefreshAsync().ConfigureAwait(true);
@@ -211,7 +257,58 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         var status = await _client.Require().GetStatusAsync(false).ConfigureAwait(true);
         Diagnostics.Update(status);
         Studio.UpdateStatus(status);
-        _ui.Post(() => Settings.Update(status));
+        Devices.UpdateStatus(status.Devices);
+        _ui.Post(() =>
+        {
+            _latestDeviceStatuses = status.Devices;
+            Settings.Update(status);
+            UpdateTray();
+        });
+    }
+
+    public async Task RefreshOnWindowRestoreAsync()
+    {
+        if (_client.State != ConnectionState.Connected || IsUiFaulted) return;
+        await Devices.RefreshAsync().ConfigureAwait(true);
+        await Studio.RefreshAsync(false).ConfigureAwait(true);
+        await Studio.ControlPanel.RefreshKeyboardOnlyAsync().ConfigureAwait(true);
+        if (Screens.Available) await Screens.PollAsync().ConfigureAwait(true);
+        else await Screens.RefreshOptionalAsync().ConfigureAwait(true);
+        if (Studio.Page == 1 && WorkbenchSourceIndex == 1) await Packages.RefreshOptionalAsync().ConfigureAwait(true);
+        var status = await _client.Require().GetStatusAsync(false).ConfigureAwait(true);
+        Diagnostics.Update(status);
+        Studio.UpdateStatus(status);
+        Devices.UpdateStatus(status.Devices);
+        _ui.Post(() =>
+        {
+            _latestDeviceStatuses = status.Devices;
+            Settings.Update(status);
+            UpdateTray();
+        });
+    }
+
+    internal async Task PollPeripheralAndScreenHealthAsync()
+    {
+        if (_client.State != ConnectionState.Connected || IsUiFaulted) return;
+        if (Studio.Page != 7) await Studio.ControlPanel.RefreshKeyboardOnlyAsync().ConfigureAwait(true);
+        if (Studio.Page != 2) await Screens.RefreshHealthOnlyAsync().ConfigureAwait(true);
+    }
+
+    private async Task RefreshAfterSceneChangeAsync()
+    {
+        try
+        {
+            if (_client.State != ConnectionState.Connected || IsUiFaulted) return;
+            await Studio.RefreshAsync(!Studio.Draft.Dirty).ConfigureAwait(true);
+            Packages.SelectCurrent(Studio.ActivePackageContentId);
+            await Screens.RefreshOptionalAsync().ConfigureAwait(true);
+        }
+#pragma warning disable CA1031 // UI boundary
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+#pragma warning restore CA1031
+        {
+            ReportError(ex);
+        }
     }
 
     public void ReportError(Exception ex)
@@ -236,10 +333,18 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 Error = string.Empty;
             }
 
+            if (state != ConnectionState.Connected)
+            {
+                _latestDeviceStatuses = [];
+                _latestScreens = [];
+                _latestKeyboard = null;
+                Devices.ClearRuntimeHealth();
+                Screens.MarkDisconnected();
+                Packages.MarkDisconnected();
+            }
             UpdateTray();
             Studio.SetConnected(state == ConnectionState.Connected);
             FirmwareUpdate.SetConnected(state == ConnectionState.Connected);
-            if (state != ConnectionState.Connected) { Screens.MarkDisconnected(); Packages.MarkDisconnected(); }
             if (state == ConnectionState.Connected && !IsUiFaulted)
             {
                 _ = RefreshCommand.ExecuteAsync();
@@ -250,16 +355,35 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private void OnControllersChanged(object? sender, IReadOnlyList<ControllerDto> controllers)
     {
         Devices.Update(controllers);
+        Studio.UpdateControllers(controllers);
         _ui.Post(() =>
         {
-            Effects.SetControllers(controllers);
-            Scene.RefreshCommand.Execute(null);
+            Packages.UpdateControllers(controllers);
+            if (Effects.IsMounted) Effects.SetControllers(controllers);
+            if (Scene.IsMounted) Scene.RefreshCommand.Execute(null);
         });
     }
 
-    public void Dispose() { FirmwareUpdate.SetConnected(false); HostStart.Dispose(); Studio.Dispose(); Packages.Dispose(); Bringup.Dispose(); }
+    private void OnSceneChanged(object? sender, SceneDto scene)
+    {
+        _ui.Post(() =>
+        {
+            if (_client.State != ConnectionState.Connected || IsUiFaulted) return;
+            var hadPackage = Studio.ActivePackageContentId is not null;
+            var wasBlackout = Studio.IsCurrentlyBlackout;
+            Studio.ApplyHostScene(scene);
+            Packages.SelectCurrent(Studio.ActivePackageContentId);
+            if (Scene.IsMounted) Scene.Show(Devices.Snapshot, scene);
+            if (Screens.Available && (scene.Screens is not null || scene.Package is not null || hadPackage || wasBlackout || CasePowerActions.IsBlackout(scene)))
+            {
+                _ = Screens.RefreshOptionalAsync();
+            }
+        });
+    }
 
-    private void UpdateTray() => TrayState = TrayStateOf(_client.State == ConnectionState.Connected, Devices.Snapshot);
+    public void Dispose() { FirmwareUpdate.SetConnected(false); HostStart.Dispose(); Studio.Dispose(); Packages.Dispose(); Bringup.Dispose(); Effects.Dispose(); }
+
+    private void UpdateTray() => TrayState = TrayStateOf(_client.State == ConnectionState.Connected, Devices.Snapshot, _latestDeviceStatuses, _latestScreens, _latestKeyboard);
 }
 
 /// <summary>

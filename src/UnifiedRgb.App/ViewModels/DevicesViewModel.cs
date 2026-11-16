@@ -1,4 +1,6 @@
 using System.Collections.ObjectModel;
+using System.ComponentModel;
+using System.Windows.Input;
 using UnifiedRgb.App.Ipc;
 using UnifiedRgb.App.Mvvm;
 using UnifiedRgb.Contracts.Dto;
@@ -6,21 +8,62 @@ using UnifiedRgb.App.Workbench;
 
 namespace UnifiedRgb.App.ViewModels;
 
-public sealed record ControllerItem(ControllerDto Dto)
+public sealed record ControllerItem(ControllerDto Dto) : INotifyPropertyChanged
 {
+    private DeviceStatusDto? _status;
+
+    public event PropertyChangedEventHandler? PropertyChanged;
+
     public string Id => Dto.Id;
 
     public string Name => Dto.Name;
     private bool NeedsNativeVerification => !Dto.ControlVerified && NativeBringupViewModel.NativeClasses.Contains(Dto.DeviceClass, StringComparer.OrdinalIgnoreCase);
-    public string ChineseName => DisplayNames.Controller(Dto.Id, Dto.Name);
-    public string ChineseState => DisplayNames.IsDiscoveryPort(Dto) ? "发现端口" : DisplayNames.State(Dto.State);
+    public string ChineseName => DisplayNames.Controller(Dto);
+    public DeviceStatusDto? Status => _status;
+
+    private string? RfDeliveryState => _status?.LastUpload?.ReceiverDelivery?.State;
+    private bool IsKeyboardChannelError => string.Equals(Dto.DeviceType, "Keyboard", StringComparison.OrdinalIgnoreCase)
+        && !string.IsNullOrWhiteSpace(_status?.LastError);
+
+    public string ChineseState => DisplayNames.IsDiscoveryPort(Dto) ? "发现端口"
+        : RfDeliveryState == "RetryExhausted" ? "RF 重试耗尽"
+        : RfDeliveryState == "ReportedMismatch" ? "RF 待核对"
+        : Dto.State == ControllerStates.Active && IsKeyboardChannelError ? "通道异常"
+        : DisplayNames.State(Dto.State);
+
     public string ChineseZones => DisplayNames.IsDiscoveryPort(Dto) ? "只用于探测 · 不参与灯效" : $"{Dto.Zones.Count} 个分区 · {Dto.Zones.Sum(z => z.LedCount)} 个逻辑灯位";
-    public string ChineseHint => Dto.State switch
+
+    public string ChineseHint
     {
-        ControllerStates.Active => "", ControllerStates.BringUp => "正在进行独立硬件校验，暂不接收场景帧。",
-        ControllerStates.Contended => $"其他程序正在写入：{Dto.BlockedBy}", ControllerStates.Offline => "设备未打开，详情见诊断。",
-        _ => !NeedsNativeVerification ? $"未接管：{Dto.BlockedBy}" : $"控制待实机校验：{Dto.BlockedBy}",
-    };
+        get
+        {
+            if (Dto.State == ControllerStates.Active)
+            {
+                if (RfDeliveryState == "RetryExhausted") return "RF 回读代数失配 / 重试耗尽，建议重新同步";
+                if (RfDeliveryState == "ReportedMismatch") return "RF 回读代数失配，建议重新同步";
+                if (IsKeyboardChannelError) return $"键盘通道异常：{_status!.LastError}";
+                return "";
+            }
+
+            var baseHint = Dto.State switch
+            {
+                ControllerStates.BringUp => "正在进行独立硬件校验，暂不接收场景帧。",
+                ControllerStates.Contended => $"其他程序正在写入：{Dto.BlockedBy}",
+                ControllerStates.Offline => "设备未打开，详情见诊断。",
+                _ => !NeedsNativeVerification ? $"未接管：{Dto.BlockedBy}" : $"控制待实机校验：{Dto.BlockedBy}",
+            };
+            return IsKeyboardChannelError ? $"{baseHint} · 键盘通道异常：{_status!.LastError}" : baseHint;
+        }
+    }
+
+    internal void UpdateStatus(DeviceStatusDto? status)
+    {
+        if (Equals(_status, status)) return;
+        _status = status;
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Status)));
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ChineseState)));
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ChineseHint)));
+    }
 
     public string Vendor => Dto.Vendor;
 
@@ -105,6 +148,10 @@ public sealed class DevicesViewModel : ObservableObject
     private readonly Action<Exception> _onError;
     private readonly Func<string, bool> _confirm;
     private string _lianLiMessage = string.Empty;
+    private IReadOnlyList<DeviceStatusDto> _latestStatuses = [];
+    private IReadOnlyList<ScreenDeviceDto> _latestScreens = [];
+    private KeyboardDisplayStatusDto? _latestKeyboard;
+    private CaseHealthReport _healthReport;
 
     /// <param name="confirm">Asks the user before the flash write of "Save current lighting to fans" (null: no prompt).</param>
     public DevicesViewModel(PipeClient client, IUiDispatcher ui, Action<Exception> onError, Func<string, bool>? confirm = null)
@@ -155,6 +202,19 @@ public sealed class DevicesViewModel : ObservableObject
         private set => SetProperty(ref _lianLiMessage, value);
     }
 
+    public bool HasHealthNotice => _healthReport.HasAnyIssue;
+    public string HealthNotice => _healthReport.DetailedNotice;
+    public bool HasRfDeliveryIssue => _healthReport.HasRfIssue;
+    public bool HasScreenError => _healthReport.HasScreenError;
+    public bool HasFanLcdScreenError => _healthReport.HasFanLcdScreenError;
+    public bool HasKeyboardError => _healthReport.HasKeyboardError;
+    public bool CanShowRestartFanLcd => HasFanLcdScreenError && RestartFanLcdCommand is not null;
+    public bool CanOpenScreens => HasScreenError && OpenScreensCommand is not null;
+    public bool CanOpenKeyboard => HasKeyboardError && OpenKeyboardCommand is not null;
+    public ICommand? RestartFanLcdCommand { get; internal set; }
+    public ICommand? OpenScreensCommand { get; internal set; }
+    public ICommand? OpenKeyboardCommand { get; internal set; }
+
     /// <summary>True when an active Lian Li controller exists (the buttons are only meaningful then).</summary>
     public bool HasLianLi => Controllers.Any(c => c.Dto.State == ControllerStates.Active
         && string.Equals(c.Dto.DeviceClass, "LianLi", StringComparison.OrdinalIgnoreCase));
@@ -188,10 +248,17 @@ public sealed class DevicesViewModel : ObservableObject
 
     public void Update(IReadOnlyList<ControllerDto> controllers) => _ui.Post(() =>
     {
+        var byId = new Dictionary<string, DeviceStatusDto>(StringComparer.OrdinalIgnoreCase);
+        foreach (var status in _latestStatuses) byId[status.Id] = status;
         Controllers.Clear();
         foreach (var c in controllers)
         {
-            Controllers.Add(new ControllerItem(c));
+            var item = new ControllerItem(c);
+            if (byId.TryGetValue(c.Id, out var status))
+            {
+                item.UpdateStatus(status);
+            }
+            Controllers.Add(item);
         }
 
         OnPropertyChanged(nameof(HasLianLi));
@@ -199,8 +266,69 @@ public sealed class DevicesViewModel : ObservableObject
         OnPropertyChanged(nameof(PerKeyControllers));
         OnPropertyChanged(nameof(HasPerKeyReviews));
         Calibration.SetControllers(controllers);
+        RecomputeHealthNotice();
         Changed?.Invoke(this, EventArgs.Empty);
     });
+
+    public void UpdateStatus(IReadOnlyList<DeviceStatusDto> statuses)
+    {
+        ArgumentNullException.ThrowIfNull(statuses);
+        _ui.Post(() =>
+        {
+            _latestStatuses = statuses;
+            var byId = new Dictionary<string, DeviceStatusDto>(StringComparer.OrdinalIgnoreCase);
+            foreach (var status in statuses) byId[status.Id] = status;
+            foreach (var item in Controllers)
+            {
+                item.UpdateStatus(byId.TryGetValue(item.Id, out var status) ? status : null);
+            }
+            RecomputeHealthNotice();
+        });
+    }
+
+    public void UpdateScreenHealth(IReadOnlyList<ScreenDeviceDto> screens)
+    {
+        ArgumentNullException.ThrowIfNull(screens);
+        _ui.Post(() =>
+        {
+            _latestScreens = screens;
+            RecomputeHealthNotice();
+        });
+    }
+
+    public void UpdateKeyboardHealth(KeyboardDisplayStatusDto? keyboard) => _ui.Post(() =>
+    {
+        _latestKeyboard = keyboard;
+        RecomputeHealthNotice();
+    });
+
+    public void ClearRuntimeHealth() => _ui.Post(() =>
+    {
+        _latestStatuses = [];
+        _latestScreens = [];
+        _latestKeyboard = null;
+        foreach (var item in Controllers)
+        {
+            item.UpdateStatus(null);
+        }
+        RecomputeHealthNotice();
+    });
+
+    private void RecomputeHealthNotice()
+    {
+        var next = CaseHealthSummary.Analyze(_latestStatuses, Snapshot, _latestScreens, _latestKeyboard);
+        if (next == _healthReport) return;
+        _healthReport = next;
+        OnPropertyChanged(nameof(HasHealthNotice));
+        OnPropertyChanged(nameof(HealthNotice));
+        OnPropertyChanged(nameof(HasRfDeliveryIssue));
+        OnPropertyChanged(nameof(HasScreenError));
+        OnPropertyChanged(nameof(HasFanLcdScreenError));
+        OnPropertyChanged(nameof(HasKeyboardError));
+        OnPropertyChanged(nameof(CanShowRestartFanLcd));
+        OnPropertyChanged(nameof(CanOpenScreens));
+        OnPropertyChanged(nameof(CanOpenKeyboard));
+    }
 
     private async Task RescanAsync() => Update(await _client.Require().RescanAsync().ConfigureAwait(true));
 

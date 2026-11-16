@@ -657,10 +657,12 @@ public sealed partial class KeyboardDisplayServiceTests : IDisposable
         }
         finally { await service.StopAsync(default); }
 
+        var opensBeforeRestart = factory.Opens;
         using var restarted = Make(options, factory, bridge);
         await restarted.StartAsync(default);
         try
         {
+            await UntilAsync(() => factory.Opens > opensBeforeRestart && bridge.Available, "restarted inactive owner attached");
             await WaitAsync(restarted, "Stopped");
             factory.Io.Brightness.Should().Be(20);
             factory.Io.Data.Should().Be(0);
@@ -811,13 +813,20 @@ public sealed partial class KeyboardDisplayServiceTests : IDisposable
     }
 
     private KeyboardDisplayService Make(KeyboardDisplayOptions options, Factory factory, RogWiredLightingBridge? bridge = null,
-        WirelessFactory? wirelessFactory = null, PeripheralConfigurationGate? configurationGate = null)
+        WirelessFactory? wirelessFactory = null, PeripheralConfigurationGate? configurationGate = null,
+        Func<string, bool>? wiredRoutePresent = null, RogPerKeyOptions? perKey = null)
     {
         var rgb = DispatchProxy.Create<IRgbService, ReadProxy>();
         var screens = DispatchProxy.Create<IScreenService, ReadProxy>();
         _rgbProxy = (ReadProxy)rgb;
         _screensProxy = (ReadProxy)screens;
-        return new(new UnifiedRgbOptions { DataDirectory = _directory, KeyboardDisplay = options }, rgb, screens, factory, new ClearGuard(), bridge, wirelessFactory, configurationGate);
+        return new(new UnifiedRgbOptions
+        {
+            DataDirectory = _directory,
+            KeyboardDisplay = options,
+            AsusRog = perKey is null ? new() : new() { KeyboardPerKey = perKey },
+        }, rgb, screens, factory, new ClearGuard(), bridge, wirelessFactory, configurationGate,
+            wiredRoutePresent: wiredRoutePresent);
     }
 
     private static KeyboardDisplayOptions Pinned() => new() { Enabled = true, ControlVerified = true, DeviceKey = Key, FirmwareHeader = "001200000024000100" };
@@ -856,10 +865,10 @@ public sealed partial class KeyboardDisplayServiceTests : IDisposable
         }
     }
 
-    private sealed class ClearGuard : IWriterGuard
+    private sealed class ClearGuard(bool takeoverEnabled = false) : IWriterGuard
     {
         public GuardVerdict Check(DeviceClass deviceClass) => GuardVerdict.Clear;
-        public bool IsTakeoverEnabled(DeviceClass deviceClass) => false;
+        public bool IsTakeoverEnabled(DeviceClass deviceClass) => takeoverEnabled;
         public Task<TakeoverResult> SetTakeoverAsync(DeviceClass deviceClass, bool enabled, CancellationToken ct) => throw new InvalidOperationException("No takeover side effects");
         public Task<TakeoverResult> TakeoverAsync(DeviceClass deviceClass, CancellationToken ct) => throw new InvalidOperationException("No takeover side effects");
         public Task RestoreAsync(CancellationToken ct) => throw new InvalidOperationException("No takeover side effects");
@@ -918,12 +927,14 @@ public sealed partial class KeyboardDisplayServiceTests : IDisposable
         public List<int> CopyLengths { get; } = [];
         public int DeclaredChunks { get; private set; }
         public int Remaining { get; private set; }
+        public int ColourPackets { get; private set; }
         private int _total;
         public async ValueTask WriteAsync(ReadOnlyMemory<byte> report, CancellationToken ct)
         {
             if (!Present) throw new IOException("Receiver removed.");
             var p = report.ToArray();
             if (p.Length != 64 || p[0] != 2) throw new InvalidDataException("Wrong wireless request envelope.");
+            if (p[1] == 0xC0 && p[2] == 0x81) { ColourPackets++; return; }
             var wired = new byte[65]; p.AsSpan(1, 63).CopyTo(wired.AsSpan(1));
             if (p[1] == 0x67 && p[2] == 0)
             {
@@ -1000,6 +1011,7 @@ public sealed partial class KeyboardDisplayServiceTests : IDisposable
                     b[2] = BadFirmware ? (byte)1 : (byte)0; b[5] = 0x24; b[7] = 1; b[9] = 6; b[11] = ProfileToken; break;
                 case (0x25, 0x0E): Convert.FromHexString(_native.Payloads[0]).CopyTo(b, 5); break;
                 case (0x51, 0x2C): _native = new(0, new[] { Convert.ToHexString(p.AsSpan(5, 14)) }); NativeWrites++; b = p; break;
+                case (0xC0, 0x81): b[0] = 0; b[1] = 0xC0; b[2] = 0x82; b[3] = p[3]; b[4] = 0; NativeWrites++; break;
                 case (0x27, 0): b[5] = SoftwareControl; break;
                 case (0x74, 0): SoftwareControl = p[5]; b[5] = SoftwareControl; Mutations++; break;
                 case (0x21, 0): b[5] = 3; break;

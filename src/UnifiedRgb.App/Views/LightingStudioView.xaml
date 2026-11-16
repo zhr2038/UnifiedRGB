@@ -54,7 +54,7 @@
     </Grid.RowDefinitions>
     <Border Background="#050505" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="8">
      <Grid>
-      <w:CaseTopology Zones="{Binding Zones}" SelectedZone="{Binding SelectedZone}" ColorHex="{Binding Draft.PrimaryColor}" Playing="{Binding PreviewPlaying}" Draft="{Binding Draft}" />
+      <w:CaseTopology Zones="{Binding Zones}" SelectedZone="{Binding SelectedZone}" ColorHex="{Binding Draft.PrimaryColor}" Playing="{Binding PreviewPlaying}" Draft="{Binding Draft}" DeviceStatuses="{Binding DeviceStatuses}" Screens="{Binding ScreenDevices}" KeyboardStatus="{Binding KeyboardDisplayStatus}" />
       <Button Content="{Binding PreviewButton}" Command="{Binding PreviewCommand}" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="8" Style="{StaticResource QuietButton}" FontSize="12" />
      </Grid>
     </Border>

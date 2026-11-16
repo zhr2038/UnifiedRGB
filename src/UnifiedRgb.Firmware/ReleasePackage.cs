@@ -55,8 +55,20 @@ public static partial class FirmwareFiles
             ReservedNames.Contains(s.Split('.')[0], StringComparer.OrdinalIgnoreCase)))
             throw new InvalidDataException("Noncanonical relative package path");
     }
+    public static void LocalFilePath(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path)) throw new InvalidDataException("Package path required");
+        if (path.StartsWith(@"\\", StringComparison.Ordinal) || path.StartsWith("//", StringComparison.Ordinal)
+            || path.StartsWith(@"\??\", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException("UNC and device namespace paths are forbidden");
+        var full = Path.GetFullPath(path);
+        if (full.StartsWith(@"\\", StringComparison.Ordinal) || full.StartsWith("//", StringComparison.Ordinal)
+            || (Uri.TryCreate(full, UriKind.Absolute, out var uri) && uri.IsUnc))
+            throw new InvalidDataException("UNC and device namespace paths are forbidden");
+    }
     public static void NoReparse(string path)
     {
+        LocalFilePath(path);
         for (var p = Path.GetFullPath(path); p is not null; p = Path.GetDirectoryName(p))
             if ((File.Exists(p) || Directory.Exists(p)) && (File.GetAttributes(p) & FileAttributes.ReparsePoint) != 0)
                 throw new InvalidDataException("Reparse paths forbidden");

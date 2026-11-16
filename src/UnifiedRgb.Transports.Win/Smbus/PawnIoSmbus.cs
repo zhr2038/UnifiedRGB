@@ -1,6 +1,9 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Security;
+using System.Security.AccessControl;
 using System.Security.Cryptography;
+using System.Security.Principal;
 using UnifiedRgb.Devices;
 
 namespace UnifiedRgb.Transports.Smbus;
@@ -210,12 +213,14 @@ public static class PawnIoPin
 
 /// <summary>
 /// One PIIX4 port through one loaded PawnIO module handle (NATIVE design §5.2): open, load the pinned blob,
-/// <c>ioctl_identity</c> (must be 1022:790B), <c>ioctl_piix4_port_sel(port)</c> once, <c>ioctl_set_sleep_mode(mode)</c> with the
+/// <c>ioctl_identity</c> (must be 1022:790B), <c>ioctl_piix4_port_sel(port)</c>, <c>ioctl_set_sleep_mode(mode)</c> with the
 /// configured mode (0..2, default 2; upstream sleepmode.inc: 0 AlwaysBusy, 1 ShortBusy, 2 AlwaysSleep; the module's own
 /// default before the ioctl is 0).
-/// No handle is shared between ports. Each compound runs under one bounded acquisition of the global SMBus mutex; on a
-/// timeout nothing is sent and the compound is dropped whole. Buffer sizes per operation follow the module source
-/// (<c>ioctl_smbus_xfer</c>: in 4..9, out 0..5), and the data union is marshalled as one 34-byte blob from in[4].
+/// No handle is shared between ports. Each compound or batch runs under one bounded acquisition of the global SMBus mutex,
+/// explicitly verifying/selecting <see cref="Port"/> via <c>ioctl_piix4_port_sel</c> (and restoring a changed primary mux port
+/// before releasing the mutex); on a timeout nothing is sent and the compound or batch is dropped whole. Buffer sizes per
+/// operation follow the module source (<c>ioctl_smbus_xfer</c>: in 4..9, out 0..5), and the data union is marshalled as one
+/// 34-byte blob from in[4].
 /// </summary>
 public sealed class PawnIoSmbus : IPawnIoPort
 {
@@ -334,26 +339,24 @@ public sealed class PawnIoSmbus : IPawnIoPort
                 throw new DeviceBlockedException($"{IoctlPortSelect}({port}): SMBus mutex not acquired within {mutexWaitMs} ms");
             }
 
-            nuint portCells;
+            SmbusResult? portError;
             try
             {
-                Span<ulong> prev = stackalloc ulong[1];
-                prev.Clear();
-                hr = library.Execute(handle, IoctlPortSelect, [(ulong)port], prev, out portCells);
+                if (TrySelectPort(library, handle, port, out var priorPort, out portError) && port == 0 && priorPort != 0)
+                {
+                    // Port 0 shares 0xFED80302 with ports 2..4; restore external routing before releasing the mutex.
+                    // Port 1 uses its own base (0x0B20) and ioctl_piix4_port_sel(1) never alters 0xFED80302.
+                    RestorePort(library, handle, priorPort);
+                }
             }
             finally
             {
                 mutex.Release();
             }
 
-            if (hr != 0)
+            if (portError is not null)
             {
-                throw new DeviceBlockedException($"{IoctlPortSelect}({port}) failed: HRESULT 0x{hr:X8}");
-            }
-
-            if (portCells != 1)
-            {
-                throw new DeviceBlockedException($"{IoctlPortSelect}({port}) returned {portCells} cells, expected 1; port selection not established");
+                throw new DeviceBlockedException(portError.Failure!);
             }
 
             hr = library.Execute(handle, IoctlSleepMode, [(ulong)sleepMode], Span<ulong>.Empty, out _);
@@ -410,15 +413,9 @@ public sealed class PawnIoSmbus : IPawnIoPort
         var started = Stopwatch.GetTimestamp();
         lock (_gate)
         {
-            if (_handle == IntPtr.Zero)
+            if (!TryBeginTransaction(started, out var priorPort, out var failure))
             {
-                return new SmbusResult(false, -1, 0, "port closed", Dropped: true);
-            }
-
-            if (!_mutex.Wait(_mutexWaitMs))
-            {
-                Interlocked.Increment(ref _mutexTimeouts);
-                return new SmbusResult(false, -1, 0, $"SMBus mutex not acquired within {_mutexWaitMs} ms; compound dropped", Dropped: true);
+                return failure;
             }
 
             try
@@ -428,7 +425,46 @@ public sealed class PawnIoSmbus : IPawnIoPort
             }
             finally
             {
-                _mutex.Release();
+                EndTransaction(priorPort);
+            }
+        }
+    }
+
+    public IReadOnlyList<SmbusResult> ExecuteBatch(IReadOnlyList<SmbusCompound> compounds)
+    {
+        ArgumentNullException.ThrowIfNull(compounds);
+        if (compounds.Count == 0)
+        {
+            return [];
+        }
+
+        var started = Stopwatch.GetTimestamp();
+        lock (_gate)
+        {
+            if (!TryBeginTransaction(started, out var priorPort, out var failure))
+            {
+                return [failure];
+            }
+
+            try
+            {
+                var results = new List<SmbusResult>(compounds.Count);
+                for (var i = 0; i < compounds.Count; i++)
+                {
+                    var itemStarted = Stopwatch.GetTimestamp();
+                    var r = Run(compounds[i]) with { WallMs = Stopwatch.GetElapsedTime(itemStarted).TotalMilliseconds };
+                    results.Add(r);
+                    if (!r.Ok)
+                    {
+                        break;
+                    }
+                }
+
+                return results;
+            }
+            finally
+            {
+                EndTransaction(priorPort);
             }
         }
     }
@@ -442,6 +478,98 @@ public sealed class PawnIoSmbus : IPawnIoPort
                 _library.Close(_handle);
                 _handle = IntPtr.Zero;
             }
+        }
+    }
+
+    private bool TryBeginTransaction(long started, out ulong priorPort, out SmbusResult failure)
+    {
+        if (_handle == IntPtr.Zero)
+        {
+            priorPort = (ulong)Port;
+            failure = new SmbusResult(false, -1, 0, "port closed", Dropped: true, Step: "closed");
+            return false;
+        }
+
+        if (!_mutex.Wait(_mutexWaitMs))
+        {
+            Interlocked.Increment(ref _mutexTimeouts);
+            priorPort = (ulong)Port;
+            failure = new SmbusResult(false, -1, 0, $"SMBus mutex not acquired within {_mutexWaitMs} ms; compound dropped", Dropped: true, Step: "mutex");
+            return false;
+        }
+
+        try
+        {
+            if (!TrySelectPort(_library, _handle, Port, out priorPort, out var portError))
+            {
+                _mutex.Release();
+                failure = portError! with { WallMs = Stopwatch.GetElapsedTime(started).TotalMilliseconds };
+                return false;
+            }
+
+            failure = null!;
+            return true;
+        }
+        catch
+        {
+            _mutex.Release();
+            throw;
+        }
+    }
+
+    private void EndTransaction(ulong priorPort)
+    {
+        try
+        {
+            if (Port == 0 && priorPort != 0)
+            {
+                RestorePort(_library, _handle, priorPort);
+            }
+        }
+        finally
+        {
+            _mutex.Release();
+        }
+    }
+
+    private static bool TrySelectPort(IPawnIoLibrary library, IntPtr handle, int port, out ulong priorPort, out SmbusResult? error)
+    {
+        Span<ulong> prev = stackalloc ulong[1];
+        prev.Clear();
+        var hr = library.Execute(handle, IoctlPortSelect, [(ulong)port], prev, out var portCells);
+        if (hr != 0)
+        {
+            priorPort = (ulong)port;
+            error = new SmbusResult(false, hr, 0, $"{IoctlPortSelect}({port}) failed: HRESULT 0x{hr:X8}", Step: IoctlPortSelect);
+            return false;
+        }
+
+        if (portCells != 1)
+        {
+            priorPort = (ulong)port;
+            error = new SmbusResult(false, 0, 0, $"{IoctlPortSelect}({port}) returned {portCells} cells, expected 1; port selection not established", Step: IoctlPortSelect);
+            return false;
+        }
+
+        priorPort = prev[0];
+        error = null;
+        return true;
+    }
+
+    private static void RestorePort(IPawnIoLibrary library, IntPtr handle, ulong priorPort)
+    {
+        if (priorPort > 4)
+        {
+            Trace.TraceWarning($"{IoctlPortSelect}: unexpected prior port {priorPort}; skipping restore.");
+            return;
+        }
+
+        Span<ulong> ignored = stackalloc ulong[1];
+        ignored.Clear();
+        var hr = library.Execute(handle, IoctlPortSelect, [priorPort], ignored, out var cells);
+        if (hr != 0 || cells != 1)
+        {
+            Trace.TraceWarning($"{IoctlPortSelect}({priorPort}) restore failed (HRESULT 0x{hr:X8}, cells {cells}).");
         }
     }
 
@@ -531,9 +659,85 @@ public sealed class GlobalSmbusMutex : ISmbusMutex
 {
     private readonly Mutex _mutex;
     private long _abandoned;
+
     public GlobalSmbusMutex() : this(SmbusConstants.GlobalMutexName) { }
-    internal GlobalSmbusMutex(string name) => _mutex = new Mutex(false, name);
+
+    internal GlobalSmbusMutex(string name, Func<MutexSecurity?>? securityFactory = null) =>
+        _mutex = OpenOrCreateMutex(name, securityFactory);
+
     public long AbandonedAcquisitions => Interlocked.Read(ref _abandoned);
+
+    internal static MutexSecurity CreatePermissiveSecurity()
+    {
+        var security = new MutexSecurity();
+        security.AddAccessRule(new MutexAccessRule(
+            new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null),
+            MutexRights.FullControl,
+            AccessControlType.Allow));
+        security.AddAccessRule(new MutexAccessRule(
+            new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null),
+            MutexRights.FullControl,
+            AccessControlType.Allow));
+        security.AddAccessRule(new MutexAccessRule(
+            new SecurityIdentifier(WellKnownSidType.AuthenticatedUserSid, null),
+            MutexRights.Synchronize | MutexRights.Modify,
+            AccessControlType.Allow));
+        security.AddAccessRule(new MutexAccessRule(
+            new SecurityIdentifier(WellKnownSidType.InteractiveSid, null),
+            MutexRights.Synchronize | MutexRights.Modify,
+            AccessControlType.Allow));
+        try
+        {
+            using var current = WindowsIdentity.GetCurrent();
+            if (current.User is { } user)
+            {
+                security.AddAccessRule(new MutexAccessRule(user, MutexRights.FullControl, AccessControlType.Allow));
+            }
+        }
+        catch (Exception ex) when (ex is SecurityException or UnauthorizedAccessException or PlatformNotSupportedException)
+        {
+            Trace.TraceWarning($"SMBus mutex ACL could not resolve current user SID: {ex.Message}");
+        }
+
+        return security;
+    }
+
+    internal static Mutex OpenOrCreateMutex(string name, Func<MutexSecurity?>? securityFactory = null)
+    {
+        MutexSecurity? security = null;
+        try
+        {
+            security = (securityFactory ?? CreatePermissiveSecurity)();
+        }
+        catch (Exception ex) when (ex is SecurityException or UnauthorizedAccessException or PlatformNotSupportedException or IdentityNotMappedException or NotSupportedException or InvalidOperationException)
+        {
+            Trace.TraceWarning($"SMBus mutex ACL creation failed for '{name}'; falling back to default mutex security: {ex.Message}");
+        }
+
+        if (security is not null)
+        {
+            try
+            {
+                return MutexAcl.Create(false, name, out _, security);
+            }
+            catch (UnauthorizedAccessException)
+            {
+                // Existing mutex created by another context may grant Synchronize | Modify without MUTEX_ALL_ACCESS.
+                if (MutexAcl.TryOpenExisting(name, MutexRights.Synchronize | MutexRights.Modify, out var existing))
+                {
+                    return existing;
+                }
+            }
+            catch (Exception ex) when (ex is SecurityException or PlatformNotSupportedException or NotSupportedException or PrivilegeNotHeldException)
+            {
+                Trace.TraceWarning($"SMBus mutex creation with permissive ACL failed for '{name}'; falling back to default mutex: {ex.Message}");
+            }
+        }
+
+        return MutexAcl.TryOpenExisting(name, MutexRights.Synchronize | MutexRights.Modify, out var opened)
+            ? opened
+            : new Mutex(false, name);
+    }
 
     public bool Wait(int milliseconds)
     {

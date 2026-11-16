@@ -241,9 +241,13 @@ public sealed class PawnIoSmbusProvider(EneDramOptions options, Func<string, IPa
 
         public long MutexTimeouts => port.MutexTimeouts;
 
+        public long AbandonedMutexAcquisitions => port.AbandonedMutexAcquisitions;
+
         public int? AppliedSleepMode => port.AppliedSleepMode;
 
         public SmbusResult Execute(SmbusCompound compound) => port.Execute(compound);
+
+        public IReadOnlyList<SmbusResult> ExecuteBatch(IReadOnlyList<SmbusCompound> compounds) => port.ExecuteBatch(compounds);
 
         public void Dispose()
         {

@@ -62,6 +62,7 @@ public sealed class RfDeliveryTracker(uint expected, RfMac mac, RfMac master, Rf
         if (report.Device.EffectIndex == expected)
         {
             _mismatchSamples = 0;
+            _mismatchSince = null;
             Status = Status with { State = "ReportedMatch", Detail = "Fresh receiver generation matches; optical playback is not verified." };
             return false;
         }

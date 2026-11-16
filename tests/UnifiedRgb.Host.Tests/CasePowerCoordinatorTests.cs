@@ -425,7 +425,7 @@ public sealed class CasePowerCoordinatorTests
     }
 
     [Fact]
-    public async Task Restore_queued_behind_a_blackout_while_the_mouse_is_away_is_refused_unretried_and_succeeds_once_it_is_back()
+    public async Task Restore_queued_behind_a_blackout_while_the_mouse_is_offline_keeps_active_devices_lit_and_preserves_saved_profile()
     {
         var hold = new Hold();
         var fake = new FakeRgbService(MixedScene(), MixedControllers()) { RenderZones = RenderLoopZones };
@@ -438,19 +438,35 @@ public sealed class CasePowerCoordinatorTests
         hold.Release();
         (await blackout.WaitAsync(Patience)).Changed.Should().BeTrue();
 
-        // The exact recovery point names the absent mouse, which the Host's strict SetScene still refuses (unchanged here).
-        await FluentActions.Awaiting(() => restore.WaitAsync(Patience)).Should().ThrowAsync<ArgumentException>().WithMessage("Unknown zone rog:mouse/0.");
+        // The strict SetScene call rejects absent rog:mouse/0; Restore queries controllers, filters only Offline targets,
+        // lights the active case controllers, and keeps the full saved profile intact.
+        (await restore.WaitAsync(Patience)).Changed.Should().BeTrue();
         fake.Calls.Should().Equal("GetScene#1", "ListControllers#1", "SaveProfile#1", "GetScene#2", "SetScene#1",
-            "GetScene#3", "LoadProfile#1", "GetScene#4", "SetScene#2");
-        fake.Applied.Should().ContainSingle();
-        CaseStatusSummary.IsBlackout(fake.Scene).Should().BeTrue();
-        fake.MaxConcurrentCalls.Should().Be(1);
+            "GetScene#3", "LoadProfile#1", "GetScene#4", "SetScene#2", "ListControllers#2", "SetScene#3");
+        fake.Applied.Should().HaveCount(2);
+        fake.Scene.Assignments.Should().OnlyContain(a => !a.Targets.Any(t => t.ControllerId == "rog:mouse"));
+        fake.Saved.Should().ContainSingle().Which.Scene.Should().BeEquivalentTo(MixedScene() with { Screens = null }, Exact);
 
+        // Once the mouse wakes and is re-selected into the scene, Blackout -> Restore preserves the complete MixedScene.
         fake.RenderZones = [.. RenderLoopZones, .. MouseZones];
+        await fake.SetSceneAsync(MixedScene());
+        (await coordinator.ExecuteAsync(CasePowerIntent.Blackout)).Changed.Should().BeTrue();
         (await coordinator.ExecuteAsync(CasePowerIntent.Restore)).Changed.Should().BeTrue();
-
-        fake.Saved.Should().ContainSingle();
         fake.Scene.Should().BeEquivalentTo(MixedScene(), Exact);
+    }
+
+    [Fact]
+    public async Task Restore_for_truly_unknown_non_offline_zone_is_refused_unretried()
+    {
+        var unknown = new SceneDto([new AssignmentDto([new ZoneRefDto("ghost:missing", 0)], "StaticColor", ["#FF0000"])]);
+        var fake = new FakeRgbService(unknown, MixedControllers()) { RenderZones = RenderLoopZones };
+        using var coordinator = new CasePowerCoordinator(fake);
+
+        (await coordinator.ExecuteAsync(CasePowerIntent.Blackout)).Changed.Should().BeTrue();
+        await FluentActions.Awaiting(() => coordinator.ExecuteAsync(CasePowerIntent.Restore))
+            .Should().ThrowAsync<ArgumentException>().WithMessage("Unknown zone ghost:missing/0.");
+        fake.Calls.Should().Equal("GetScene#1", "ListControllers#1", "SaveProfile#1", "GetScene#2", "SetScene#1",
+            "GetScene#3", "LoadProfile#1", "GetScene#4", "SetScene#2", "ListControllers#2");
     }
 
     [Theory]

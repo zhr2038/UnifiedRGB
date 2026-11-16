@@ -471,6 +471,39 @@ public sealed class RogPeripheralTests
     }
 
     [Theory]
+    [InlineData(false, 0, true)]
+    [InlineData(false, 100, true)]
+    [InlineData(false, 101, false)]
+    [InlineData(true, 0, true)]
+    [InlineData(true, 100, true)]
+    [InlineData(true, 101, false)]
+    public void Power_state_accepts_zero_through_100_percent_battery_and_rejects_above_100(bool mouse, byte battery, bool valid)
+    {
+        var target = mouse ? new RogPairedDevice(0x1D7C, 3, 5) : new RogPairedDevice(0x1C25, 2, 4);
+        var reply = new byte[64];
+        if (mouse) new byte[] { 3, 0x12, 7, 0, 0, battery, 2, 20, 0, 0, 0, 1, 1, 1, 255 }.CopyTo(reply, 0);
+        else new byte[] { 2, 0x12, 1, 0, 0, 0, battery, 3, 1, 0, 20 }.CopyTo(reply, 0);
+
+        Func<RogPowerState> parse = () => RogPowerProtocol.Parse(target, reply);
+        if (valid) parse.Should().NotThrow().Subject.IdleCode.Should().Be(mouse ? (byte)2 : (byte)3);
+        else parse.Should().Throw<InvalidDataException>();
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Receiver_power_query_and_idle_change_succeed_at_zero_percent_battery(bool mouse)
+    {
+        var hid = new FakeDevices { KeyboardBattery = 0, MouseBattery = 0 };
+        await using var session = new RogReceiverSession(hid, RogReceiver.Discover(hid).Single());
+        var target = (await session.QueryPairingAsync(default))[mouse ? 1 : 0];
+        var before = await session.QueryPowerAsync(target, default);
+        var result = await session.SetIdleTimeoutAsync(target, 255, true, default);
+        result.After.IdleCode.Should().Be(255);
+        before.SameOtherSettings(result.After).Should().BeTrue();
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task Explicit_sleep_action_requires_snapshot_and_verifies_only_idle_changed(bool mouse)
@@ -665,7 +698,9 @@ public sealed class RogPeripheralTests
         public bool MouseOnRoute2 { get; init; }
         public bool CorruptPowerOnWrite { get; init; }
         public byte KeyboardIdle { get; set; } = 2;
+        public byte KeyboardBattery { get; set; } = 90;
         public byte MouseIdle { get; set; } = 2;
+        public byte MouseBattery { get; set; } = 95;
         public byte MouseLowPower { get; set; } = 20;
         public RogMouseStaticState MouseState { get; set; } = new(100, new(255, 135, 20));
         public bool OneStatusFirst { get; init; }
@@ -765,10 +800,10 @@ public sealed class RogPeripheralTests
                         reply[3] = owner.KeyboardEffect; reply[7] = owner.KeyboardFlags;
                     }
                 }
-                if (reply[1] == 0x12 && reply[2] == 1) { reply[6] = 90; reply[7] = owner.KeyboardIdle; reply[8] = 1; }
+                if (reply[1] == 0x12 && reply[2] == 1) { reply[6] = owner.KeyboardBattery; reply[7] = owner.KeyboardIdle; reply[8] = 1; }
                 if (reply[1] == 0x12 && reply[2] == 7)
                 {
-                    reply[5] = 95; reply[6] = owner.MouseIdle; reply[7] = owner.MouseLowPower;
+                    reply[5] = owner.MouseBattery; reply[6] = owner.MouseIdle; reply[7] = owner.MouseLowPower;
                     reply[12] = 1; reply[13] = 1; reply[14] = 255;
                 }
                 if (owner.Failure == "rid") reply[0] = 3;

@@ -50,7 +50,9 @@ public sealed class PackageCaseDrawing : FrameworkElement
         foreach (var track in data.Tracks)
         {
             var target = vm.Roles.FirstOrDefault(r => r.Dto.Role == track.Info.Role)?.Selected;
-            var slot = CaseProjection.Slot(target?.Zone, track.Info.Role);
+            var controller = vm.FindController(target?.Zone?.ControllerId);
+            var zoneDto = vm.FindZone(target?.Zone);
+            var slot = CaseProjection.Slot(target?.Zone, track.Info.Role, controller, zoneDto);
             var count = Math.Min(track.Info.LedCount, 256);
             var points = slot is not null ? CaseProjection.LightingPoints(slot, count) : Enumerable.Range(0, count).Select(i => new Point(30 + 700.0 * i / count, 12 + unknownRow * 7)).ToArray();
             if (slot is null) unknownRow++;

@@ -1,4 +1,11 @@
 using System.Text.Json;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
+using UnifiedRgb.Core.Clock;
+using UnifiedRgb.Core.Effects;
+using UnifiedRgb.Core.Engine;
+using UnifiedRgb.Devices;
+using UnifiedRgb.Devices.AsusRog;
 using UnifiedRgb.Host.Services;
 using UnifiedRgb.Transports.WinUsb;
 
@@ -190,5 +197,236 @@ public sealed partial class KeyboardDisplayServiceTests
         await ((Func<Task>)(() => service.ReleaseForPeripheralConfigurationAsync(default))).Should().ThrowAsync<IOException>();
         File.ReadAllBytes(deferred).Should().Equal(before);
         File.Exists(SwitchJournal).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Bidirectional_USB_to_RF_and_RF_to_USB_switches_and_clean_stop_keep_per_key_writer_error_free()
+    {
+        static RogPerKeyMapOptions ReadyMap(string transport) => new()
+        {
+            Model = "synthetic",
+            Transport = transport,
+            Complete = true,
+            Verified = true,
+            Evidence = "synthetic test",
+            KeyOrderVerified = true,
+            Keys = RogAzothCandidateMap.For(transport).Map.Keys
+                .Select(k => new RogPerKeyCellOptions { LedId = k.LedId, Key = k.Key, Row = k.Row, Column = k.Column }).ToArray(),
+        };
+
+        var perKey = new RogPerKeyOptions
+        {
+            Enabled = true,
+            RfReportDelayMs = 0,
+            Maps = [ReadyMap(RogPerKeyLighting.WiredTransport), ReadyMap(RogPerKeyLighting.WirelessTransport)],
+        };
+        var kbOptions = BothPinned() with { LightingVerified = true, WirelessLightingVerified = true };
+        var hostOptions = new UnifiedRgbOptions
+        {
+            DataDirectory = _directory,
+            KeyboardDisplay = kbOptions,
+            AsusRog = new() { KeyboardPerKey = perKey },
+        };
+        var wired = new Factory();
+        var wireless = new WirelessFactory();
+        var bridge = new RogWiredLightingBridge();
+        await using var services = new ServiceCollection().AddSingleton(bridge).AddSingleton(hostOptions).BuildServiceProvider();
+        using var bus = new FrameBus();
+        var guard = new ClearGuard(takeoverEnabled: true);
+        await using var adapters = new AdapterHost([new WiredKeyboardAdapterFactory()], services, guard, bus,
+            () => new HybridSleeper(), NullLogger<AdapterHost>.Instance, hostOptions);
+        var clock = new ManualClock();
+        using var engine = new LightingEngine(hostOptions, adapters, bus, EffectRegistry.Default, clock,
+            new ProfileStore(hostOptions), new MountingStore(hostOptions), guard, new RgbNotifier(), NullLogger<LightingEngine>.Instance);
+        using var service = Make(kbOptions, wired, bridge, wireless, wiredRoutePresent: _ => wired.Available, perKey: perKey);
+        var controllerId = new ControllerId("asusr:wired:" + Key);
+
+        await engine.StartAsync(default);
+        using var pumpStop = new CancellationTokenSource();
+        var pump = Task.Run(async () =>
+        {
+            byte r = 1;
+            while (!pumpStop.IsCancellationRequested)
+            {
+                if (adapters.RescanRequested) await engine.RescanAsync(pumpStop.Token);
+                if (bus[controllerId] is { } mailbox)
+                {
+                    Array.Fill(mailbox.Back.Zones[0], new Rgb(r++, 20, 40));
+                    bus.Publish(controllerId, mailbox.Back);
+                }
+                try { await Task.Delay(25, pumpStop.Token); }
+                catch (OperationCanceledException) { break; }
+            }
+        });
+
+        try
+        {
+            await service.StartAsync(default);
+            await UntilAsync(() => bridge.Available && bridge.KeyFrameTransport == RogPerKeyLighting.WiredTransport,
+                "initial USB lighting owner");
+            await UntilAsync(() => engine.BuildStatus(false).Devices.Single() is { State: UnifiedRgb.Contracts.Dto.ControllerStates.Active, Written: >= 2 },
+                "USB per-key writes");
+            wired.Io.NativeWrites.Should().BeGreaterThanOrEqualTo(2);
+            engine.BuildStatus(false).Devices.Single().LastError.Should().BeNull();
+
+            // USB -> RF switch: even if USB disappears mid-write, AdapterHost + bridge transition cleanly to RF with LastError == null
+            wired.Available = false;
+            wired.Io.Removed = true;
+            await UntilAsync(() => bridge.Available && bridge.KeyFrameTransport == RogPerKeyLighting.WirelessTransport,
+                "USB->RF switch");
+            await UntilAsync(() => !adapters.RescanRequested && engine.BuildStatus(false).Devices.Single() is
+                { State: UnifiedRgb.Contracts.Dto.ControllerStates.Active, Written: >= 1, LastError: null }
+                && wireless.Channels.Any(c => c.ColourPackets > 0), "RF per-key writes after switch");
+            (await service.GetKeyboardDisplayStatusAsync()).LastError.Should().BeNull();
+
+            // RF -> USB switch: KeyboardTransportSwitch retires RF and reopens USB with LastError == null
+            var opensBeforeReturn = wired.Opens;
+            var ioBeforeReturn = wired.Io;
+            wired.Available = true;
+            await UntilAsync(() => bridge.Available && bridge.KeyFrameTransport == RogPerKeyLighting.WiredTransport
+                && wired.Opens > opensBeforeReturn && !ReferenceEquals(wired.Io, ioBeforeReturn),
+                "RF->USB switch");
+            await UntilAsync(() => !adapters.RescanRequested && engine.BuildStatus(false).Devices.Single() is
+                { State: UnifiedRgb.Contracts.Dto.ControllerStates.Active, Written: >= 1, LastError: null }
+                && wired.Io.NativeWrites >= 1, "USB per-key writes after switch");
+            (await service.GetKeyboardDisplayStatusAsync()).LastError.Should().BeNull();
+
+            // Clean stop suppresses not-ready errors and leaves LastError == null both before and after rescan
+            await service.StopAsync(default);
+            await Task.Delay(80);
+            engine.BuildStatus(false).Devices.Single().LastError.Should().BeNull();
+            await engine.RescanAsync(default);
+            engine.BuildStatus(false).Devices.Single().LastError.Should().BeNull();
+        }
+        finally
+        {
+            pumpStop.Cancel();
+            await pump;
+            await service.StopAsync(default);
+            await engine.StopAsync(default);
+        }
+    }
+
+    [Fact]
+    public async Task AdapterHost_rescan_clears_stale_not_ready_lastError_after_fault_on_switch_both_ways_and_clean_stop()
+    {
+        static RogPerKeyMapOptions ReadyMap(string transport) => new()
+        {
+            Model = "synthetic",
+            Transport = transport,
+            Complete = true,
+            Verified = true,
+            Evidence = "synthetic test",
+            KeyOrderVerified = true,
+            Keys = RogAzothCandidateMap.For(transport).Map.Keys
+                .Select(k => new RogPerKeyCellOptions { LedId = k.LedId, Key = k.Key, Row = k.Row, Column = k.Column }).ToArray(),
+        };
+
+        var perKey = new RogPerKeyOptions
+        {
+            Enabled = true,
+            RfReportDelayMs = 0,
+            Maps = [ReadyMap(RogPerKeyLighting.WiredTransport), ReadyMap(RogPerKeyLighting.WirelessTransport)],
+        };
+        var options = new UnifiedRgbOptions
+        {
+            DataDirectory = _directory,
+            KeyboardDisplay = BothPinned() with { LightingVerified = true, WirelessLightingVerified = true },
+            AsusRog = new() { KeyboardPerKey = perKey },
+        };
+        var bridge = new RogWiredLightingBridge();
+        await using var services = new ServiceCollection().AddSingleton(bridge).AddSingleton(options).BuildServiceProvider();
+        using var bus = new FrameBus();
+        var guard = new ClearGuard(takeoverEnabled: true);
+        await using var adapters = new AdapterHost([new WiredKeyboardAdapterFactory()], services, guard, bus,
+            () => new HybridSleeper(), NullLogger<AdapterHost>.Instance, options);
+        var clock = new ManualClock();
+        using var engine = new LightingEngine(options, adapters, bus, EffectRegistry.Default, clock,
+            new ProfileStore(options), new MountingStore(options), guard, new RgbNotifier(), NullLogger<LightingEngine>.Instance);
+        await engine.StartAsync(default);
+        try
+        {
+            var entry = adapters.Controllers.Should().ContainSingle().Subject;
+            entry.Descriptor.Name.Should().Be("ROG 夜魔 X（逐键）");
+
+            // 1. USB active
+            var usbOwner = bridge.Attach(RogPerKeyLighting.WiredTransport);
+            await adapters.RescanAsync(default);
+            entry.Writer.Should().NotBeNull();
+            var usbServe = Task.Run(async () =>
+            {
+                while (!usbOwner.HasWork) await Task.Delay(5);
+                usbOwner.TryTakeKeys(out var work).Should().BeTrue();
+                work!.Transport.Should().Be(RogPerKeyLighting.WiredTransport);
+                work.Completion.TrySetResult();
+            });
+            PublishOne();
+            await usbServe.WaitAsync(TimeSpan.FromSeconds(5));
+            await UntilAsync(() => engine.BuildStatus(false).Devices.Single().Written >= 1, "USB write counted");
+            engine.BuildStatus(false).Devices.Single().LastError.Should().BeNull();
+
+            // 2. Real fault latches "Keyboard USB owner is not ready." on Writer
+            bridge.Detach(usbOwner, RogLightingDetachReason.Fault);
+            PublishOne();
+            await UntilAsync(() => engine.BuildStatus(false).Devices.Single().LastError == "Keyboard USB owner is not ready.",
+                "fault latched onto DeviceWriter");
+
+            // 3. USB -> RF switch: rescan detaches the faulted writer and reopens cleanly on RF with LastError == null
+            await adapters.RescanAsync(default);
+            engine.BuildStatus(false).Devices.Single().LastError.Should().BeNull("detach clears stale writer error");
+            var rfOwner = bridge.Attach(RogPerKeyLighting.WirelessTransport);
+            await adapters.RescanAsync(default);
+            var rfServe = Task.Run(async () =>
+            {
+                while (!rfOwner.HasWork) await Task.Delay(5);
+                rfOwner.TryTakeKeys(out var work).Should().BeTrue();
+                work!.Transport.Should().Be(RogPerKeyLighting.WirelessTransport);
+                work.Completion.TrySetResult();
+            });
+            PublishOne();
+            await rfServe.WaitAsync(TimeSpan.FromSeconds(5));
+            await UntilAsync(() => engine.BuildStatus(false).Devices.Single().Written >= 1, "RF write counted");
+            engine.BuildStatus(false).Devices.Single().Should().Match<UnifiedRgb.Contracts.Dto.DeviceStatusDto>(
+                d => d.State == UnifiedRgb.Contracts.Dto.ControllerStates.Active && d.Dropped == 0 && d.LastError == null);
+
+            // 4. Real fault on RF -> RF -> USB switch clears stale error again
+            bridge.Detach(rfOwner, RogLightingDetachReason.Fault);
+            PublishOne();
+            await UntilAsync(() => engine.BuildStatus(false).Devices.Single().LastError == "Keyboard USB owner is not ready.",
+                "RF fault latched onto DeviceWriter");
+            var usbAgain = bridge.Attach(RogPerKeyLighting.WiredTransport);
+            await adapters.RescanAsync(default);
+            var usbAgainServe = Task.Run(async () =>
+            {
+                while (!usbAgain.HasWork) await Task.Delay(5);
+                usbAgain.TryTakeKeys(out var work).Should().BeTrue();
+                work!.Transport.Should().Be(RogPerKeyLighting.WiredTransport);
+                work.Completion.TrySetResult();
+            });
+            PublishOne();
+            await usbAgainServe.WaitAsync(TimeSpan.FromSeconds(5));
+            await UntilAsync(() => engine.BuildStatus(false).Devices.Single().Written >= 1, "USB reopen write counted");
+            engine.BuildStatus(false).Devices.Single().Should().Match<UnifiedRgb.Contracts.Dto.DeviceStatusDto>(
+                d => d.State == UnifiedRgb.Contracts.Dto.ControllerStates.Active && d.Dropped == 0 && d.LastError == null);
+
+            // 5. Clean stop leaves LastError null
+            bridge.Detach(usbAgain, RogLightingDetachReason.CleanStop);
+            PublishOne();
+            await Task.Delay(60);
+            engine.BuildStatus(false).Devices.Single().LastError.Should().BeNull();
+            await adapters.RescanAsync(default);
+            engine.BuildStatus(false).Devices.Single().LastError.Should().BeNull();
+        }
+        finally
+        {
+            await engine.StopAsync(default);
+        }
+
+        void PublishOne()
+        {
+            var box = bus[new("asusr:wired:" + Key)]!;
+            Array.Fill(box.Back.Zones[0], new Rgb(12, 34, 56));
+            bus.Publish(box.Controller.Id, box.Back);
+        }
     }
 }

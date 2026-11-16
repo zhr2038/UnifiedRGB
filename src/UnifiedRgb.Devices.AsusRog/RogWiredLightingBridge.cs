@@ -2,6 +2,19 @@ using System.Threading.Channels;
 
 namespace UnifiedRgb.Devices.AsusRog;
 
+/// <summary>Why the shared keyboard lighting owner is currently detached.</summary>
+public enum RogLightingDetachReason
+{
+    Fault = 0,
+    CleanStop = 1,
+    TransportSwitch = 2,
+    Standby = 3,
+}
+
+/// <summary>Raised to in-flight lighting writers when the active owner retires cleanly for a stop, standby, or transport switch.</summary>
+public sealed class RogLightingTransitionException(string message = "Keyboard lighting owner retired for a clean stop or transport switch.")
+    : IOException(message);
+
 /// <summary>
 /// One generation-owned pending lighting request. Completion of a colour means the actor received the exact wired payload
 /// echo; completion of a key frame means every C0 81 report received the stock C0/82 reply on the owner's connection. Key frames
@@ -10,30 +23,68 @@ namespace UnifiedRgb.Devices.AsusRog;
 /// </summary>
 public sealed class RogWiredLightingBridge
 {
+    private const int StateConnecting = 0;
+    private const int StateFaulted = 1;
+    private const int StateCleanTransition = 2;
+
     private Owner? _owner;
+    private int _unavailableState = StateConnecting;
     public event Action<bool>? AvailabilityChanged;
     public bool Available => Volatile.Read(ref _owner) is not null;
+
+    /// <summary>True when detached for a clean stop, standby wait, or transport switch (not a fault latch).</summary>
+    public bool ShouldSuppressUnavailableWrite => !Available && Volatile.Read(ref _unavailableState) == StateCleanTransition;
 
     /// <summary>The per-key transport the current owner services; null when there is no owner or it services no key frames.</summary>
     public string? KeyFrameTransport => Volatile.Read(ref _owner)?.KeyFrameTransport;
 
-    public Owner Attach()
+    public Owner Attach() => Attach(keyFrameTransport: null);
+
+    /// <summary>
+    /// Attaches a new owner generation and optionally pre-declares its per-key transport before publishing availability
+    /// so lighting writers never observe <see cref="Available"/> with a null <see cref="KeyFrameTransport"/>.
+    /// </summary>
+    public Owner Attach(string? keyFrameTransport)
     {
         var owner = new Owner();
+        if (!string.IsNullOrEmpty(keyFrameTransport)) owner.AcceptKeyFrames(keyFrameTransport);
         if (Interlocked.CompareExchange(ref _owner, owner, null) is not null) throw new InvalidOperationException("Wired lighting already has an owner.");
+        Volatile.Write(ref _unavailableState, StateConnecting);
         AvailabilityChanged?.Invoke(true); return owner;
     }
 
-    public void Detach(Owner owner)
+    public void Detach(Owner owner) => Detach(owner, RogLightingDetachReason.Fault);
+
+    public void Detach(Owner owner, RogLightingDetachReason reason)
     {
         ArgumentNullException.ThrowIfNull(owner);
         if (!ReferenceEquals(Interlocked.CompareExchange(ref _owner, null, owner), owner)) return;
-        owner.Close(); AvailabilityChanged?.Invoke(false);
+        var cleanTransition = reason != RogLightingDetachReason.Fault;
+        Volatile.Write(ref _unavailableState, cleanTransition ? StateCleanTransition : StateFaulted);
+        owner.Close(cleanTransition);
+        AvailabilityChanged?.Invoke(false);
+    }
+
+    /// <summary>Clears any prior unavailable fault state while no owner is attached (e.g. after clean stop, standby, or route reset).</summary>
+    public void MarkStandby()
+    {
+        if (Volatile.Read(ref _owner) is null) Volatile.Write(ref _unavailableState, StateCleanTransition);
+    }
+
+    /// <summary>Marks the detached bridge as faulted so blocked writes surface instead of silently dropping.</summary>
+    public void MarkFaulted()
+    {
+        if (Volatile.Read(ref _owner) is null) Volatile.Write(ref _unavailableState, StateFaulted);
     }
 
     public async Task WriteAsync(Rgb color, CancellationToken ct)
     {
-        var owner = Volatile.Read(ref _owner) ?? throw new InvalidOperationException("Wired keyboard owner not ready.");
+        var owner = Volatile.Read(ref _owner);
+        if (owner is null)
+        {
+            if (Volatile.Read(ref _unavailableState) == StateCleanTransition) throw new RogLightingTransitionException();
+            throw new InvalidOperationException("Wired keyboard owner not ready.");
+        }
         var request = new ColourRequest(color);
         if (!owner.Queue.Writer.TryWrite(request)) throw new InvalidOperationException("Wired colour queue unavailable.");
         try { await request.Completion.Task.WaitAsync(TimeSpan.FromSeconds(2), ct).ConfigureAwait(false); }
@@ -48,7 +99,12 @@ public sealed class RogWiredLightingBridge
     {
         ArgumentNullException.ThrowIfNull(keys);
         ArgumentException.ThrowIfNullOrEmpty(requiredTransport);
-        var owner = Volatile.Read(ref _owner) ?? throw new InvalidOperationException("Keyboard lighting owner not ready.");
+        var owner = Volatile.Read(ref _owner);
+        if (owner is null)
+        {
+            if (Volatile.Read(ref _unavailableState) == StateCleanTransition) throw new RogLightingTransitionException();
+            throw new InvalidOperationException("Keyboard lighting owner not ready.");
+        }
         if (owner.KeyFrameTransport != requiredTransport)
             throw new InvalidOperationException($"Keyboard lighting owner does not service per-key frames on {requiredTransport}.");
         var frame = keys.ToArray();
@@ -91,10 +147,13 @@ public sealed class RogWiredLightingBridge
             return true;
         }
 
-        internal void Close()
+        internal void Close(bool cleanTransition = false)
         {
             Queue.Writer.TryComplete();
-            while (Queue.Reader.TryRead(out var request)) request.Completion.TrySetException(new IOException("Wired keyboard generation ended."));
+            while (Queue.Reader.TryRead(out var request))
+                request.Completion.TrySetException(cleanTransition
+                    ? new RogLightingTransitionException()
+                    : new IOException("Wired keyboard generation ended."));
         }
     }
 

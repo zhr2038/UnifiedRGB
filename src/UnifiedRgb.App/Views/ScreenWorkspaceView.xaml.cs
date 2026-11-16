@@ -12,6 +12,7 @@ public enum ScreenWorkspaceLayout { Wide, Split, Compact }
 public partial class ScreenWorkspaceView : UserControl
 {
     private readonly DispatcherTimer _poll;
+    private readonly WindowActivityWatcher _activity;
     private bool _showProperties;
     private ScreenWorkspaceLayout? _appliedLayout;
     private bool _appliedAuxiliaryCondensed;
@@ -22,10 +23,16 @@ public partial class ScreenWorkspaceView : UserControl
         _poll = new DispatcherTimer(TimeSpan.FromSeconds(2), DispatcherPriority.Background,
             (_, _) => { if (DataContext is ScreensViewModel vm && vm.Available) vm.PollCommand.Execute(null); }, Dispatcher);
         _poll.Stop();
-        IsVisibleChanged += (_, _) => { if (IsVisible) _poll.Start(); else _poll.Stop(); };
-        Unloaded += (_, _) => _poll.Stop();
+        _activity = new WindowActivityWatcher(this, OnActivityChanged);
         Loaded += (_, _) => { ApplyAppearance(); ApplyLayout(); };
         SizeChanged += (_, _) => ApplyLayout();
+    }
+
+    private void OnActivityChanged(bool active, bool resumed)
+    {
+        if (!active) { _poll.Stop(); return; }
+        _poll.Start();
+        if (resumed && DataContext is ScreensViewModel vm && vm.Available) vm.PollCommand.Execute(null);
     }
 
     public ScreenWorkspaceLayout LayoutMode { get; private set; }

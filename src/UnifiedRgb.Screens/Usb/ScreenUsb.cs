@@ -104,6 +104,12 @@ internal interface IScreenUsbDiagnostics
     void ExpectResponse(byte command, uint timestamp);
 }
 
+internal interface IScreenUsbPipeReset
+{
+    /// <summary>Best-effort WinUSB pipe abort+reset on IN and OUT endpoints before closing a wedged channel.</summary>
+    bool TryResetPipes();
+}
+
 public interface IScreenUsbOpener
 {
     /// <summary>Opens the device; throws <see cref="ScreenTransferException"/> (AccessDenied, Disconnected, EndpointMismatch, ...).</summary>

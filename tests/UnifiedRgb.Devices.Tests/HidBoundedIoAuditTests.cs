@@ -1,3 +1,5 @@
+using System.ComponentModel;
+using Microsoft.Win32.SafeHandles;
 using UnifiedRgb.Transports.Hid;
 using UnifiedRgb.Transports.Safety;
 
@@ -5,6 +7,54 @@ namespace UnifiedRgb.Devices.Tests;
 
 public sealed class HidBoundedIoAuditTests
 {
+    [Theory]
+    [InlineData(0x1C24, 1, 65, true)]
+    [InlineData(0x1ACE, 2, 64, true)]
+    [InlineData(0x1ACE, 2, 64, false)]
+    public void Open_requests_256_input_buffers_for_both_wired_and_rf_paths_and_ignores_failures(
+        ushort pid, int iface, int reportLength, bool exclusive)
+    {
+        var collection = new HidCollectionInfo($@"\\?\hid#vid_0b05&pid_{pid:x4}&mi_{iface:x2}#fake",
+            0x0B05, pid, iface, 0xFF00, 1, reportLength, reportLength, 0);
+        var requests = new List<(SafeFileHandle Handle, uint Buffers, uint Share)>();
+
+        // 1. Successful setter call records 256 buffers.
+        using (var okHandle = WinHidReportDevices.OpenVerifiedHandle(collection, exclusive,
+            createFile: (_, _, share) =>
+            {
+                var h = new SafeFileHandle(new IntPtr(101), ownsHandle: false);
+                requests.Add((h, 0, share));
+                return h;
+            },
+            getAttributes: _ => (true, 0x0B05, pid),
+            setInputBuffers: (h, n) => { requests[^1] = (h, n, requests[^1].Share); return true; }))
+        {
+            okHandle.Should().NotBeNull();
+        }
+        requests.Should().ContainSingle().Which.Buffers.Should().Be(256u);
+        requests[0].Share.Should().Be(exclusive ? 1u : 3u);
+
+        // 2. False return and exceptions from unsupported/fake handles are ignored cleanly.
+        foreach (var failingSetter in new Func<SafeFileHandle, uint, bool>[]
+        {
+            (_, _) => false,
+            (_, _) => throw new Win32Exception(1),
+            (_, _) => throw new IOException("unsupported"),
+        })
+        {
+            using var ignored = WinHidReportDevices.OpenVerifiedHandle(collection, exclusive,
+                createFile: (_, _, _) => new SafeFileHandle(new IntPtr(102), ownsHandle: false),
+                getAttributes: _ => (true, 0x0B05, pid),
+                setInputBuffers: failingSetter);
+            ignored.IsInvalid.Should().BeFalse();
+        }
+
+        // 3. Real HidD_SetNumInputBuffers P/Invoke on an invalid/fake OS handle and closed/null handles never throw.
+        using var fakeOsHandle = new SafeFileHandle(new IntPtr(1), ownsHandle: false);
+        HidInputBuffers.TryConfigure(fakeOsHandle).Should().BeFalse();
+        using var invalidHandle = new SafeFileHandle(IntPtr.Zero, ownsHandle: false);
+        HidInputBuffers.TryConfigure(invalidHandle).Should().BeFalse();
+    }
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

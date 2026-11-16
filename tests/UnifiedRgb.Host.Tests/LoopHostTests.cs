@@ -89,6 +89,168 @@ public class LoopHostTests
     }
 
     [Fact]
+    public async Task StopAsync_isolates_uncertain_shared_adapter_cleanly_disposes_healthy_independent_adapter_and_rethrows()
+    {
+        var sys = new FakeSystem();
+        var guard = new WriterGuard(new ProcessScanner(sys));
+        using var bus = new FrameBus();
+        var sleepersDisposed = 0;
+
+        await using var sharedAdapter = new SharedTwoWriterAdapter("c:hung", "c:sibling");
+        await using var independentAdapter = new IndependentStopAdapter("c:healthy");
+        var host = new AdapterHost(
+            [new StubFactory(sharedAdapter), new StubFactory(independentAdapter)],
+            null!,
+            guard,
+            bus,
+            () => new CountingSleeper(() => Interlocked.Increment(ref sleepersDisposed)),
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<AdapterHost>.Instance)
+        {
+            WriterStopTimeout = TimeSpan.FromMilliseconds(120),
+        };
+
+        await host.StartAsync(CancellationToken.None);
+        host.Controllers.Should().HaveCount(3).And.OnlyContain(c => c.IsActive);
+
+        // Trigger the blocked in-flight write on c:hung, plus active writes on sibling & independent.
+        var hungBox = bus[new ControllerId("c:hung")]!;
+        var siblingBox = bus[new ControllerId("c:sibling")]!;
+        var healthyBox = bus[new ControllerId("c:healthy")]!;
+        hungBox.Back.Zones[0][0] = new Rgb(10, 20, 30);
+        siblingBox.Back.Zones[0][0] = new Rgb(10, 20, 30);
+        healthyBox.Back.Zones[0][0] = new Rgb(10, 20, 30);
+        bus.Publish(new ControllerId("c:hung"), hungBox.Back);
+        bus.Publish(new ControllerId("c:sibling"), siblingBox.Back);
+        bus.Publish(new ControllerId("c:healthy"), healthyBox.Back);
+
+        sharedAdapter.HungEntered.Wait(TimeSpan.FromSeconds(5)).Should().BeTrue();
+        var waitUntil = DateTime.UtcNow.AddSeconds(5);
+        while (DateTime.UtcNow < waitUntil && (sharedAdapter.SiblingWrites == 0 || independentAdapter.Writes == 0))
+            await Task.Delay(10);
+        sharedAdapter.SiblingWrites.Should().BePositive();
+        independentAdapter.Writes.Should().BePositive();
+
+        try
+        {
+            var stop = () => host.StopAsync();
+            await stop.Should().ThrowAsync<TimeoutException>();
+
+            // Healthy independent adapter was cleanly closed + disposed.
+            independentAdapter.ClosedIds.Should().Equal("c:healthy");
+            independentAdapter.Disposed.Should().Be(1);
+
+            // Uncertain hung controller AND its healthy sibling sharing the same IDeviceAdapter were NOT closed or disposed.
+            sharedAdapter.ClosedIds.Should().BeEmpty();
+            sharedAdapter.Disposed.Should().Be(0);
+
+            // Sleepers are NOT disposed when shutdown had uncertain writers (writer thread may still be touching its sleeper).
+            sleepersDisposed.Should().Be(0);
+        }
+        finally
+        {
+            sharedAdapter.ReleaseHung.Set();
+        }
+    }
+
+    private sealed class StubFactory(IDeviceAdapter adapter) : IDeviceAdapterFactory
+    {
+        public DeviceClass Class => adapter.Class;
+        public IDeviceAdapter Create(IServiceProvider sp) => adapter;
+    }
+
+    private sealed class CountingSleeper(Action onDispose) : IPreciseSleeper, IDisposable
+    {
+        public void SleepUntil(long deadlineTicks) => Thread.Sleep(1);
+        public void Dispose() => onDispose();
+    }
+
+    private sealed class SharedTwoWriterAdapter(string hungId, string siblingId) : IDeviceAdapter, IAsyncDisposable
+    {
+        private int _siblingWrites;
+        private int _disposed;
+        public ManualResetEventSlim HungEntered { get; } = new(false);
+        public ManualResetEventSlim ReleaseHung { get; } = new(false);
+        public List<string> ClosedIds { get; } = [];
+        public int SiblingWrites => Volatile.Read(ref _siblingWrites);
+        public int Disposed => Volatile.Read(ref _disposed);
+        public string Vendor => "Test";
+        public DeviceClass Class => DeviceClass.LianLi;
+        public event Action<HotplugEvent>? Hotplug { add { } remove { } }
+
+        public Task<IReadOnlyList<ControllerDescriptor>> DiscoverAsync(CancellationToken ct) =>
+            Task.FromResult<IReadOnlyList<ControllerDescriptor>>(
+            [
+                new(new ControllerId(hungId), "Hung", "H", DeviceType.Cooler, Class, hungId, [new ZoneDescriptor(new ZoneId(0), "z", ZoneLayout.Point)], Capabilities.DirectOnly(60)),
+                new(new ControllerId(siblingId), "Sibling", "S", DeviceType.Cooler, Class, siblingId, [new ZoneDescriptor(new ZoneId(0), "z", ZoneLayout.Point)], Capabilities.DirectOnly(60)),
+            ]);
+
+        public Task OpenAsync(ControllerId id, CancellationToken ct) => Task.CompletedTask;
+
+        public void WriteFrame(ControllerId id, ZoneId zone, ReadOnlySpan<Rgb> colors)
+        {
+            if (id.Value == hungId)
+            {
+                HungEntered.Set();
+                ReleaseHung.Wait(TimeSpan.FromSeconds(10));
+            }
+            else
+            {
+                Interlocked.Increment(ref _siblingWrites);
+            }
+        }
+
+        public Task SetFirmwareModeAsync(ControllerId id, FirmwareMode mode, CancellationToken ct) => throw new NotSupportedException();
+        public Telemetry? ReadTelemetry(ControllerId id) => null;
+
+        public Task CloseAsync(ControllerId id)
+        {
+            lock (ClosedIds) ClosedIds.Add(id.Value);
+            return Task.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            Interlocked.Increment(ref _disposed);
+            HungEntered.Dispose();
+            ReleaseHung.Dispose();
+            return ValueTask.CompletedTask;
+        }
+    }
+
+    private sealed class IndependentStopAdapter(string id) : IDeviceAdapter, IAsyncDisposable
+    {
+        private int _writes;
+        private int _disposed;
+        public List<string> ClosedIds { get; } = [];
+        public int Writes => Volatile.Read(ref _writes);
+        public int Disposed => Volatile.Read(ref _disposed);
+        public string Vendor => "Test";
+        public DeviceClass Class => DeviceClass.MsiGpu;
+        public event Action<HotplugEvent>? Hotplug { add { } remove { } }
+
+        public Task<IReadOnlyList<ControllerDescriptor>> DiscoverAsync(CancellationToken ct) =>
+            Task.FromResult<IReadOnlyList<ControllerDescriptor>>(
+                [new(new ControllerId(id), "Healthy", "I", DeviceType.Gpu, Class, id, [new ZoneDescriptor(new ZoneId(0), "z", ZoneLayout.Point)], Capabilities.DirectOnly(60))]);
+
+        public Task OpenAsync(ControllerId idValue, CancellationToken ct) => Task.CompletedTask;
+        public void WriteFrame(ControllerId idValue, ZoneId zone, ReadOnlySpan<Rgb> colors) => Interlocked.Increment(ref _writes);
+        public Task SetFirmwareModeAsync(ControllerId idValue, FirmwareMode mode, CancellationToken ct) => throw new NotSupportedException();
+        public Telemetry? ReadTelemetry(ControllerId idValue) => null;
+
+        public Task CloseAsync(ControllerId idValue)
+        {
+            lock (ClosedIds) ClosedIds.Add(idValue.Value);
+            return Task.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            Interlocked.Increment(ref _disposed);
+            return ValueTask.CompletedTask;
+        }
+    }
+
+    [Fact]
     public void Managed_is_the_default_even_with_a_stale_vendor_path_and_vendor_is_explicit()
     {
         var options = new LianLiOptions { YuzDllPath = @"C:\missing\yuz.dll" };

@@ -123,6 +123,9 @@ public sealed partial class AsusAuraAdapter : IWholeFrameAdapter, INativeBringup
                     {
                         known.Descriptor = descriptor;
                         known.Bindings = bindings;
+                        // A replug/resume can re-enumerate the collection under a new path; adopt it while no handle is open.
+                        if (known.Transport is null && !string.Equals(known.Collection.Path, c.Path, StringComparison.OrdinalIgnoreCase))
+                            known.Collection = c;
                     }
                 }
                 else
@@ -262,7 +265,11 @@ public sealed partial class AsusAuraAdapter : IWholeFrameAdapter, INativeBringup
 
     public Telemetry? ReadTelemetry(ControllerId id) => null;
 
-    /// <summary>Writer close: nothing is sent (no release command in evidence); the direct-mode state is not assumed afterwards.</summary>
+    /// <summary>
+    /// Writer close: nothing is sent (no release command in evidence); the direct-mode state is not assumed afterwards. The HID
+    /// handle is released too (unless a bring-up session still holds the board), so a recovery reopen or rescan opens a fresh
+    /// handle instead of reusing one a timeout already disposed or a sleep/replug invalidated.
+    /// </summary>
     public Task CloseAsync(ControllerId id)
     {
         var b = Get(id);
@@ -271,9 +278,19 @@ public sealed partial class AsusAuraAdapter : IWholeFrameAdapter, INativeBringup
             b.OpenForWriter = false;
             b.LastFrame = null;
             b.DirectSelected.Clear();
+            if (!b.OpenForBringup) ReleaseHandle(b);
         }
 
         return Task.CompletedTask;
+    }
+
+    private static void ReleaseHandle(Board b)
+    {
+        var transport = b.Transport;
+        b.Transport = null;
+        b.Chain = null;
+        b.Firewall = null;
+        transport?.Dispose();
     }
 
     public FrameBudgetStats? FrameBudget(ControllerId id)
@@ -438,6 +455,7 @@ public sealed partial class AsusAuraAdapter : IWholeFrameAdapter, INativeBringup
             b.OpenForBringup = false;
             b.Marker = null;
             b.DirectSelected.Clear();
+            if (!b.OpenForWriter) ReleaseHandle(b);
         }
 
         return Task.FromResult(Result("release", true, "no release command in evidence: nothing sent (the last frame remains)", [],
@@ -843,7 +861,7 @@ public sealed partial class AsusAuraAdapter : IWholeFrameAdapter, INativeBringup
     {
         public object Sync { get; } = new();
 
-        public HidCollectionInfo Collection { get; } = collection;
+        public HidCollectionInfo Collection { get; set; } = collection;
 
         public ControllerDescriptor Descriptor { get; set; } = descriptor;
 

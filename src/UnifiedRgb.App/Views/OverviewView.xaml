@@ -3,7 +3,7 @@
  <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="24"/><ColumnDefinition Width="300"/></Grid.ColumnDefinitions>
   <Border Background="{StaticResource SurfaceBrush}" CornerRadius="10"><Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
    <DockPanel Margin="24,22,24,0"><TextBlock Text="机箱布局" FontSize="16" FontWeight="SemiBold"/><TextBlock Text="安装布局示意" Style="{StaticResource Caption}" HorizontalAlignment="Right"/></DockPanel>
-   <w:CaseTopology Grid.Row="1" Zones="{Binding Zones}" SelectedZone="{Binding SelectedZone}" ColorHex="{Binding Draft.PrimaryColor}" Playing="{Binding PreviewPlaying}" Draft="{Binding Draft}" MinHeight="160" Margin="8,12"/>
+   <w:CaseTopology Grid.Row="1" Zones="{Binding Zones}" SelectedZone="{Binding SelectedZone}" ColorHex="{Binding Draft.PrimaryColor}" Playing="{Binding PreviewPlaying}" Draft="{Binding Draft}" DeviceStatuses="{Binding DeviceStatuses}" Screens="{Binding ScreenDevices}" KeyboardStatus="{Binding KeyboardDisplayStatus}" MinHeight="160" Margin="8,12"/>
    <Border Grid.Row="2" BorderBrush="{StaticResource LineBrush}" BorderThickness="0,1,0,0" Margin="24,0" Padding="0,16"><WrapPanel><Button Content="{Binding PreviewButton}" Command="{Binding PreviewCommand}" Style="{StaticResource QuietButton}" Margin="0,0,8,6"/><Button Content="灯光编排" Command="{Binding NavigateCommand}" CommandParameter="1" Style="{StaticResource QuietButton}" Margin="0,0,8,6"/><Button Content="机箱屏幕" Command="{Binding NavigateCommand}" CommandParameter="2" Style="{StaticResource QuietButton}" Margin="0,0,0,6"/></WrapPanel></Border>
   </Grid></Border>
   <ScrollViewer Grid.Column="2"><StackPanel Margin="0,4,10,0">

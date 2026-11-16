@@ -23,6 +23,8 @@ public sealed partial class KeyboardDisplayService : BackgroundService, IKeyboar
     private readonly RogWiredLightingBridge _lighting;
     private readonly PeripheralConfigurationGate? _configurationGate;
     private readonly KeyboardDisplayAnimation _animation;
+    private readonly Lazy<KeyboardArtworkRenderer> _artworkRenderer = new(() => new KeyboardArtworkRenderer("Keyboard display artwork"));
+    internal KeyboardArtworkRenderer? ArtworkRenderer => _artworkRenderer.IsValueCreated ? _artworkRenderer.Value : null;
     private readonly IKeyboardNativePresentationCapability? _nativePresentation;
     private readonly Func<byte[], byte[]>? _nativeFrameOverlay;
     private readonly Action<byte[]>? _nativeFrameAcknowledged;
@@ -50,6 +52,7 @@ public sealed partial class KeyboardDisplayService : BackgroundService, IKeyboar
     private const int ColdStartRetries = 3;
     private int _coldStartRetries;
     private int _observationReplacements;
+    private int _configurationReleased;
     private long _nativeImageRetries;
     private long _intentRevision;
     private KeyboardDisplayStatusDto _status;
@@ -113,6 +116,8 @@ public sealed partial class KeyboardDisplayService : BackgroundService, IKeyboar
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException) { _enabled = false; error = "本机控制屏设置无法读取"; }
         _status = new(_enabled, error is null ? "Stopped" : "Error", error ?? "键盘状态屏未启动", 0, 0, null, error);
+        if (error is not null) _lighting.MarkFaulted();
+        else _lighting.MarkStandby();
         _animation = new KeyboardDisplayAnimation(options.KeyboardDisplay, options.ResolvedDataDirectory, keyboardMedia, sharedTimeline, time, masterClock, sceneLoopDurationMs);
     }
 
@@ -235,16 +240,19 @@ public sealed partial class KeyboardDisplayService : BackgroundService, IKeyboar
     /// <summary>Terminal Host stop: the animation is retired before the owner session stops (its running preparation or preview is
     /// cancelled, the pending binding dropped and no later work admitted; an unfinished decode keeps the one worker until it ends).
     /// A session end, reconnect or page toggle never does this.</summary>
-    public override Task StopAsync(CancellationToken cancellationToken)
+    public override async Task StopAsync(CancellationToken cancellationToken)
     {
         _animation.Dispose(); // the same idempotent, nonblocking retirement as Dispose
-        return base.StopAsync(cancellationToken);
+        _lighting.MarkStandby();
+        await base.StopAsync(cancellationToken).ConfigureAwait(false);
+        _lighting.MarkStandby();
     }
 
     public override void Dispose()
     {
         _animation.Dispose();
         base.Dispose();
+        if (_artworkRenderer.IsValueCreated) _artworkRenderer.Value.Dispose();
     }
 
     public Task<KeyboardDisplayStatusDto> GetKeyboardDisplayStatusAsync(CancellationToken ct = default)
@@ -270,6 +278,7 @@ public sealed partial class KeyboardDisplayService : BackgroundService, IKeyboar
             // native entry, so it never restarts that owner (no DISARM/re-ARM, no fresh logo, the lever stays live).
             var sameEpoch = Volatile.Read(ref _presentation) is not null && _nativeMenu?.Requested == true;
             if ((!_lighting.Available && !sameEpoch) || restartFaultedOwner) _sessionStop?.Cancel();
+            if (!_lighting.Available) _lighting.MarkStandby();
             Publish(_nativeMenu?.OwnsDisplayOutput == true && !restartFaultedOwner ? "Stopped" : enabled ? "Connecting" : "Stopping", _nativeMenu?.OwnsDisplayOutput == true
                 ? InactiveDisplayDetail : enabled ? "等待接入键盘状态屏" : "正在恢复键盘原显示设置");
         }
@@ -296,7 +305,11 @@ public sealed partial class KeyboardDisplayService : BackgroundService, IKeyboar
             lock (_gate)
             {
                 // Explicit enable/disable clears a sticky communication fault; a failed protocol is never retried in a loop.
-                if (_status.State is "Connecting" or "Stopping") faulted = false;
+                if (_status.State is "Connecting" or "Stopping")
+                {
+                    faulted = false;
+                    _lighting.MarkStandby();
+                }
                 sessionStop = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken); _sessionStop = sessionStop;
             }
             using (sessionStop)
@@ -305,19 +318,29 @@ public sealed partial class KeyboardDisplayService : BackgroundService, IKeyboar
                 IRogOledConnection? acquiredConnection = null;
                 try
                 {
-                    if (_configurationGate?.RogAcquisitionAllowed == false && _configurationGate.FreshResumeAllowed == false)
+                    if ((Volatile.Read(ref _configurationReleased) != 0 || _configurationGate?.RogAcquisitionAllowed == false)
+                        && _configurationGate?.FreshResumeAllowed != true)
                     {
-                        if (Volatile.Read(ref _status).LastError is null) Publish("Stopped", "ROG interfaces are released for peripheral configuration");
+                        if (Volatile.Read(ref _status).LastError is null)
+                        {
+                            _lighting.MarkStandby();
+                            Publish("Stopped", "ROG interfaces are released for peripheral configuration");
+                        }
                         await Task.Delay(500, sessionStop.Token).ConfigureAwait(false); continue;
                     }
                     if (faulted && RetiredRouteChangeProven())
                     {
                         faulted = false;
+                        _lighting.MarkStandby();
                         Publish("Connecting", "已确认旧接口移除或新的有线接口就绪；保留恢复记录，正在接入键盘当前连接方式");
                     }
                     if ((!_enabled && !_options.KeyboardDisplay.HasVerifiedLightingRoute && _nativeMenu?.Requested != true) || faulted)
                     {
-                        if (!_enabled && !faulted) Publish("Stopped", "键盘状态屏已关闭");
+                        if (!_enabled && !faulted)
+                        {
+                            _lighting.MarkStandby();
+                            Publish("Stopped", "键盘状态屏已关闭");
+                        }
                         await Task.Delay(500, sessionStop.Token).ConfigureAwait(false); continue;
                     }
                     RequirePins();
@@ -330,6 +353,7 @@ public sealed partial class KeyboardDisplayService : BackgroundService, IKeyboar
                     {
                         sessionDone.TrySetResult();
                         CompleteResume(new KeyboardResumeResult(false, null));
+                        _lighting.MarkStandby();
                         var requested = _enabled || _options.KeyboardDisplay.HasVerifiedLightingRoute || _nativeMenu?.Requested == true;
                         Publish(requested ? "Waiting" : "Stopped", requested ? "等待已绑定键盘的 USB 或 2.4G 无线连接；设备上线后自动接管" : "键盘状态屏已关闭");
                         await Task.Delay(5000, sessionStop.Token).ConfigureAwait(false); continue;
@@ -362,14 +386,17 @@ public sealed partial class KeyboardDisplayService : BackgroundService, IKeyboar
                 catch (OperationCanceledException) when (sessionStop.IsCancellationRequested) { }
                 catch (KeyboardTransportChangedException)
                 {
+                    _lighting.MarkStandby();
                     Publish("Connecting", "已检测到绑定键盘的 USB 连接；旧无线会话已关闭，正在接入有线并重新协商原生页面");
                 }
                 catch (KeyboardRecoveryIntentChangedException)
                 {
+                    _lighting.MarkStandby();
                     Publish("Connecting", "键盘使用请求已更新，正在按当前请求重新核对连接");
                 }
                 catch (RogOledConnectionLostException ex)
                 {
+                    _lighting.MarkStandby();
                     CompleteResume(new KeyboardResumeResult(true, ex));
                     Publish("Waiting", "键盘控制接口已断开；保留原设置并等待有线或 2.4G 无线重连");
                     // A toggle or Host stop may cancel this delay after control has already entered the catch.
@@ -381,6 +408,7 @@ public sealed partial class KeyboardDisplayService : BackgroundService, IKeyboar
                     && Volatile.Read(ref _coldStartRetries) < ColdStartRetries
                     && _configurationGate?.RogAcquisitionAllowed != false && _configurationGate?.FreshResumeAllowed != true)
                 {
+                    _lighting.MarkStandby();
                     var attempt = Interlocked.Increment(ref _coldStartRetries);
                     Publish("Connecting", $"键盘只读初始化超时，正在重新核对当前连接（{attempt}/{ColdStartRetries}）");
                     try { await Task.Delay(500, sessionStop.Token).ConfigureAwait(false); }
@@ -392,12 +420,14 @@ public sealed partial class KeyboardDisplayService : BackgroundService, IKeyboar
                     CompleteResume(new KeyboardResumeResult(true, ex));
                     // Recovery was already bounded by RunSessionAsync. An ambiguous ACK must not start an upload retry loop.
                     faulted = true;
+                    _lighting.MarkFaulted();
                     Publish("Error", "键盘响应超时；检查连接后关闭再开启，未自动重发画面", error: ex.GetType().Name + ": " + ex.Message);
                 }
                 catch (RogKeyboardNotReadyException) when (Volatile.Read(ref _coldStartRetries) < ColdStartRetries)
                 {
                     // Raised only before any write. That owner is already disposed; the next turn acquires a fresh one through the
                     // same factory and pairing query. A pending Resume stays pending until a startup succeeds or attempts run out.
+                    _lighting.MarkStandby();
                     var attempt = Interlocked.Increment(ref _coldStartRetries);
                     Publish("Connecting", $"2.4G 接收器已应答但键盘尚未就绪；未写入任何设置，正在重新连接（{attempt}/{ColdStartRetries}）");
                     try { await Task.Delay(500, sessionStop.Token).ConfigureAwait(false); }
@@ -407,18 +437,21 @@ public sealed partial class KeyboardDisplayService : BackgroundService, IKeyboar
                 {
                     // This typed startup outcome was raised before settings/output. Normal acquisition may wait for a wake;
                     // an explicit maintenance FreshResume keeps its existing bounded failure behavior instead.
+                    _lighting.MarkStandby();
                     Publish("Waiting", "2.4G 接收器已应答但键盘尚未就绪；未写入设置，等待唤醒并每 5 秒重新读取");
                     try { await Task.Delay(5000, sessionStop.Token).ConfigureAwait(false); }
                     catch (OperationCanceledException) when (sessionStop.IsCancellationRequested) { }
                 }
                 catch (RogKeyboardStartupNotReadyException) when (_configurationGate is { RogAcquisitionAllowed: true, FreshResumeAllowed: false })
                 {
+                    _lighting.MarkStandby();
                     Publish("Waiting", "键盘只读初始化尚未就绪；保留当前设置，每 5 秒等待自动接管");
                     try { await Task.Delay(5000, sessionStop.Token).ConfigureAwait(false); }
                     catch (OperationCanceledException) when (sessionStop.IsCancellationRequested) { }
                 }
                 catch (KeyboardPresentationNotReadyException) when (_configurationGate is { RogAcquisitionAllowed: true, FreshResumeAllowed: false })
                 {
+                    _lighting.MarkStandby();
                     Publish("Waiting", "键盘恢复所需的只读状态尚未就绪；保留恢复记录，每 5 秒重新核对设备");
                     try { await Task.Delay(5000, sessionStop.Token).ConfigureAwait(false); }
                     catch (OperationCanceledException) when (sessionStop.IsCancellationRequested) { }
@@ -427,7 +460,9 @@ public sealed partial class KeyboardDisplayService : BackgroundService, IKeyboar
                 {
                     RememberRetiredRouteFault(acquiredConnection);
                     CompleteResume(new KeyboardResumeResult(true, ex));
-                    faulted = true; Publish("Error", ex is RecoveryScopeException scope ? scope.UserDetail
+                    faulted = true;
+                    _lighting.MarkFaulted();
+                    Publish("Error", ex is RecoveryScopeException scope ? scope.UserDetail
                         : ex is RogKeyboardNotReadyException ? "2.4G 键盘多次未就绪；未写入任何设置，唤醒键盘后关闭再开启"
                         : "键盘状态屏接入失败；检查连接后关闭再开启", error: ex.GetType().Name + ": " + ex.Message);
                 }
@@ -438,6 +473,7 @@ public sealed partial class KeyboardDisplayService : BackgroundService, IKeyboar
                     catch (Exception ex) when (ex is not OutOfMemoryException)
                     {
                         _retiredRouteFault = null;
+                        _lighting.MarkFaulted();
                         Publish("Error", "旧键盘会话关闭未完成；保留恢复记录，停止自动接管", error: ex.GetType().Name);
                     }
                     lock (_gate)
@@ -728,11 +764,13 @@ public sealed partial class KeyboardDisplayService : BackgroundService, IKeyboar
         Task? active;
         lock (_gate)
         {
+            Volatile.Write(ref _configurationReleased, 1);
             Interlocked.Increment(ref _intentRevision);
             stop = _sessionStop;
             active = _activeSession;
         }
         stop?.Cancel();
+        _lighting.MarkStandby();
         if (active is not null) await active.WaitAsync(ct).ConfigureAwait(false);
         ValidateDeferredRecovery();
         if (active is not null && File.Exists(_journalPath))
@@ -785,6 +823,7 @@ public sealed partial class KeyboardDisplayService : BackgroundService, IKeyboar
     public async Task ResumeAfterPeripheralConfigurationAsync(CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
+        Volatile.Write(ref _configurationReleased, 0);
         if (!_enabled && !_options.KeyboardDisplay.HasVerifiedLightingRoute && _nativeMenu?.Requested != true) return;
         Task<KeyboardResumeResult> completion;
         lock (_gate)
@@ -795,6 +834,7 @@ public sealed partial class KeyboardDisplayService : BackgroundService, IKeyboar
             _resumeCompletion = fresh;
             completion = fresh.Task;
             Volatile.Write(ref _coldStartRetries, 0);
+            _lighting.MarkStandby();
             Publish(_enabled ? "Connecting" : "Stopping", "正在重新读取键盘当前显示与灯光设置");
             _sessionStop?.Cancel();
         }
@@ -995,7 +1035,7 @@ public sealed partial class KeyboardDisplayService : BackgroundService, IKeyboar
             Volatile.Write(ref _coldStartRetries, 0);
             CompleteResume(new KeyboardResumeResult(true, null));
             recoveryVerified?.Invoke(); // only the recorded restoration/startup has completed; this never resets the episode budget
-            if (ownsLighting) lighting = _lighting.Attach();
+            if (ownsLighting) lighting = _lighting.Attach(RogPerKeyLighting.TransportFor(connection.ConnectionKind));
             monitor = MonitorAsync();
             var presentation = nativeMenu is not null && NativePresentationDeclared(connection)
                 ? new KeyboardNativePresentation(_animation, _options.KeyboardDisplay.DeviceShowsNativeEntryLogo ? null : EntryLogo(), _time,
@@ -1120,9 +1160,17 @@ public sealed partial class KeyboardDisplayService : BackgroundService, IKeyboar
                 && nativeMenu?.RecoveryBlocked != true;
             monitorStop.Cancel();
             if (monitor is not null) await monitor.ConfigureAwait(false);
-            if (lighting is not null) _lighting.Detach(lighting);
-            var errors = new List<Exception>();
             confirmedRemoval = failure is RogOledConnectionLostException && connection.PhysicalRouteAbsent;
+            if (lighting is not null)
+            {
+                var detachReason = failure is null || (failure is OperationCanceledException && ct.IsCancellationRequested)
+                    ? RogLightingDetachReason.CleanStop
+                    : transportChanged || confirmedRemoval || observationRetired
+                        ? RogLightingDetachReason.TransportSwitch
+                        : RogLightingDetachReason.Fault;
+                _lighting.Detach(lighting, detachReason);
+            }
+            var errors = new List<Exception>();
             // Native faults suppress unsafe cleanup; they do not prove removal or authorize an automatic new owner.
             var recoveryBlocked = transportChanged || confirmedRemoval || nativeMenu?.RecoveryBlocked == true || classifiedObservation;
             if (!recoveryComplete && !recoveryBlocked && session.LightingTouched && session.OriginalLighting is { } native && session.OriginalStaticBank is { } bank)
@@ -1305,7 +1353,7 @@ public sealed partial class KeyboardDisplayService : BackgroundService, IKeyboar
         ArgumentNullException.ThrowIfNull(observation);
         ArgumentNullException.ThrowIfNull(current);
         if (_configurationGate?.RogAcquisitionAllowed == false) return false;
-        var pixels = KeyboardStatusArtwork.Render(observation);
+        var pixels = _artworkRenderer.Value.Render(observation);
         lock (_artwork)
         {
             if (_configurationGate?.RogAcquisitionAllowed == false || !current()) return false;
@@ -1336,7 +1384,7 @@ public sealed partial class KeyboardDisplayService : BackgroundService, IKeyboar
     private byte[]? EntryLogo()
     {
         if (Volatile.Read(ref _entryLogo) is { } logo) return logo;
-        try { logo = KeyboardStatusArtwork.RenderLogo(); }
+        try { logo = _artworkRenderer.Value.RenderLogo(); }
         catch (Exception ex) when (ex is not OutOfMemoryException) { return null; }
         Volatile.Write(ref _entryLogo, logo);
         return logo;
@@ -1373,7 +1421,7 @@ public sealed partial class KeyboardDisplayService : BackgroundService, IKeyboar
             if (blackout is { } confirmed) Volatile.Write(ref _caseBlackout, confirmed);
             if (observation == _lastObservation) return;
         }
-        var pixels = KeyboardStatusArtwork.Render(observation);
+        var pixels = _artworkRenderer.Value.Render(observation);
         lock (_artwork)
         {
             if (version != _artworkVersion) return;

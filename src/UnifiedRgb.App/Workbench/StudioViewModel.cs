@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.Text.Json;
+using System.Windows.Input;
 using UnifiedRgb.App.Ipc;
 using UnifiedRgb.App.Mvvm;
 using UnifiedRgb.Contracts;
@@ -30,6 +31,7 @@ public sealed class StudioViewModel : ObservableObject, IDisposable
     private string _clock = "—";
     private string _period = "—";
     private string _health = "等待后台服务";
+    private string _baseHealth = "等待后台服务";
     private string _written = "—";
     private string _updated = "尚未读取";
     private int _page;
@@ -38,8 +40,16 @@ public sealed class StudioViewModel : ObservableObject, IDisposable
     private bool _updatingAssignments;
     private bool _replacePackage;
     private bool _sceneReadbackRequired;
+    private bool _suppressControlPanelRefresh;
+    private bool _connected = true;
     private string? _activePackageContentId;
+    private IReadOnlyList<ControllerDto> _controllers = [];
+    private IReadOnlyList<DeviceStatusDto> _deviceStatuses = [];
+    private IReadOnlyList<ScreenDeviceDto> _screens = [];
+    private KeyboardDisplayStatusDto? _keyboardStatus;
+    private CaseHealthReport _healthReport;
     public string? ActivePackageContentId => _activePackageContentId;
+    internal bool IsCurrentlyBlackout => CasePowerActions.IsBlackout(_scene);
 
     public StudioViewModel(IHostConnection client, IUiDispatcher ui, Action<Exception> onError, Func<string, bool>? confirm = null, Func<IScreenService>? screens = null,
         Func<IKeyboardDisplayService>? keyboardDisplay = null)
@@ -49,6 +59,22 @@ public sealed class StudioViewModel : ObservableObject, IDisposable
         _confirm = confirm ?? (_ => true);
         _casePower = new(() => _client.Require());
         ControlPanel = new(_casePower, _client.Require, screens, ui, onError, keyboardDisplay: keyboardDisplay);
+        ControlPanel.CasePowerCompleted += (_, _) =>
+        {
+            if (!_suppressControlPanelRefresh && _connected)
+            {
+                _ = RefreshAsync(!Draft.Dirty);
+            }
+        };
+        ControlPanel.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName == nameof(CaseControlPanelViewModel.KeyboardStatus))
+            {
+                _keyboardStatus = ControlPanel.KeyboardStatus;
+                OnPropertyChanged(nameof(KeyboardDisplayStatus));
+                RecomputeHealth();
+            }
+        };
         Draft.ChangedDraft += (_, _) => OnPropertyChanged(nameof(SceneDescription));
         ReadCommand = new AsyncCommand(ReadReplacingDraftAsync, onError);
         ApplyCommand = new AsyncCommand(_ => ApplyAsync(), onError, _ => CanEditDraft);
@@ -91,6 +117,19 @@ public sealed class StudioViewModel : ObservableObject, IDisposable
     public string PeriodTitle => _scene.Assignments.Count > 0 && _scene.Assignments.All(a => a.EffectId == "StaticColor" && a.Strategy != "Frames") ? "播放状态" : "循环周期";
     public bool CanEditDraft => _assignment?.Dto.FrameSetId?.StartsWith("package:", StringComparison.Ordinal) != true;
     public string Health { get => _health; private set => SetProperty(ref _health, value); }
+    public IReadOnlyList<DeviceStatusDto> DeviceStatuses => _deviceStatuses;
+    public IReadOnlyList<ScreenDeviceDto> ScreenDevices => _screens;
+    public KeyboardDisplayStatusDto? KeyboardDisplayStatus => _keyboardStatus;
+    public bool HasHealthIssue => _connected && _healthReport.HasAnyIssue;
+    public string HealthAlertText => _healthReport.DetailedNotice;
+    public bool HasRfDeliveryIssue => _connected && _healthReport.HasRfIssue;
+    public bool HasScreenError => _connected && _healthReport.HasScreenError;
+    public bool HasFanLcdScreenError => _connected && _healthReport.HasFanLcdScreenError;
+    public bool HasKeyboardError => _connected && _healthReport.HasKeyboardError;
+    public bool CanResyncLianLiFromAlert => HasRfDeliveryIssue && ResyncLianLiCommand is not null;
+    public bool CanRestartFanLcdFromAlert => HasFanLcdScreenError && RestartFanLcdCommand is not null;
+    public ICommand? ResyncLianLiCommand { get; internal set; }
+    public ICommand? RestartFanLcdCommand { get; internal set; }
     public string Written { get => _written; private set => SetProperty(ref _written, value); }
     public string Updated { get => _updated; private set => SetProperty(ref _updated, value); }
     public int Page
@@ -145,6 +184,7 @@ public sealed class StudioViewModel : ObservableObject, IDisposable
         _ui.Post(() =>
         {
             if (request != Volatile.Read(ref _refreshId)) return;
+            _controllers = controllers;
             _sceneReadbackRequired = false;
             _activePackageContentId = scene.Package?.ContentId;
             OnPropertyChanged(nameof(ActivePackageContentId));
@@ -156,16 +196,76 @@ public sealed class StudioViewModel : ObservableObject, IDisposable
                 foreach (var e in effects) Draft.Effects.Add(new(e));
                 _scene = scene;
                 OnPropertyChanged(nameof(PeriodTitle));
+                UpdateStaticPeriod(scene);
                 var i = _assignment?.Index ?? 0;
                 SetAssignmentRows(scene.Assignments);
                 _assignment = Assignments.ElementAtOrDefault(i) ?? Assignments.FirstOrDefault(); OnPropertyChanged(nameof(SelectedAssignment));
                 Draft.Load(_assignment?.Dto, Zones);
                 NotifyDraftAccess();
             }
+            RecomputeHealth();
             Updated = $"{DateTime.Now:HH:mm:ss} 已读取";
             Message = !CanEditDraft ? "此编排来自独立场景包。请在“场景库 → 场景包管理”管理设备绑定和播放。" : Draft.Dirty ? "已刷新运行状态，保留本地未应用的修改。" : "场景已读取。编辑不会立即改变机箱灯光。";
         });
     }
+
+    public void UpdateControllers(IReadOnlyList<ControllerDto> controllers)
+    {
+        ArgumentNullException.ThrowIfNull(controllers);
+        _ui.Post(() =>
+        {
+            _controllers = controllers;
+            UpdateZones(controllers);
+            OnPropertyChanged(nameof(SelectedDetail));
+            RecomputeHealth();
+        });
+    }
+
+    public void UpdateScreens(IReadOnlyList<ScreenDeviceDto> screens)
+    {
+        ArgumentNullException.ThrowIfNull(screens);
+        _ui.Post(() =>
+        {
+            _screens = screens;
+            OnPropertyChanged(nameof(ScreenDevices));
+            RecomputeHealth();
+        });
+    }
+
+    public void ApplyHostScene(SceneDto scene)
+    {
+        ArgumentNullException.ThrowIfNull(scene);
+        _ui.Post(() =>
+        {
+            var sameAssignments = JsonSerializer.Serialize(_scene.Assignments, JsonOptions) == JsonSerializer.Serialize(scene.Assignments, JsonOptions);
+            var samePackage = _scene.Package == scene.Package;
+            if (sameAssignments && samePackage)
+            {
+                return;
+            }
+
+            _activePackageContentId = scene.Package?.ContentId;
+            OnPropertyChanged(nameof(ActivePackageContentId));
+            if (Draft.Dirty)
+            {
+                Message = "后台场景已更新，已保留本地未应用草稿。";
+                return;
+            }
+
+            _scene = scene;
+            OnPropertyChanged(nameof(PeriodTitle));
+            UpdateStaticPeriod(scene);
+            var i = _assignment?.Index ?? 0;
+            SetAssignmentRows(scene.Assignments);
+            _assignment = _assignment ?? Assignments.ElementAtOrDefault(i) ?? Assignments.FirstOrDefault();
+            OnPropertyChanged(nameof(SelectedAssignment));
+            Draft.Load(_assignment?.Dto, Zones);
+            NotifyDraftAccess();
+            Updated = $"{DateTime.Now:HH:mm:ss} 已同步";
+            Message = !CanEditDraft ? "此编排来自独立场景包。请在“场景库 → 场景包管理”管理设备绑定和播放。" : "场景已同步。编辑不会立即改变机箱灯光。";
+        });
+    }
+
     private void UpdateZones(IReadOnlyList<ControllerDto> controllers)
     {
         var previous = Zones.ToDictionary(z => z.Ref);
@@ -181,6 +281,8 @@ public sealed class StudioViewModel : ObservableObject, IDisposable
             if (i >= Zones.Count) Zones.Add(next[i]); else if (!ReferenceEquals(Zones[i], next[i])) Zones[i] = next[i];
         while (Zones.Count > next.Length) Zones.RemoveAt(Zones.Count - 1);
         SelectedZone = Zones.FirstOrDefault(z => z.Ref == chosen);
+        OnPropertyChanged(nameof(SelectedName));
+        OnPropertyChanged(nameof(SelectedDetail));
     }
     private void SetAssignmentRows(IReadOnlyList<AssignmentDto> assignments, StudioAssignment? applied = null, AssignmentDto? replacement = null)
     {
@@ -203,18 +305,27 @@ public sealed class StudioViewModel : ObservableObject, IDisposable
         ArgumentNullException.ThrowIfNull(status);
         _ui.Post(() =>
         {
+            _deviceStatuses = status.Devices;
+            _keyboardStatus = ControlPanel.KeyboardStatus;
             var real = status.Devices.Where(d => !DisplayNames.IsDiscoveryPortId(d.Id)).ToArray();
             var active = real.Count(d => d.State == ControllerStates.Active);
-            Health = real.Length == 0 ? "未发现灯光设备" : $"{active} / {real.Length} 台灯光控制器运行中";
+            _baseHealth = real.Length == 0 ? "未发现灯光设备" : $"{active} / {real.Length} 台灯光控制器运行中";
+            RecomputeHealth();
+            OnPropertyChanged(nameof(DeviceStatuses));
             Clock = $"{status.Clock.Fps:0.0} fps";
             var upload = real.Select(d => d.LastUpload).FirstOrDefault(u => u is not null);
             var derived = status.RfClock?.Assignments.FirstOrDefault(a => a.DerivedPeriodMs is > 0)?.DerivedPeriodMs;
             Period = derived is { } ms ? $"{ms / 1000:0.00} s" : upload is null ? "—" : $"{upload.PeriodMs / 1000:0.00} s · 标称";
-            if (_scene.Assignments.Count > 0 && _scene.Assignments.All(a => a.EffectId == "StaticColor" && a.Strategy != "Frames"))
-                Period = _scene.Assignments.All(a => a.Brightness == 0 || a.Colors.Count > 0 && a.Colors.All(c => c.Equals("#000000", StringComparison.OrdinalIgnoreCase))) ? "已熄灯" : "静态光";
+            UpdateStaticPeriod(_scene);
             if (status.BlockedContent is { Count: > 0 } blocked) { Period = "内容被阻止"; Message = "场景内容无法播放：\n" + string.Join("\n", blocked); }
             Written = $"丢帧 {real.Sum(d => d.Dropped)} · 时钟超时 {status.Clock.Overruns}";
         });
+    }
+
+    private void UpdateStaticPeriod(SceneDto scene)
+    {
+        if (scene.Assignments.Count > 0 && scene.Assignments.All(a => a.EffectId == "StaticColor" && a.Strategy != "Frames"))
+            Period = scene.Assignments.All(a => a.Brightness == 0 || a.Colors.Count > 0 && a.Colors.All(c => c.Equals("#000000", StringComparison.OrdinalIgnoreCase))) ? "已熄灯" : "静态光";
     }
 
     public async Task ApplyAsync()
@@ -316,23 +427,79 @@ public sealed class StudioViewModel : ObservableObject, IDisposable
     }
     public async Task BlackoutAsync()
     {
-        Message = (await ControlPanel.OffAsync().ConfigureAwait(true)).Message;
+        _suppressControlPanelRefresh = true;
+        try
+        {
+            var result = await ControlPanel.OffAsync().ConfigureAwait(true);
+            await RefreshAsync(!Draft.Dirty).ConfigureAwait(true);
+            Message = result.Message;
+        }
+        finally
+        {
+            _suppressControlPanelRefresh = false;
+        }
     }
     internal static bool IsPersistedBlackout(SceneDto scene) => CasePowerActions.IsBlackout(scene);
     private async Task RestoreAsync()
     {
-        var result = await ControlPanel.RestoreBackupAsync().ConfigureAwait(true);
-        await RefreshAsync(true).ConfigureAwait(true);
-        Message = result.Message;
+        _suppressControlPanelRefresh = true;
+        try
+        {
+            var result = await ControlPanel.RestoreBackupAsync().ConfigureAwait(true);
+            await RefreshAsync(true).ConfigureAwait(true);
+            Message = result.Message;
+        }
+        finally
+        {
+            _suppressControlPanelRefresh = false;
+        }
     }
     private void NotifyDraftAccess() { OnPropertyChanged(nameof(CanEditDraft)); OnPropertyChanged(nameof(SceneDescription)); ApplyCommand.RaiseCanExecuteChanged(); }
     public void SetConnected(bool connected)
     {
+        _connected = connected;
         ControlPanel.SetConnected(connected);
-        if (connected) return;
-        Health = "后台未连接 · 显示上次读取";
+        if (connected)
+        {
+            RecomputeHealth();
+            return;
+        }
+        _deviceStatuses = [];
+        _screens = [];
+        _keyboardStatus = null;
+        _healthReport = default;
+        _baseHealth = "后台未连接 · 显示上次读取";
+        Health = _baseHealth;
+        NotifyHealthProperties();
+        OnPropertyChanged(nameof(DeviceStatuses));
+        OnPropertyChanged(nameof(ScreenDevices));
+        OnPropertyChanged(nameof(KeyboardDisplayStatus));
         Clock = "—"; Period = "—";
         PreviewPlaying = false;
+    }
+
+    private void RecomputeHealth()
+    {
+        if (!_connected)
+        {
+            return;
+        }
+
+        _healthReport = CaseHealthSummary.Analyze(_deviceStatuses, _controllers, _screens, _keyboardStatus);
+        Health = _healthReport.HasAnyIssue ? $"{_baseHealth} · {_healthReport.ShortSummary}" : _baseHealth;
+        NotifyHealthProperties();
+    }
+
+    private void NotifyHealthProperties()
+    {
+        OnPropertyChanged(nameof(HasHealthIssue));
+        OnPropertyChanged(nameof(HealthAlertText));
+        OnPropertyChanged(nameof(HasRfDeliveryIssue));
+        OnPropertyChanged(nameof(HasScreenError));
+        OnPropertyChanged(nameof(HasFanLcdScreenError));
+        OnPropertyChanged(nameof(HasKeyboardError));
+        OnPropertyChanged(nameof(CanResyncLianLiFromAlert));
+        OnPropertyChanged(nameof(CanRestartFanLcdFromAlert));
     }
     public void Dispose() => _casePower.Dispose();
     private static void TryLocal(Action action, Action<Exception> onError)

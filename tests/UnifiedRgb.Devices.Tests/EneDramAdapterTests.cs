@@ -760,6 +760,152 @@ public sealed class EneDramAdapterTests : IDisposable
         Bus.Sent.Should().HaveCount(8);
     }
 
+    [Fact]
+    public async Task WriteFrame_batches_all_leds_of_a_stick_into_one_batch_call()
+    {
+        Bus.Add(0x70, V2, leds: 16);
+        await using var a = Make(Verified() with { CandidateAddresses = [0x70] });
+        await a.DiscoverAsync(default);
+        await a.OpenAsync(S70, default);
+        Bus.Sent.Clear();
+        Bus.ResetBatchCounters();
+
+        a.WriteFrame(S70, [[new Rgb(255, 0, 0)]]).Should().BeTrue();
+        Bus.SingleExecuteCalls.Should().Be(0, "per-frame LED writes must go through ExecuteBatch, not individual Execute calls");
+        Bus.BatchSizes.Should().Equal(16);
+        Bus.Sent.Should().HaveCount(16).And.OnlyContain(c => c.Kind == SmbusCompoundKind.RegBlock);
+
+        // Byte-fallback frame must also batch all 16*3 byte writes into one call.
+        Bus.Fail = c => c.Kind == SmbusCompoundKind.RegBlock ? Nack("block") : null;
+        _now += 100_000;
+        Bus.Sent.Clear();
+        Bus.ResetBatchCounters();
+        a.WriteFrame(S70, [[new Rgb(0, 255, 0)]]).Should().BeTrue();
+        Bus.SingleExecuteCalls.Should().Be(0);
+        Bus.BatchSizes.Should().Equal(16, 48);
+
+        Bus.Fail = null;
+        _now += 100_000;
+        Bus.Sent.Clear();
+        Bus.ResetBatchCounters();
+        a.WriteFrame(S70, [[new Rgb(0, 0, 255)]]).Should().BeTrue();
+        Bus.SingleExecuteCalls.Should().Be(0);
+        Bus.BatchSizes.Should().Equal(48);
+        Bus.Sent.Should().HaveCount(48).And.OnlyContain(c => c.Kind == SmbusCompoundKind.RegWrite);
+    }
+
+    [Fact]
+    public async Task WriteFrame_through_PawnIoSmbus_batches_under_one_mutex_acquisition_and_restores_port()
+    {
+        var mutex = new ScriptedSmbusMutex();
+        var lib = new ScriptedPIIX4Library(mutex, leds: 16);
+        using var provider = new ScriptedPawnIoProvider(lib, mutex);
+        await using var adapter = new EneDramAdapter(
+            provider,
+            Verified() with { CandidateAddresses = [0x70] },
+            budgetClock: () => _now,
+            budgetTicksPerSecond: 1_000_000);
+
+        await adapter.DiscoverAsync(default);
+        await adapter.OpenAsync(S70, default);
+        lib.ResetCounters();
+        mutex.ResetCounters();
+        lib.HardwarePort = 2; // external monitoring software switched 0xFED80302 to Port 2
+
+        adapter.WriteFrame(S70, [[new Rgb(0, 0, 255)]]).Should().BeTrue();
+
+        mutex.Waits.Should().Be(1, "all 16 LED writes of the DIMM run under ONE bounded mutex acquisition");
+        mutex.Releases.Should().Be(1);
+        mutex.Held.Should().BeFalse();
+        lib.HardwarePort.Should().Be(2, "prior port 2 is restored before releasing the mutex");
+        lib.PortSelects.Should().Equal(0UL, 2UL);
+        lib.XferCount.Should().Be(32, "16 LEDs * (pointer + RegBlock)");
+        lib.AllXfersObservedPortZero.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Transient_mutex_contention_skips_frame_cleanly_without_dropping_direct_mode_or_3_strike_recovery()
+    {
+        var mutex = new ScriptedSmbusMutex();
+        var lib = new ScriptedPIIX4Library(mutex, leds: 8);
+        using var provider = new ScriptedPawnIoProvider(lib, mutex);
+        await using var adapter = new EneDramAdapter(
+            provider,
+            Verified() with { CandidateAddresses = [0x70] },
+            budgetClock: () => _now,
+            budgetTicksPerSecond: 1_000_000);
+
+        var descriptor = (await adapter.DiscoverAsync(default)).Single(d => d.Id == S70);
+        await adapter.OpenAsync(S70, default);
+        using var frames = new UnifiedRgb.Core.Engine.FrameBus();
+        var box = frames.Register(descriptor);
+        using var writer = new UnifiedRgb.Core.Engine.DeviceWriter(box, adapter);
+
+        void Publish(Rgb color)
+        {
+            Array.Fill(box.Back.Zones[0], color);
+            frames.Publish(S70, box.Back);
+        }
+
+        Publish(new Rgb(255, 0, 0));
+        writer.PacedDrainOnce().Should().BeTrue();
+        writer.GetStats().Written.Should().Be(1);
+        var baselineSamples = adapter.FrameBudget(S70)!.Samples;
+
+        // Simulate transient mutex contention across 5 frames (> 3-strike threshold).
+        lib.ResetCounters();
+        mutex.ResetCounters();
+        mutex.Acquire = false;
+        Rgb[] contestedColors = [new(0, 255, 0), new(0, 0, 255), Rgb.White, new(0, 255, 255), new(255, 255, 0)];
+        foreach (var color in contestedColors)
+        {
+            _now += 100_000;
+            Publish(color);
+            writer.PacedDrainOnce().Should().BeTrue("mailbox frame is consumed");
+        }
+
+        mutex.Waits.Should().Be(5, "one bounded mutex wait attempt per frame");
+        lib.PortSelects.Should().BeEmpty("nothing reached the bus during mutex contention");
+        lib.XferCount.Should().Be(0);
+        lib.DirectOffWrites.Should().Be(0, "direct mode must never be dropped on contention");
+        writer.ConsecutiveIoFailures.Should().Be(0, "mutex timeout must not escalate toward 3-strike recovery");
+        writer.GetStats().Errors.Should().Be(0);
+        writer.GetStats().LastError.Should().BeNull();
+        writer.GetStats().Written.Should().Be(1);
+        adapter.FrameBudget(S70)!.Samples.Should().Be(baselineSamples, "contended frames are not sampled into P99 latency");
+        provider.Port(0)!.MutexTimeouts.Should().Be(5);
+
+        // Once contention clears, even the EXACT same color that was skipped must be sent (not dropped as cached).
+        _now += 100_000;
+        mutex.Acquire = true;
+        Publish(contestedColors[^1]);
+        writer.PacedDrainOnce().Should().BeTrue();
+        writer.GetStats().Written.Should().Be(2);
+        writer.GetStats().Errors.Should().Be(0);
+        lib.XferCount.Should().Be(16, "8 LEDs * (pointer + RegBlock)");
+        lib.LastLedWritten.Should().Be(contestedColors[^1]);
+    }
+
+    [Fact]
+    public async Task Non_mutex_bus_error_on_WriteFrame_still_throws_and_counts_toward_recovery()
+    {
+        Bus.Add(0x70, V2, leds: 4);
+        await using var adapter = Make(Verified() with { CandidateAddresses = [0x70] });
+        var descriptor = (await adapter.DiscoverAsync(default)).Single(d => d.Id == S70);
+        await adapter.OpenAsync(S70, default);
+        using var frames = new UnifiedRgb.Core.Engine.FrameBus();
+        var box = frames.Register(descriptor);
+        using var writer = new UnifiedRgb.Core.Engine.DeviceWriter(box, adapter);
+
+        Bus.Fail = c => c.Kind == SmbusCompoundKind.RegBlock && c.Register == 0x8103 ? Nack("pointer") : null;
+        Array.Fill(box.Back.Zones[0], Rgb.White);
+        frames.Publish(S70, box.Back);
+        writer.PacedDrainOnce().Should().BeTrue();
+        writer.ConsecutiveIoFailures.Should().Be(1);
+        writer.GetStats().Errors.Should().Be(1);
+        writer.GetStats().LastError.Should().Contain("frame failed");
+    }
+
     private static SmbusResult Nack(string step) => new(false, unchecked((int)0x8007045D), 0, $"{step} failed: HRESULT 0x8007045D", Step: step);
 
     private EneDramAdapter Make(EneDramOptions options, INativeMapSource? maps = null) =>
@@ -848,7 +994,17 @@ internal sealed class FakeSmbus(int port) : IPawnIoPort
 
     public Func<SmbusCompound, SmbusResult?>? Fail { get; set; }
 
+    public int SingleExecuteCalls { get; private set; }
+
+    public List<int> BatchSizes { get; } = [];
+
     public bool Disposed { get; private set; }
+
+    public void ResetBatchCounters()
+    {
+        SingleExecuteCalls = 0;
+        BatchSizes.Clear();
+    }
 
     public Module Add(byte address, string name, int leds, bool receiveByteAck = true)
     {
@@ -866,6 +1022,29 @@ internal sealed class FakeSmbus(int port) : IPawnIoPort
     }
 
     public SmbusResult Execute(SmbusCompound c)
+    {
+        SingleExecuteCalls++;
+        return ExecuteCore(c);
+    }
+
+    public IReadOnlyList<SmbusResult> ExecuteBatch(IReadOnlyList<SmbusCompound> compounds)
+    {
+        BatchSizes.Add(compounds.Count);
+        var results = new List<SmbusResult>(compounds.Count);
+        for (var i = 0; i < compounds.Count; i++)
+        {
+            var r = ExecuteCore(compounds[i]);
+            results.Add(r);
+            if (!r.Ok)
+            {
+                break;
+            }
+        }
+
+        return results;
+    }
+
+    private SmbusResult ExecuteCore(SmbusCompound c)
     {
         if (Fail?.Invoke(c) is { } forced)
         {
@@ -978,4 +1157,199 @@ internal sealed class FakeSmbus(int port) : IPawnIoPort
             return Registers.GetValueOrDefault(register);
         }
     }
+}
+
+internal sealed class ScriptedSmbusMutex : ISmbusMutex
+{
+    public bool Acquire { get; set; } = true;
+
+    public bool Held { get; private set; }
+
+    public int Waits { get; private set; }
+
+    public int Releases { get; private set; }
+
+    public void ResetCounters()
+    {
+        Waits = 0;
+        Releases = 0;
+    }
+
+    public bool Wait(int milliseconds)
+    {
+        Waits++;
+        if (!Acquire)
+        {
+            return false;
+        }
+
+        Held = true;
+        return true;
+    }
+
+    public void Release()
+    {
+        Held = false;
+        Releases++;
+    }
+
+    public void Dispose()
+    {
+    }
+}
+
+internal sealed class ScriptedPIIX4Library(ScriptedSmbusMutex mutex, int leds) : IPawnIoLibrary
+{
+    private const string DeviceName = "AUMA0-E6K5-0104";
+    private ushort _pointer;
+
+    public ulong HardwarePort { get; set; }
+
+    public List<ulong> PortSelects { get; } = [];
+
+    public int XferCount { get; private set; }
+
+    public bool AllXfersObservedPortZero { get; private set; } = true;
+
+    public int DirectOffWrites { get; private set; }
+
+    public Rgb LastLedWritten { get; private set; }
+
+    public void ResetCounters()
+    {
+        PortSelects.Clear();
+        XferCount = 0;
+        AllXfersObservedPortZero = true;
+        DirectOffWrites = 0;
+    }
+
+    public int Version(out uint version)
+    {
+        version = 0x00020000;
+        return 0;
+    }
+
+    public int Open(out IntPtr handle)
+    {
+        handle = 0x5150;
+        return 0;
+    }
+
+    public int Load(IntPtr handle, ReadOnlySpan<byte> blob) => 0;
+
+    public int Execute(IntPtr handle, string function, ReadOnlySpan<ulong> input, Span<ulong> output, out nuint returned)
+    {
+        switch (function)
+        {
+            case PawnIoSmbus.IoctlIdentity:
+                output[0] = 0x3458494950;
+                output[1] = 0xB00;
+                output[2] = 0x1022UL | (0x790BUL << 16);
+                returned = 3;
+                return 0;
+            case PawnIoSmbus.IoctlPortSelect:
+                mutex.Held.Should().BeTrue("ioctl_piix4_port_sel must run under the global SMBus mutex");
+                PortSelects.Add(input[0]);
+                output[0] = HardwarePort;
+                HardwarePort = input[0];
+                returned = 1;
+                return 0;
+            case PawnIoSmbus.IoctlSleepMode:
+                returned = 0;
+                return 0;
+            default:
+                mutex.Held.Should().BeTrue("ioctl_smbus_xfer must run under the global SMBus mutex");
+                XferCount++;
+                if (HardwarePort != 0)
+                {
+                    AllXfersObservedPortZero = false;
+                }
+
+                return HandleXfer(input, output, out returned);
+        }
+    }
+
+    public int Close(IntPtr handle) => 0;
+
+    private int HandleXfer(ReadOnlySpan<ulong> input, Span<ulong> output, out nuint returned)
+    {
+        var address = (byte)input[0];
+        var rw = input[1];
+        var cmd = (byte)input[2];
+        var proto = input[3];
+        if (address != 0x70)
+        {
+            returned = 0;
+            return unchecked((int)0x8007045D);
+        }
+
+        if (rw == SmbusConstants.Read)
+        {
+            byte val = 0;
+            if (cmd is >= 0xA0 and <= 0xAF)
+            {
+                val = (byte)(cmd - 0xA0);
+            }
+            else if (cmd == EneRegisters.ReadCommand)
+            {
+                if (_pointer is >= EneRegisters.DeviceName and < EneRegisters.DeviceName + 16)
+                {
+                    var idx = _pointer - EneRegisters.DeviceName;
+                    val = idx < DeviceName.Length ? (byte)DeviceName[idx] : (byte)0;
+                }
+                else if (_pointer == EneRegisters.ConfigTable + 0x02)
+                {
+                    val = (byte)leds;
+                }
+            }
+
+            if (output.Length > 0)
+            {
+                output[0] = val;
+            }
+
+            returned = (nuint)output.Length;
+            return 0;
+        }
+
+        if (cmd == EneRegisters.PointerCommand && proto == SmbusConstants.WordData)
+        {
+            var word = input[4];
+            _pointer = (ushort)(((word & 0xFF) << 8) | ((word >> 8) & 0xFF));
+        }
+        else if (cmd == EneRegisters.WriteCommand && proto == SmbusConstants.ByteData)
+        {
+            var val = (byte)(input[4] & 0xFF);
+            if (_pointer == EneRegisters.Direct && val == 0)
+            {
+                DirectOffWrites++;
+            }
+        }
+        else if (cmd == EneRegisters.BlockCommand && proto == SmbusConstants.BlockData)
+        {
+            var packed = input[4];
+            LastLedWritten = new Rgb((byte)((packed >> 8) & 0xFF), (byte)((packed >> 24) & 0xFF), (byte)((packed >> 16) & 0xFF));
+        }
+
+        returned = 0;
+        return 0;
+    }
+}
+
+internal sealed class ScriptedPawnIoProvider(ScriptedPIIX4Library library, ScriptedSmbusMutex mutex) : IEneSmbusProvider
+{
+    private static readonly byte[] Module = [0xDE, 0xAD];
+    private PawnIoSmbus? _port0;
+
+    public IReadOnlyDictionary<string, string> Pins { get; } = new Dictionary<string, string>();
+
+    public PawnIoVersionEvidence? Version => null;
+
+    public PawnIoSmbus? Port(int port) => port == 0 ? _port0 : null;
+
+    public IPawnIoPort Open(int port) => port == 0
+        ? _port0 ??= PawnIoSmbus.Open(library, Module, 0, mutex, 200)
+        : throw new DeviceBlockedException("port 1 not scripted");
+
+    public void Dispose() => _port0?.Dispose();
 }

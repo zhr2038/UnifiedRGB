@@ -187,7 +187,8 @@ public sealed partial class LightingEngine(
                 // Repair is a durable offline restore, never a playback admission. Content/binding hashes stay strict;
                 // hardware readiness is checked on the next normal restart, with all output disabled in this process.
                 ValidateStrict(scene, nameof(scene), requireActive: !repair);
-                _loop.SetScene(scene, allowMissing, () =>
+                var effectiveAllowMissing = allowMissing || (!repair && AllowSleepableMissingZones(scene));
+                _loop.SetScene(scene, effectiveAllowMissing, () =>
                 {
                     cancellationToken.ThrowIfCancellationRequested(); // cancellation stops admission, never interrupts a durable commit halfway
                     profiles.SaveActiveWith(new ProfileDto(name, DtoMapper.ToDto(scene)), prepared?.Files ?? []);
@@ -197,6 +198,7 @@ public sealed partial class LightingEngine(
                 beforeScreens?.Invoke();
                 if (prepared is not null) prepared.Publish();
                 else screens?.Commit();
+                notifier.PublishScene(DtoMapper.ToDto(scene));
             }
             if (prepared is not null) prepared.Coordinate(Commit);
             else Commit();
@@ -223,7 +225,31 @@ public sealed partial class LightingEngine(
             _loop.SetScene(merged, allowMissingZones: true, () => profiles.SaveActiveWith(new ProfileDto(CustomProfileName, DtoMapper.ToDto(merged)), []));
             _startupBlocked = null;
             _activeName = CustomProfileName;
+            notifier.PublishScene(DtoMapper.ToDto(merged));
         }
+    }
+
+    private bool AllowSleepableMissingZones(Scene scene)
+    {
+        var activeZones = _loop.Controllers.SelectMany(c => c.Zones.Select(z => new ZoneRef(c.Id, z.Id))).ToHashSet();
+        var missing = scene.Assignments.SelectMany(a => a.Targets).Where(t => !activeZones.Contains(t)).Distinct().ToArray();
+        if (missing.Length == 0)
+        {
+            return false;
+        }
+
+        var entries = adapters.Controllers;
+        foreach (var t in missing)
+        {
+            var entry = entries.FirstOrDefault(e => e.Descriptor.Id == t.Controller);
+            if (entry is not { IsActive: false, Verdict.State: GuardState.Clear, Descriptor.DeviceType: DeviceType.Mouse }
+                || !entry.Descriptor.Zones.Any(z => z.Id == t.Zone))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /// <summary>Makes a profile the running scene; zones of controllers that are not present yet are kept for later.</summary>
@@ -280,6 +306,28 @@ public sealed partial class LightingEngine(
         {
             _scan.Release();
         }
+    }
+
+    /// <summary>
+    /// Post-sleep / S0ix resume recovery: closes and reopens Direct-mode adapters (so dropped Direct mode, stale GPU/HID
+    /// handles and static-frame dedup caches are reset) and re-uploads Lian Li loops via <see cref="ResyncLoops"/> while
+    /// preserving the exact current scene (including #000000 blackout).
+    /// </summary>
+    public async Task<bool> OnPowerResumeAsync(CancellationToken ct)
+    {
+        bool changed;
+        await _scan.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            changed = AfterScan(await adapters.RecoverAfterPowerResumeAsync(ct).ConfigureAwait(false));
+        }
+        finally
+        {
+            _scan.Release();
+        }
+
+        ResyncLoops();
+        return changed;
     }
 
     /// <summary>The 5 s WriterGuard re-scan (pause/resume, open newly cleared controllers).</summary>

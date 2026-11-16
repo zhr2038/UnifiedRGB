@@ -11,12 +11,28 @@ namespace UnifiedRgb.App.Views;
 public partial class FirmwareUpdateView : UserControl
 {
     private readonly DispatcherTimer _poll = new() { Interval = TimeSpan.FromSeconds(2) };
+    private readonly WindowActivityWatcher _activity;
     public FirmwareUpdateView()
     {
         InitializeComponent();
         _poll.Tick += Poll;
-        Loaded += (_, _) => _poll.Start();
-        Unloaded += (_, _) => _poll.Stop(); // deliberately no cancel/finish on close
+        _activity = new WindowActivityWatcher(this, OnActivityChanged);
+        DataContextChanged += (_, _) => _activity.Update();
+    }
+    private void OnActivityChanged(bool active, bool resumed)
+    {
+        if (active)
+        {
+            _poll.Start();
+            if (resumed || DataContext is FirmwareUpdateViewModel { Status: null })
+            {
+                if (DataContext is FirmwareUpdateViewModel vm) _ = vm.RefreshAsync();
+            }
+        }
+        else
+        {
+            _poll.Stop(); // deliberately no cancel/finish on close/hide
+        }
     }
     private async void Poll(object? sender, EventArgs e)
     {
