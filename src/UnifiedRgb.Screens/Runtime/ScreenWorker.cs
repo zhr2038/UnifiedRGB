@@ -284,6 +284,8 @@ internal sealed partial class ScreenWorker : IDisposable
         object? sourceSession = null;
         ScreenComposeBuffers? workerComposeBuffers = null;
         long lastLookaheadElapsed = 0;
+        var usbSendEmaMs = 0.0;
+        var lookaheadWindow = new LookaheadJob[TurzxFrameLookahead.MaxPipelineDepth];
         try
         {
             if (_ctx.BacklightStateDirectory is { } stateDirectory)
@@ -430,6 +432,7 @@ internal sealed partial class ScreenWorker : IDisposable
                 {
                     pacing.Reset(); lastTrial = currentTrialId; staticFrame = null;
                     animationCache.Clear(); compositor.ClearCache(); lastSlow = false; sourceBreak = true;
+                    usbSendEmaMs = 0;
                 }
                 if (lastSlow || staticFrame is not null || !compositor.IsDynamic(renderAssignment)) period = Math.Max(period, 1000);
                 if (trial?.Info.LegacyPacing != true)
@@ -577,21 +580,36 @@ internal sealed partial class ScreenWorker : IDisposable
                             {
                                 prepareLookahead = session =>
                                 {
-                                    var nextSlotTicks = pacing.PredictNextSlotTimestamp(frameStart, _ctx.Time.TimestampFrequency, period);
-                                    var predictedDeltaTicks = Math.Max(0L, nextSlotTicks - frameStart);
-                                    var predictedDeltaMs = predictedDeltaTicks * 1000.0 / _ctx.Time.TimestampFrequency;
-                                    var expectedAge = _ctx.Time.GetElapsedTime(telemetryTakenAt, frameStart) + TimeSpan.FromMilliseconds(predictedDeltaMs);
-                                    var nextUtc = utcNow + TimeSpan.FromMilliseconds(predictedDeltaMs);
-                                    var trialValidNext = videoTrial is null || frameStart < videoTrial.Deadline - predictedDeltaTicks;
-                                    if (trialValidNext
-                                        && expectedAge < TelemetrySamplePeriod
-                                        && OverlayRenderer.IsStale(sampledReading, nextUtc) == actualStale)
+                                    var prepareTicks = _ctx.Time.GetTimestamp();
+                                    var emaSendTicks = usbSendEmaMs > 0
+                                        ? (long)Math.Round(usbSendEmaMs * _ctx.Time.TimestampFrequency / 1000.0)
+                                        : 0L;
+                                    var slot1Ticks = Math.Max(
+                                        prepareTicks + emaSendTicks,
+                                        pacing.PredictNextSlotTimestamp(frameStart, _ctx.Time.TimestampFrequency, period));
+                                    var periodTicks = (long)Math.Round(period * _ctx.Time.TimestampFrequency / 1000.0);
+                                    _frameLookahead ??= new TurzxFrameLookahead(_ctx.Assets, FrameCacheBytes);
+                                    var epoch = _frameLookahead.Epoch;
+
+                                    bool TryMakeJob(long targetTicks, out LookaheadJob job)
                                     {
+                                        var predictedDeltaTicks = Math.Max(0L, targetTicks - frameStart);
+                                        var predictedDeltaMs = predictedDeltaTicks * 1000.0 / _ctx.Time.TimestampFrequency;
+                                        var expectedAge = _ctx.Time.GetElapsedTime(telemetryTakenAt, frameStart) + TimeSpan.FromMilliseconds(predictedDeltaMs);
+                                        var nextUtc = utcNow + TimeSpan.FromMilliseconds(predictedDeltaMs);
+                                        var trialValidNext = videoTrial is null || frameStart < videoTrial.Deadline - predictedDeltaTicks;
+                                        if (!trialValidNext
+                                            || expectedAge >= TelemetrySamplePeriod
+                                            || OverlayRenderer.IsStale(sampledReading, nextUtc) != actualStale)
+                                        {
+                                            job = null!;
+                                            return false;
+                                        }
+
                                         var nextElapsed = (long)Math.Floor(exactPositionMs + predictedDeltaMs);
                                         var nextFrameIndex = sourceAsset?.FrameAt(nextElapsed) ?? 0;
-                                        _frameLookahead ??= new TurzxFrameLookahead(_ctx.Assets, FrameCacheBytes);
-                                        _frameLookahead.Submit(new LookaheadJob(
-                                            _frameLookahead.Epoch,
+                                        job = new LookaheadJob(
+                                            epoch,
                                             session,
                                             family,
                                             renderAssignment,
@@ -606,7 +624,60 @@ internal sealed partial class ScreenWorker : IDisposable
                                             nextUtc,
                                             actualStale,
                                             videoTelemetry,
-                                            variant));
+                                            variant);
+                                        return true;
+                                    }
+
+                                    var scheduled = 0;
+                                    if (period > 25.0)
+                                    {
+                                        if (TryMakeJob(slot1Ticks, out var singleJob))
+                                        {
+                                            lookaheadWindow[scheduled++] = singleJob;
+                                        }
+                                    }
+                                    else
+                                    {
+                                        for (var slot = 0; slot < 2; slot++)
+                                        {
+                                            if (!TryMakeJob(slot1Ticks + (slot * periodTicks), out var job))
+                                            {
+                                                break;
+                                            }
+
+                                            lookaheadWindow[scheduled++] = job;
+                                        }
+
+                                        if (scheduled >= 1 && sourceAsset is { Animated: true, FrameCount: > 2 } && selectedIndex >= 0)
+                                        {
+                                            var count = sourceAsset.FrameCount;
+                                            if (lookaheadWindow[0].ExpectedFrameIndex == (selectedIndex + 2) % count)
+                                            {
+                                                var midTicks = frameStart + ((slot1Ticks - frameStart) / 2);
+                                                if (TryMakeJob(midTicks, out var midJob) && midJob.ExpectedFrameIndex == (selectedIndex + 1) % count)
+                                                {
+                                                    if (scheduled >= 2)
+                                                    {
+                                                        lookaheadWindow[2] = lookaheadWindow[1];
+                                                    }
+
+                                                    lookaheadWindow[1] = lookaheadWindow[0];
+                                                    lookaheadWindow[0] = midJob;
+                                                    scheduled = Math.Min(scheduled + 1, TurzxFrameLookahead.MaxPipelineDepth);
+                                                }
+                                            }
+                                            else if (scheduled == 2 && lookaheadWindow[0].ExpectedFrameIndex == lookaheadWindow[1].ExpectedFrameIndex
+                                                && TryMakeJob(slot1Ticks + (2 * periodTicks), out var slot2)
+                                                && slot2.ExpectedFrameIndex != lookaheadWindow[1].ExpectedFrameIndex)
+                                            {
+                                                lookaheadWindow[scheduled++] = slot2;
+                                            }
+                                        }
+                                    }
+
+                                    if (scheduled > 0)
+                                    {
+                                        _frameLookahead.Schedule(lookaheadWindow.AsSpan(0, scheduled));
                                     }
                                 };
                             }
@@ -682,6 +753,8 @@ internal sealed partial class ScreenWorker : IDisposable
                         var beforeNative = _videoSession?.Work ?? default;
                         var beforeOverlayCompose = _videoOverlayComposeMs; var beforeOverlayEncode = _videoOverlayEncodeMs;
                         if (!SendVideo(frame, renderAssignment, stamp!, !correlationDisabled, videoTelemetry, prepareLookahead)) { StopVideo(); staticFrame = null; continue; }
+                        var sendSampleMs = Math.Clamp(_lastVideoDataSendMs, 0.0, 50.0);
+                        usbSendEmaMs = usbSendEmaMs <= 0 ? sendSampleMs : (usbSendEmaMs * 0.75) + (sendSampleMs * 0.25);
                         packetMs = _videoSession!.PacketMs - beforePacket; writeMs = _videoSession.WriteMs - beforeWrite;
                         readMs = _videoSession.ReadMs - beforeRead; packetLength = checked((int)(_videoSession.BytesWritten - beforeBytes));
                         nativeWork = _videoSession.Work.Since(beforeNative);
@@ -725,7 +798,7 @@ internal sealed partial class ScreenWorker : IDisposable
                     var skipped = trial?.Info.LegacyPacing == true ? 0 : pacing.Completed(_ctx.Time.GetTimestamp(), _ctx.Time.TimestampFrequency);
                     var facts = contentReadFacts;
                     var aggregateNative = frame.Command == Protocol.TurzxVideoProtocol.DataCommand && family.Family == ScreenFamily.Turzx;
-                    if (!ReferenceEquals(_videoSession, sourceSession)) { sourceSession = _videoSession; sourceBreak = true; }
+                    if (!ReferenceEquals(_videoSession, sourceSession)) { sourceSession = _videoSession; sourceBreak = true; usbSendEmaMs = 0; }
                     _performance.Add(new ScreenFrameWork(composeMs, encodeMs, packetMs, writeMs, readMs, waitedMs, intervalMs,
                         _ctx.Time.GetElapsedTime(frameStart).TotalMilliseconds, frame.Image.Length, packetLength,
                         aggregateNative ? nativeWork.Reads : facts?.Reads ?? 0, aggregateNative ? nativeWork.Timeouts : facts?.Timeouts ?? 0,

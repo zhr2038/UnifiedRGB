@@ -1,4 +1,6 @@
+using System.Buffers.Binary;
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using Microsoft.Extensions.Logging.Abstractions;
 using UnifiedRgb.Contracts.Dto;
@@ -8,7 +10,9 @@ using UnifiedRgb.Screens.Media;
 using UnifiedRgb.Screens.Protocol;
 using UnifiedRgb.Screens.Runtime;
 using UnifiedRgb.Screens.Usb;
+using Vortice.MediaFoundation;
 using Xunit.Abstractions;
+using static Vortice.MediaFoundation.MediaFactory;
 using Color = System.Windows.Media.Color;
 
 namespace UnifiedRgb.Screens.Tests;
@@ -482,13 +486,389 @@ public sealed class TurzxFramerateOptimizationTests(ITestOutputHelper output)
 
             foreach (var line in stageReport) output.WriteLine(line);
 
-            // 2) Compare serial vs 1-frame pipelined overlap under simulated WinUSB transfer delay (8.0 ms/frame).
+            // 2) Compare serial vs 1-slot vs Stage-5 2-slot pipelined overlap under simulated WinUSB transfer delay (8.0 ms/frame).
             var serialReport = await MeasureSerialLoopAsync(assets, assignment, telemetry, simulatedUsbMs: 8.0, steadyFrames);
             var overlapReport = await MeasurePipelinedLoopAsync(assets, asset, assignment, telemetry, simulatedUsbMs: 8.0, steadyFrames);
+            var depth2Report = await MeasureDepth2LoopAsync(assets, asset, assignment, telemetry, simulatedUsbMs: 8.0, steadyFrames);
             output.WriteLine(serialReport);
             output.WriteLine(overlapReport);
+            output.WriteLine(depth2Report);
         }
         finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [MediaFoundationFact]
+    public async Task Stage5_1to1_slot_reservation_36k_wrap_and_uncached_mp4_compose_preserve_frame_sequence()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "urgb-turzx-stage5-slots-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            // 1. O(log N) StoredAsset.FrameAt binary search matches linear oracle across 36,000 frames (600,000 ms) incl. 0-delay & loop wrap.
+            var longDelays = new int[SegmentedVideo.MaxFrames];
+            for (var i = 0; i < longDelays.Length; i++)
+            {
+                longDelays[i] = i == 500 ? 0 : (i % 3 == 2 ? 16 : 17);
+            }
+            var longAsset = new StoredAsset("0123456789abcdef", "long60-36k", SegmentedVideo.Format, 1920, 480, longDelays, 1);
+            int LinearFrameAt(long elapsed)
+            {
+                var rem = (int)(Math.Max(0, elapsed) % longAsset.DurationMs);
+                for (var k = 0; k < longDelays.Length; k++) { rem -= longDelays[k]; if (rem < 0) return k; }
+                return longDelays.Length - 1;
+            }
+            foreach (var sampleMs in new long[] { 0, 16, 17, 33, 34, 49, 50, 182, 183, 184, 199, 200, 8333, 299_999, longAsset.DurationMs - 18, longAsset.DurationMs - 17, longAsset.DurationMs - 1, longAsset.DurationMs, longAsset.DurationMs + 17 })
+            {
+                longAsset.FrameAt(sampleMs).Should().Be(LinearFrameAt(sampleMs), "elapsed={0}", sampleMs);
+            }
+
+            // 2. Uncached 1920x480 H.264 MP4 sequence Compose allocates < 64 KB/frame and equals non-aliased reference pixel-for-pixel.
+            var mp4Bytes = File.ReadAllBytes(Path.Combine(AppContext.BaseDirectory, "Fixtures", "h264-wide-initial-format.mp4"));
+            var probe = await Sta.RunAsync(() => SegmentedVideo.Probe(mp4Bytes, Path.Combine(root, "probe"), CancellationToken.None));
+            var assets = new AssetStore(Path.Combine(root, "assets"), 1L << 30, 64, NullLogger.Instance);
+            var seqAsset = assets.CommitSequence("wide-seq", [new(mp4Bytes, probe.DurationMs), new(mp4Bytes, probe.DurationMs)], [probe, probe]);
+            var seqAssignment = new ScreenAssignmentDto(Devices.Turzx.Id, seqAsset.Id, Overlay: "dashboard", Fps: 60,
+                AccentColor: "#E3BC72", Fit: "contain", OverlayLayout: TypicalLayout);
+            var now = HeadlessProbe.Now;
+            var collector = new PcTelemetryDto(now, 37.0, 12L << 30, 32L << 30, 62.0, 64.0, 8L << 30, 24L << 30, "bench", null);
+
+            var seqAlloc = await Sta.RunAsync(() =>
+            {
+                using var uncached = new ScreenCompositor(assets, cacheBytes: 0);
+                using var reference = new ScreenCompositor(assets, cacheBytes: 0);
+                var buffers = new ScreenComposeBuffers();
+                for (var f = 0; f < 3; f++)
+                {
+                    var el = f * 42L;
+                    var a = uncached.Compose(Devices.Turzx.Family, seqAssignment, el, collector, now, buffers);
+                    var b = reference.Compose(Devices.Turzx.Family, seqAssignment, el, collector, now);
+                    a.Canvas.Pixels.Should().Equal(b.Canvas.Pixels);
+                }
+
+                var beforeBytes = GC.GetAllocatedBytesForCurrentThread();
+                for (var f = 3; f < 15; f++)
+                {
+                    _ = uncached.Compose(Devices.Turzx.Family, seqAssignment, f * 42L, collector, now, buffers);
+                }
+                return (GC.GetAllocatedBytesForCurrentThread() - beforeBytes) / 12.0;
+            });
+            seqAlloc.Should().BeLessThan(64_000, "uncached 1920x480 MP4 sequence decode + compose reuses decoder raster and ScreenComposeBuffers with zero LOH");
+            output.WriteLine($"Uncached 1920x480 MP4 sequence Compose+Overlay alloc={seqAlloc:N0} B/frame");
+
+            // 3. Direct Codex boundary proof: Frame 11 (184ms) NEVER claims candidate Frame 10 (182ms), ONLY claims Frame 11 (199ms),
+            //    and taking Frame 10 later NEVER evicts earlier-Seq future Frame 11 (or wrapped long-MP4 future Frame 0).
+            var delaysCfr60 = Enumerable.Range(0, 60).Select(i => i % 3 == 2 ? 16 : 17).ToArray(); // [17,17,16]: Frame 10 = 167..182, Frame 11 = 183..199
+            var cfrPngs = await Sta.RunAsync(() => CreateTestFrames1920x480(2));
+            var smallFrames = Enumerable.Range(0, 60).Select(i => cfrPngs[i & 1]).ToArray();
+            var anim60 = assets.Commit("1122334455667788", "exact60", new ImportResult("png", 1920, 480, smallFrames, delaysCfr60));
+            anim60.FrameAt(182).Should().Be(10);
+            anim60.FrameAt(184).Should().Be(11);
+            anim60.FrameAt(199).Should().Be(11);
+
+            using var lookahead = new TurzxFrameLookahead(assets, 64L * 1024 * 1024);
+            var dummyCh = new FakeChannel();
+            var stampSrc = new ScreenTimestamp(ScreenFamily.Turzx, () => HeadlessProbe.Now.UtcDateTime, () => HeadlessProbe.Now.UtcDateTime);
+            var vs = new TurzxVideoSession(dummyCh, stampSrc, () => false);
+            var variant = new LookaheadEncoderVariant(true, 95, 90);
+            var assign60 = new ScreenAssignmentDto(Devices.Turzx.Id, anim60.Id, Overlay: "dashboard", Fps: 60,
+                AccentColor: "#E3BC72", Fit: "contain", OverlayLayout: TypicalLayout, TimelineId: "pkg:cfr60");
+
+            LookaheadJob Job(int idx, long el, int durationMs) => new(
+                lookahead.Epoch, vs, Devices.Turzx.Family, assign60, anim60.Id, idx, el, 16.667, durationMs, "device-clock",
+                1, collector, now, false, VideoTelemetry.BakedConfigured, variant);
+            LookaheadMatchCriteria Criteria(int idx, long el, long prevEl, int durationMs) => new(
+                vs, assign60, anim60.Id, idx, el, prevEl, 16.667, durationMs, "device-clock",
+                1, false, VideoTelemetry.BakedConfigured, variant);
+
+            // 3a. Codex exact reproduction: Frame 11 @ 184 ms already completed; Schedule([Frame 10 @ 182 ms, Frame 11 @ 199 ms]).
+            TurzxFrameLookahead.SamePredictedTarget(Job(11, 184, anim60.DurationMs), Job(10, 182, anim60.DurationMs)).Should().BeFalse();
+            TurzxFrameLookahead.SamePredictedTarget(Job(11, 184, anim60.DurationMs), Job(11, 199, anim60.DurationMs)).Should().BeTrue();
+            lookahead.Schedule([Job(11, 184, anim60.DurationMs)]);
+            await Wait.UntilAsync(() => lookahead.Stats.Completed == 1, "initial Frame 11 finishes");
+
+            lookahead.Schedule([Job(10, 182, anim60.DurationMs), Job(11, 199, anim60.DurationMs)]);
+            lookahead.Stats.Discarded.Should().Be(0, "Frame 11 @ 184 ms claims Slot 1 (Frame 11 @ 199 ms) without discarding");
+            lookahead.Stats.Submitted.Should().Be(2, "Slot 0 (Frame 10 @ 182 ms) is enqueued rather than aliased by Frame 11");
+            await Wait.UntilAsync(() => lookahead.Stats.Completed == 2, "Frame 10 completes behind Frame 11");
+
+            var take10 = lookahead.TryTake(Criteria(10, 182, 166, anim60.DurationMs), () => false);
+            take10.Should().NotBeNull();
+            take10!.Job.ExpectedFrameIndex.Should().Be(10);
+            lookahead.Stats.Discarded.Should().Be(0, "consuming later-Seq Frame 10 preserves earlier-Seq future Frame 11");
+
+            var take11 = lookahead.TryTake(Criteria(11, 199, 182, anim60.DurationMs), () => false);
+            take11.Should().NotBeNull();
+            take11!.Job.ExpectedFrameIndex.Should().Be(11);
+            lookahead.Stats.Consumed.Should().Be(2);
+
+            // 3b. 1-to-1 duplicate claim guard: ONE Frame 11 in pipeline can claim AT MOST one slot of [Frame 11 @ 183, Frame 11 @ 199].
+            lookahead.Schedule([Job(11, 183, anim60.DurationMs)]);
+            await Wait.UntilAsync(() => lookahead.Stats.Completed == 3, "single Frame 11 completes");
+            var subBefore = lookahead.Stats.Submitted;
+            lookahead.Schedule([Job(11, 183, anim60.DurationMs), Job(11, 199, anim60.DurationMs)]);
+            lookahead.Stats.Submitted.Should().Be(subBefore + 1, "second slot requires a fresh instance once Slot 0 is claimed 1-to-1");
+            await Wait.UntilAsync(() => lookahead.Stats.Completed == 4, "second Frame 11 completes");
+            lookahead.TryTake(Criteria(11, 183, 166, anim60.DurationMs), () => false)!.Job.ExpectedElapsedMs.Should().Be(183);
+            lookahead.TryTake(Criteria(11, 199, 183, anim60.DurationMs), () => false)!.Job.ExpectedElapsedMs.Should().Be(199);
+
+            // 3c. Long 36,000-frame (600,000 ms) modular loop wrap: [Frame 35_999 @ 599_983, Frame 0 @ 0, Frame 1 @ 17].
+            //     Reuse anim60 image store for payload, testing Matches/Schedule/IsFutureCandidate modular arithmetic with 600,000 ms duration.
+            var longDur = longAsset.DurationMs;
+            lookahead.Invalidate();
+            var jLast = Job(59, longDur - 17, longDur);
+            var jZero = Job(0, longDur + 1, longDur);
+            var jOne = Job(1, 17, longDur);
+            lookahead.Schedule([jLast, jZero, jOne]);
+            await Wait.UntilAsync(() => lookahead.Stats.Completed >= 7, "all 3 wrap boundary jobs complete");
+            lookahead.TryTake(Criteria(59, longDur - 17, longDur - 34, longDur), () => false)!.Job.ExpectedFrameIndex.Should().Be(59);
+            lookahead.TryTake(Criteria(0, 0, longDur - 17, longDur), () => false)!.Job.ExpectedFrameIndex.Should().Be(0);
+            lookahead.TryTake(Criteria(1, 17, 0, longDur), () => false)!.Job.ExpectedFrameIndex.Should().Be(1);
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [MediaFoundationFact]
+    public async Task Stage5_60fps_32clip_mp4_sequence_worker_delivers_exact_wire_frames_across_boundaries_seams_and_wrap()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "urgb-turzx-mp4-e2e-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var clipBytes = await Sta.RunAsync(() => CreateMarked60FpsMp4Clip(root, width: 384, height: 96, frameCount: 60));
+            var clipProbe = await Sta.RunAsync(() => SegmentedVideo.Probe(clipBytes, Path.Combine(root, "probe"), CancellationToken.None));
+            clipProbe.DelaysMs.Should().HaveCount(60);
+            clipProbe.DurationMs.Should().Be(1000);
+
+            var assets = new AssetStore(Path.Combine(root, "assets"), 1L << 30, 64, NullLogger.Instance);
+            var clips = Enumerable.Repeat(new ScreenVideoSegment(clipBytes, clipProbe.DurationMs), SegmentedVideo.MaxClips).ToArray();
+            var probes = Enumerable.Repeat(clipProbe, SegmentedVideo.MaxClips).ToArray();
+            var seqAsset = assets.CommitSequence("marked-60fps-32x", clips, probes);
+            seqAsset.FrameCount.Should().Be(1920);
+            seqAsset.DurationMs.Should().Be(32_000);
+
+            var time = new ManualTime(HeadlessProbe.Now);
+            var timeline = new SourceStepScenario.StepTimeline { Sample = new(0, "device-clock") };
+            var collector = new PcTelemetryDto(time.GetUtcNow(), 37.0, 12L << 30, 32L << 30, 62.0, 64.0, 8L << 30, 24L << 30, "bench", null);
+            var opener = new FakeOpener
+            {
+                Configure = c => c.Reply = packet =>
+                {
+                    var hdr = ScreenProtocol.DecryptHeader(ScreenFamily.Turzx, packet.AsSpan(0, 512));
+                    var stamp = BinaryPrimitives.ReadUInt32LittleEndian(hdr.AsSpan(4));
+                    var ack = new byte[512];
+                    ack[0] = hdr[0];
+                    ack[1] = 200;
+                    BinaryPrimitives.WriteUInt32LittleEndian(ack.AsSpan(2), stamp);
+                    return ack;
+                }
+            };
+
+            var options = new ScreensOptions { Enabled = true, NvmlTelemetry = false, TurzxCompositeTelemetry = true, TurzxSingleSlice = true };
+            Rig.AllOutput(options);
+            var assignment = new ScreenAssignmentDto(Devices.Turzx.Id, seqAsset.Id, Overlay: "dashboard", Fps: 60,
+                AccentColor: "#E3BC72", Fit: "contain", OverlayLayout: TypicalLayout, TimelineId: "pkg:mp4-60");
+            ScreenRateTrial? rateTrial = new(new("mp4-e2e-rate", [Devices.Turzx.Id], 60, 60_000, false, 128), 0, long.MaxValue);
+            var ctx = new ScreenWorkerContext(options, opener, new FakeContention(), assets,
+                () => collector with { Timestamp = time.GetUtcNow() }, time, NullLogger.Instance)
+            {
+                EncodingOf = _ => new ScreenEncodingSelection(ScreenEncodingPolicies.NativeH264IntraV1, false),
+                NativeVideoAllowed = _ => true,
+                TrialOf = _ => rateTrial,
+                Timeline = () => timeline,
+            };
+
+            using var worker = new ScreenWorker(Devices.Turzx, ctx, new WorkerCommand(assignment, false));
+
+            static int DataPacketCount(FakeOpener o) =>
+                o.Channels.SelectMany(ch => ch.Writes).Count(p => ScreenProtocol.DecryptHeader(ScreenFamily.Turzx, p.AsSpan(0, 512))[0] == TurzxVideoProtocol.DataCommand);
+
+            async Task WaitSettledAsync(int expectedWrites)
+            {
+                await Wait.UntilAsync(() => DataPacketCount(opener) >= expectedWrites, $"write #{expectedWrites}");
+                await Wait.UntilAsync(() => (worker.LookaheadStats.Completed + worker.LookaheadStats.Discarded) >= worker.LookaheadStats.Submitted,
+                    $"lookahead settles after write #{expectedWrites}");
+            }
+
+            // Initial frozen frame at t = 0 ms -> Frame 0.
+            await WaitSettledAsync(1);
+            var sentPositions = new List<long> { 0 };
+            var writeCount = 1;
+            var beatIndex = 0;
+            var clockMs = 0L;
+
+            async Task StepBeatAsync(long timelinePosMs)
+            {
+                beatIndex++;
+                var targetClockMs = (long)Math.Floor(beatIndex * 1000.0 / 60.0) + 1;
+                var deltaMs = Math.Max(1, checked((int)(targetClockMs - clockMs)));
+                clockMs += deltaMs;
+                timeline.Sample = new(timelinePosMs, "device-clock");
+                sentPositions.Add(timelinePosMs);
+                time.Advance(TimeSpan.FromMilliseconds(deltaMs));
+                writeCount++;
+                await WaitSettledAsync(writeCount);
+            }
+
+            // Phase 1: Contiguous 60-Hz beats across start and Codex's exact boundary (150, 166, 182, 199, 216, 230 ms).
+            long[] phase1Positions = [17, 34, 50, 67, 84, 100, 117, 134, 150, 166, 182, 199, 216, 230];
+            foreach (var pos in phase1Positions)
+            {
+                await StepBeatAsync(pos);
+            }
+
+            var consumedAfterPhase1 = worker.LookaheadStats.Consumed;
+            consumedAfterPhase1.Should().BeGreaterThanOrEqualTo(phase1Positions.Length - 2,
+                "contiguous 60-Hz MP4 beats incl. 166->182->199->216 ms boundary hit lookahead without discarding Frame 10/11");
+
+            // Phase 2: Seek to Clip 0 -> Clip 1 boundary (966..1033 ms) — 1 seek miss, then hits across clip seam!
+            await StepBeatAsync(966);
+            var consumedBeforeClipSeam = worker.LookaheadStats.Consumed;
+            long[] seamPositions = [983, 1000, 1017, 1033];
+            foreach (var pos in seamPositions)
+            {
+                await StepBeatAsync(pos);
+            }
+            (worker.LookaheadStats.Consumed - consumedBeforeClipSeam).Should().BeGreaterThanOrEqualTo(seamPositions.Length - 1);
+
+            // Phase 3: Seek to Clip 31 -> Clip 0 32-clip sequence loop wrap (31966..31999 -> 16..50 ms)!
+            await StepBeatAsync(31_966);
+            var consumedBeforeWrap = worker.LookaheadStats.Consumed;
+            long[] wrapPositions = [31_983, 31_999, 16, 33, 50];
+            foreach (var pos in wrapPositions)
+            {
+                await StepBeatAsync(pos);
+            }
+            (worker.LookaheadStats.Consumed - consumedBeforeWrap).Should().BeGreaterThanOrEqualTo(wrapPositions.Length - 1);
+
+            // Extract every command-121 access unit written to FakeOpener, H.264 decode it on STA, and verify every picture's 6-bit stripe index!
+            DataPacketCount(opener).Should().Be(sentPositions.Count);
+            opener.Channels.Should().HaveCount(1);
+            var decodedWireFrames = await Sta.RunAsync(() => ExtractAndDecodeWireIndices([.. opener.Last.Writes]));
+            var expectedGlobalFrames = sentPositions.Select(p => seqAsset.FrameAt(p)).ToArray();
+            var expectedClipRelativeFrames = expectedGlobalFrames.Select(idx => idx % 60).ToArray();
+
+            decodedWireFrames.Should().Equal(expectedClipRelativeFrames,
+                "every single transmitted H.264 access unit decodes to the exact expected MP4 sequence frame index");
+            decodedWireFrames.Skip(9).Take(6).Should().Equal(9, 9, 10, 11, 12, 13);
+
+            var perfRows = worker.Performance.SourceFrames!;
+            perfRows.Select(r => r.SourceIndex).Should().Equal(expectedGlobalFrames);
+            worker.LookaheadStats.Errors.Should().Be(0);
+            worker.Snapshot().Dropped.Should().Be(0);
+            output.WriteLine($"[MP4 E2E 32-clip 60-FPS] steps={sentPositions.Count}, stats={worker.LookaheadStats}, phase1={string.Join(',', decodedWireFrames.Take(15))}");
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    private static byte[] CreateMarked60FpsMp4Clip(string scratchDir, int width, int height, int frameCount)
+    {
+        var path = Path.Combine(scratchDir, "marked60-" + Guid.NewGuid().ToString("N") + ".mp4");
+        MFStartup().CheckError();
+        try
+        {
+            using var outType = MFCreateMediaType();
+            outType.Set(MediaTypeAttributeKeys.MajorType, MediaTypeGuids.Video).CheckError();
+            outType.Set(MediaTypeAttributeKeys.Subtype, VideoFormatGuids.H264).CheckError();
+            MFSetAttributeSize(outType, MediaTypeAttributeKeys.FrameSize, (uint)width, (uint)height);
+            MFSetAttributeRatio(outType, MediaTypeAttributeKeys.FrameRate, 60, 1);
+            MFSetAttributeRatio(outType, MediaTypeAttributeKeys.PixelAspectRatio, 1, 1);
+            outType.Set(MediaTypeAttributeKeys.InterlaceMode, (uint)2).CheckError();
+            outType.Set(MediaTypeAttributeKeys.AvgBitrate, (uint)8_000_000).CheckError();
+            outType.Set(MediaTypeAttributeKeys.Mpeg2Profile, (uint)66).CheckError();
+
+            using var inType = MFCreateMediaType();
+            inType.Set(MediaTypeAttributeKeys.MajorType, MediaTypeGuids.Video).CheckError();
+            inType.Set(MediaTypeAttributeKeys.Subtype, VideoFormatGuids.Rgb32).CheckError();
+            MFSetAttributeSize(inType, MediaTypeAttributeKeys.FrameSize, (uint)width, (uint)height);
+            MFSetAttributeRatio(inType, MediaTypeAttributeKeys.FrameRate, 60, 1);
+            MFSetAttributeRatio(inType, MediaTypeAttributeKeys.PixelAspectRatio, 1, 1);
+            inType.Set(MediaTypeAttributeKeys.InterlaceMode, (uint)2).CheckError();
+            inType.Set(MediaTypeAttributeKeys.DefaultStride, (uint)(width * 4)).CheckError();
+
+            using var writer = MFCreateSinkWriterFromURL(path, null, null);
+            var stream = writer.AddStream(outType);
+            writer.SetInputMediaType(stream, inType, null);
+            writer.BeginWriting();
+
+            var pixels = new byte[width * height * 4];
+            var stripeWidth = width / 6;
+            for (var f = 0; f < frameCount; f++)
+            {
+                for (var y = 0; y < height; y++)
+                {
+                    var row = y * width * 4;
+                    for (var x = 0; x < width; x++)
+                    {
+                        var bit = Math.Min(5, x / stripeWidth);
+                        var v = ((f >> bit) & 1) != 0 ? (byte)240 : (byte)16;
+                        var i = row + (x * 4);
+                        pixels[i] = v;
+                        pixels[i + 1] = v;
+                        pixels[i + 2] = v;
+                        pixels[i + 3] = 255;
+                    }
+                }
+
+                using var sample = MFCreateSample();
+                using var buffer = MFCreateMemoryBuffer(pixels.Length);
+                buffer.Lock(out var ptr, out _, out _);
+                try { Marshal.Copy(pixels, 0, ptr, pixels.Length); }
+                finally { buffer.Unlock(); }
+                buffer.CurrentLength = pixels.Length;
+                sample.AddBuffer(buffer);
+                var pts = (long)Math.Round(f * 10_000_000.0 / 60.0);
+                var nextPts = (long)Math.Round((f + 1) * 10_000_000.0 / 60.0);
+                sample.SampleTime = pts;
+                sample.SampleDuration = nextPts - pts;
+                writer.WriteSample(stream, sample);
+            }
+
+            writer.Finalize();
+        }
+        finally
+        {
+            MFShutdown().CheckError();
+        }
+
+        return File.ReadAllBytes(path);
+    }
+
+    private static List<int> ExtractAndDecodeWireIndices(IReadOnlyList<byte[]> writes)
+    {
+        var indices = new List<int>();
+        using var au = new MemoryStream();
+        foreach (var pkt in writes)
+        {
+            var hdr = ScreenProtocol.DecryptHeader(ScreenFamily.Turzx, pkt.AsSpan(0, 512));
+            if (hdr[0] != TurzxVideoProtocol.DataCommand)
+            {
+                continue;
+            }
+
+            var len = BinaryPrimitives.ReadInt32BigEndian(hdr.AsSpan(8));
+            au.Write(pkt, 512, len);
+            if (len < TurzxVideoProtocol.MaxChunkBytes)
+            {
+                var decodedNative = MfH264IntraEncoder.Decode(au.ToArray(), 480, 1920, fullRange: true);
+                au.SetLength(0);
+                var shown = PixelOps.Rotate(decodedNative, 270);
+                var idx = 0;
+                for (var bit = 0; bit < 6; bit++)
+                {
+                    var cx = (bit * 320) + 160;
+                    var (b, g, r, _) = shown.At(cx, 440);
+                    if (((b + g + r) / 3) > 128)
+                    {
+                        idx |= 1 << bit;
+                    }
+                }
+
+                indices.Add(idx);
+            }
+        }
+
+        au.Length.Should().Be(0, "all access units completed without dangling tail chunks");
+        return indices;
     }
 
     private static async Task<string> MeasureSerialLoopAsync(AssetStore assets, ScreenAssignmentDto assignment,
@@ -598,6 +978,76 @@ public sealed class TurzxFramerateOptimizationTests(ITestOutputHelper output)
         var avgFrameMs = totalSw.Item1 / frameCount;
         var fps = 1000.0 / avgFrameMs;
         return $"[Pipelined Overlap @ simulated USB {simulatedUsbMs:F1}ms/frame] {frameCount} frames in {totalSw.Item1:F1}ms => avg {avgFrameMs:F2}ms/frame ({fps:F1} host FPS); stats={stats}";
+    }
+
+    private static async Task<string> MeasureDepth2LoopAsync(AssetStore assets, StoredAsset asset, ScreenAssignmentDto assignment,
+        PcTelemetryDto telemetry, double simulatedUsbMs, int frameCount)
+    {
+        var stampSrc = new ScreenTimestamp(ScreenFamily.Turzx, () => HeadlessProbe.Now.UtcDateTime, () => HeadlessProbe.Now.UtcDateTime);
+        var channel = new SimulatedDelayChannel(simulatedUsbMs);
+        var session = new TurzxVideoSession(channel, stampSrc, () => false);
+        session.Begin(await Sta.RunAsync(() => WpfCodec.EncodePng(new PixelFrame(480, 1920))));
+
+        using var lookahead = new TurzxFrameLookahead(assets, 64L * 1024 * 1024);
+        var buffers = new ScreenComposeBuffers();
+        var rotateBuf = new PixelFrame(480, 1920);
+        var now = HeadlessProbe.Now;
+        var variant = new LookaheadEncoderVariant(true, 95, 90);
+
+        var totalSw = await Sta.RunAsync(() =>
+        {
+            using var comp = new ScreenCompositor(assets, 64L * 1024 * 1024);
+            using var enc = new MfH264IntraEncoder(480, 1920, fullRange: true, singleSlice: true, quality: 95);
+            for (var w = 0; w < 12; w++)
+            {
+                var cw = comp.Compose(Devices.Turzx.Family, assignment, w * 17L, telemetry, now, buffers);
+                PixelOps.RotateInto(cw.Canvas, rotateBuf, 90);
+                _ = enc.Encode(rotateBuf);
+            }
+
+            LookaheadJob JobAt(long el) => new(lookahead.Epoch, session, Devices.Turzx.Family, assignment, asset.Id,
+                asset.FrameAt(el), el, 16.667, asset.DurationMs, null, 1, telemetry, now, false, VideoTelemetry.BakedConfigured, variant);
+
+            lookahead.Schedule([JobAt(17), JobAt(34)]);
+            _ = lookahead.TryTake(new LookaheadMatchCriteria(session, assignment, asset.Id, asset.FrameAt(17), 17, 0, 16.667, asset.DurationMs, null, 1, false, VideoTelemetry.BakedConfigured, variant), () => false);
+            lookahead.Schedule([JobAt(34), JobAt(51)]);
+            var consumedBefore = lookahead.Stats.Consumed;
+
+            var sw = Stopwatch.StartNew();
+            long prevEl = 17;
+            for (var i = 0; i < frameCount; i++)
+            {
+                var el = (i + 2) * 17L;
+                var idx = asset.FrameAt(el);
+                var criteria = new LookaheadMatchCriteria(session, assignment, asset.Id, idx, el, prevEl, 16.667, asset.DurationMs,
+                    null, 1, false, VideoTelemetry.BakedConfigured, variant);
+                var hit = lookahead.TryTake(criteria, () => false);
+                ScreenImage frameToSend;
+                if (hit is not null)
+                {
+                    frameToSend = hit.Frame;
+                }
+                else
+                {
+                    var cb = comp.Compose(Devices.Turzx.Family, assignment, el, telemetry, now, buffers);
+                    PixelOps.RotateInto(cb.Canvas, rotateBuf, 90);
+                    frameToSend = new ScreenImage(TurzxVideoProtocol.DataCommand, enc.Encode(rotateBuf), "fallback");
+                }
+
+                lookahead.Schedule([JobAt((i + 3) * 17L), JobAt((i + 4) * 17L)]);
+                session.SendFrame(frameToSend.Image);
+                prevEl = el;
+            }
+            sw.Stop();
+            session.Stop();
+            return (sw.Elapsed.TotalMilliseconds, consumedBefore);
+        });
+
+        var stats = lookahead.Stats;
+        (stats.Consumed - totalSw.consumedBefore).Should().Be(frameCount, "all steady depth-2 frames hit pre-encoded lookahead");
+        var avgFrameMs = totalSw.Item1 / frameCount;
+        var fps = 1000.0 / avgFrameMs;
+        return $"[Offline PNG+SimulatedUSB Depth-2 Benchmark (not MP4 60FPS acceptance) @ {simulatedUsbMs:F1}ms] {frameCount} frames in {totalSw.Item1:F1}ms => avg {avgFrameMs:F2}ms/frame ({fps:F1} host FPS); stats={stats}";
     }
 
     private static List<byte[]> CreateTestFrames1920x480(int count)

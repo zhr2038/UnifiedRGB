@@ -155,6 +155,7 @@ internal sealed class Mp4FrameReader : IDisposable
     private readonly int _thread = Environment.CurrentManagedThreadId;
     private readonly FileStream _lease;
     private IMFSourceReader? _reader;
+    private PixelFrame? _raster;
     private bool _startup, _ended, _havePicture;
     private int _stride;
     public int Width { get; private set; }
@@ -216,11 +217,20 @@ internal sealed class Mp4FrameReader : IDisposable
             if ((flags & SourceReaderFlag.EndOfStream) != 0) _ended = true;
             if (sample is null) { if (_ended) return null; continue; }
             using var buffer = sample.ConvertToContiguousBuffer(); buffer.Lock(out var pointer, out _, out var length);
-            var raster = new PixelFrame(Width, Height);
+            var raster = _raster is { Width: var rw, Height: var rh } && rw == Width && rh == Height
+                ? _raster
+                : (_raster = new PixelFrame(Width, Height));
             try
             {
                 if (length < Math.Abs((long)_stride) * (Height - 1) + Width * 4L) throw new InvalidDataException("Sequence decoder returned a short raster.");
-                for (var y = 0; y < Height; y++) Marshal.Copy(pointer + (_stride < 0 ? (Height - 1 - y) * -_stride : y * _stride), raster.Pixels, y * raster.Stride, raster.Stride);
+                if (_stride == Width * 4)
+                {
+                    Marshal.Copy(pointer, raster.Pixels, 0, raster.Pixels.Length);
+                }
+                else
+                {
+                    for (var y = 0; y < Height; y++) Marshal.Copy(pointer + (_stride < 0 ? (Height - 1 - y) * -_stride : y * _stride), raster.Pixels, y * raster.Stride, raster.Stride);
+                }
             }
             finally { buffer.Unlock(); }
             PixelOps.Flatten(raster);
@@ -244,6 +254,7 @@ internal sealed class Mp4FrameReader : IDisposable
     public void Dispose()
     {
         _reader?.Dispose(); _reader = null;
+        _raster = null;
         if (_startup) { MFShutdown().CheckError(); _startup = false; }
         _lease.Dispose();
     }

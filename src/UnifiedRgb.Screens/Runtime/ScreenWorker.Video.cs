@@ -23,6 +23,7 @@ internal sealed partial class ScreenWorker
     private long _videoWraps;
     private NativeVideoPerformanceDto? _videoFacts;
     private double _videoOverlayComposeMs, _videoOverlayEncodeMs;
+    private double _lastVideoDataSendMs;
     private bool _lastVideoOverlaySimplePng;
     private string? _videoOverlayEncodingNote;
 
@@ -102,7 +103,9 @@ internal sealed partial class ScreenWorker
         }
         if (bakedTelemetry) VideoOverlayStep(_videoSession, null, assignment);
         beforeSendDataFrame?.Invoke(_videoSession);
+        var dataSendStart = _ctx.Time.GetTimestamp();
         _videoSession.SendFrame(frame.Image);
+        _lastVideoDataSendMs = _ctx.Time.GetElapsedTime(dataSendStart).TotalMilliseconds;
         if (!bakedTelemetry)
         {
             var overlayStart = System.Diagnostics.Stopwatch.GetTimestamp();
@@ -163,6 +166,7 @@ internal sealed partial class ScreenWorker
         var session = _videoSession; _videoSession = null;
         Volatile.Write(ref _videoFacts, null); _previousVideoPosition = 0; _videoWraps = 0;
         _lastVideoOverlay = null; _lastVideoOverlayAssignment = null; _videoOverlayEncodingNote = null;
+        _lastVideoDataSendMs = 0;
         _frameLookahead?.Invalidate();
         ResetTelemetrySample(); // a new session starts with a fresh display reading
         StopPreparedOverlay(); // invalidates older prepared work before the stop controls; no join here

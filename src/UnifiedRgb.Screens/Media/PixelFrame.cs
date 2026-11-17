@@ -341,6 +341,17 @@ internal static class PixelOps
     public static void Flatten(PixelFrame frame)
     {
         var p = frame.Pixels;
+        if (BitConverter.IsLittleEndian)
+        {
+            var u32 = MemoryMarshal.Cast<byte, uint>(p.AsSpan());
+            for (var i = 0; i < u32.Length; i++)
+            {
+                u32[i] |= 0xFF000000u;
+            }
+
+            return;
+        }
+
         for (var i = 3; i < p.Length; i += 4)
         {
             p[i] = 255;

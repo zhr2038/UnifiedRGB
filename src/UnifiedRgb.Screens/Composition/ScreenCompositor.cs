@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Runtime.InteropServices;
 using UnifiedRgb.Contracts.Dto;
 using UnifiedRgb.Screens.Media;
 using UnifiedRgb.Screens.Protocol;
@@ -111,7 +112,7 @@ internal sealed class ScreenCompositor(AssetStore assets, long cacheBytes, Overl
             if (assets.Find(assetId) is { } asset)
             {
                 FittedFrame fitted;
-                try { fitted = Fitted(asset, asset.FrameAt(elapsedMs), cw, ch, a.Fit); }
+                try { fitted = Fitted(asset, asset.FrameAt(elapsedMs), cw, ch, a.Fit, allowTransientAlias: buffers is not null); }
                 catch (Exception ex) when (asset.Sequence is not null && ex is IOException or InvalidDataException or ArgumentException or SharpGen.Runtime.SharpGenException or System.Runtime.InteropServices.COMException)
                 {
                     return ComposeBlocked(family, "sequence media cannot render: " + ex.Message);
@@ -203,7 +204,7 @@ internal sealed class ScreenCompositor(AssetStore assets, long cacheBytes, Overl
         }
     }
 
-    private FittedFrame Fitted(StoredAsset asset, int frame, int cw, int ch, string fit)
+    private FittedFrame Fitted(StoredAsset asset, int frame, int cw, int ch, string fit, bool allowTransientAlias)
     {
         var key = (asset.Id, frame, cw, ch, fit);
         if (_cache.TryGetValue(key, out var hit))
@@ -213,8 +214,14 @@ internal sealed class ScreenCompositor(AssetStore assets, long cacheBytes, Overl
 
         var src = asset.Sequence is not null ? (_sequenceReader ??= new SequenceFrameReader(assets)).Read(asset, frame)
             : WpfCodec.DecodePng(assets.ReadFrame(asset, frame), 1920L * 1920);
+        var exactSize = src.Width == cw && src.Height == ch;
+        var willCacheExact = exactSize && _cachedBytes + (cw * ch * 4L) <= cacheBytes;
         PixelFrame fitted;
-        if (fit == "cover")
+        if (exactSize)
+        {
+            fitted = (willCacheExact || !allowTransientAlias) && asset.Sequence is not null ? src.Clone() : src;
+        }
+        else if (fit == "cover")
         {
             // crop the source to the canvas aspect first (centred), so the resample never exceeds the canvas
             var s = Math.Max(cw / (double)src.Width, ch / (double)src.Height);
@@ -229,11 +236,7 @@ internal sealed class ScreenCompositor(AssetStore assets, long cacheBytes, Overl
             fitted = PixelOps.Resize(src, w, h);
         }
 
-        var opaque = true;
-        for (var i = 3; i < fitted.Pixels.Length; i += 4)
-        {
-            if (fitted.Pixels[i] != 255) { opaque = false; break; }
-        }
+        var opaque = (asset.Sequence is not null && exactSize) || IsOpaque(fitted);
         var result = new FittedFrame(fitted, opaque);
         if (_cachedBytes + fitted.ByteCount <= cacheBytes)
         {
@@ -242,6 +245,34 @@ internal sealed class ScreenCompositor(AssetStore assets, long cacheBytes, Overl
         }
 
         return result;
+    }
+
+    private static bool IsOpaque(PixelFrame frame)
+    {
+        var px = frame.Pixels;
+        if (BitConverter.IsLittleEndian)
+        {
+            var u32 = MemoryMarshal.Cast<byte, uint>(px.AsSpan());
+            for (var i = 0; i < u32.Length; i++)
+            {
+                if ((u32[i] & 0xFF000000u) != 0xFF000000u)
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        for (var i = 3; i < px.Length; i += 4)
+        {
+            if (px[i] != 255)
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private static string Join(string? first, string next) => first is null ? next : first + "; " + next;

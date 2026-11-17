@@ -23,6 +23,8 @@ internal sealed record StoredAsset(string Id, string Name, string Format, int Wi
 
     public ScreenAssetDto ToDto() => new(Id, Name, Width, Height, FrameCount, DurationMs, Kind);
 
+    private int[]? _cumulativeEndsMs;
+
     /// <summary>The frame shown <paramref name="elapsedMs"/> after the animation started (looping); 0 for a still image.</summary>
     public int FrameAt(long elapsedMs)
     {
@@ -32,16 +34,36 @@ internal sealed record StoredAsset(string Id, string Name, string Format, int Wi
         }
 
         var t = (int)(Math.Max(0, elapsedMs) % DurationMs);
-        for (var i = 0; i < DelaysMs.Count; i++)
+        var ends = Volatile.Read(ref _cumulativeEndsMs);
+        if (ends is null)
         {
-            t -= DelaysMs[i];
-            if (t < 0)
+            var built = new int[DelaysMs.Count];
+            var sum = 0;
+            for (var i = 0; i < DelaysMs.Count; i++)
             {
-                return i;
+                sum += DelaysMs[i];
+                built[i] = sum;
+            }
+
+            ends = Interlocked.CompareExchange(ref _cumulativeEndsMs, built, null) ?? built;
+        }
+
+        var lo = 0;
+        var hi = ends.Length - 1;
+        while (lo < hi)
+        {
+            var mid = lo + ((hi - lo) >> 1);
+            if (ends[mid] > t)
+            {
+                hi = mid;
+            }
+            else
+            {
+                lo = mid + 1;
             }
         }
 
-        return DelaysMs.Count - 1;
+        return ends[lo] > t ? lo : ends.Length - 1;
     }
 }
 
