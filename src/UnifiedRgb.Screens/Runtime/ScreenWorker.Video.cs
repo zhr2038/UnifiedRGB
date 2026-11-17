@@ -42,6 +42,16 @@ internal sealed partial class ScreenWorker
     internal static bool SingleSliceOf(ScreensOptions options, ScreenFamily family, NativeVideoTrialDto? trial, bool verified) =>
         family == ScreenFamily.Turzx && (trial is not null ? trial.SingleSlice : options.TurzxSingleSlice && verified);
 
+    internal static int QualityOf(ScreensOptions options, ScreenFamily family, NativeVideoTrialDto? trial, bool verified)
+    {
+        if (family != ScreenFamily.Turzx) return MfH264IntraEncoder.DefaultQuality;
+        var quality = trial is not null ? trial.Quality ?? MfH264IntraEncoder.DefaultQuality
+            : verified ? options.TurzxVideoQuality : MfH264IntraEncoder.DefaultQuality;
+        if (quality is < MfH264IntraEncoder.MinQuality or > MfH264IntraEncoder.MaxQuality)
+            throw new ScreenEncodeException($"TurzxVideoQuality must be in {MfH264IntraEncoder.MinQuality}..{MfH264IntraEncoder.MaxQuality} (got {quality}).");
+        return quality;
+    }
+
     /// <param name="telemetry">Baked: the TURZX canvas already contains the live overlay (a BakeTelemetry trial or the configured mode).</param>
     private ScreenImage EncodeVideo(PixelFrame canvas, VideoTelemetry telemetry = VideoTelemetry.PngLayer)
     {
@@ -75,8 +85,9 @@ internal sealed partial class ScreenWorker
         if (_device.Family.Family is not (ScreenFamily.Turzx or ScreenFamily.H2) || !_ctx.NativeVideoAllowed(_device.Id))
             throw new ScreenEncodeException("Native H.264 needs a verified H2/TURZX or an explicit bounded trial.");
         var trial = _ctx.VideoTrialOf(_device.Id)?.Info;
-        var variant = (SingleSlice: SingleSliceOf(_ctx.Options, _device.Family.Family, trial, _ctx.NativeVideoAllowed(_device.Id)),
-            Quality: turzx ? trial?.Quality ?? 95 : 95);
+        var verified = _ctx.NativeVideoAllowed(_device.Id);
+        var variant = (SingleSlice: SingleSliceOf(_ctx.Options, _device.Family.Family, trial, verified),
+            Quality: QualityOf(_ctx.Options, _device.Family.Family, trial, verified));
         if (_videoEncoderVariant != variant)
         {
             _videoEncoder?.Dispose(); _videoEncoder = null;

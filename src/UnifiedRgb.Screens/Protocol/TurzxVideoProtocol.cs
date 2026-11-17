@@ -12,12 +12,13 @@ internal static class TurzxVideoProtocol
 {
     public const int HeaderBlockBytes = 512;
     public const byte DataCommand = 121;
+    public const byte QueueStatusCommand = 122;
     public const int MaxChunkBytes = 202752;
     public static byte[] StopPlayback(uint stamp) => Header(111, stamp);
     public static byte[] Prepare(uint stamp) => Header(112, stamp);
     public static byte[] Start(uint stamp) => Header(41, stamp);
     public static byte[] Cadence(uint stamp) => Header(15, stamp, 60); // consume available pictures; the HOST clock selects content
-    public static byte[] QueueStatus(uint stamp) => Header(122, stamp);
+    public static byte[] QueueStatus(uint stamp) => Header(QueueStatusCommand, stamp);
     public static byte[] EndStream(uint stamp) => Header(123, stamp);
     public static byte[] StopImagePlayback(uint stamp) => Header(114, stamp);
 

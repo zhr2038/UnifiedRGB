@@ -1,6 +1,9 @@
 using System.Text.Json;
+using Microsoft.Extensions.Configuration;
 using UnifiedRgb.Contracts;
 using UnifiedRgb.Contracts.Dto;
+using UnifiedRgb.Host;
+using UnifiedRgb.Screens.Composition;
 using UnifiedRgb.Screens.Encoding;
 using UnifiedRgb.Screens.Media;
 using UnifiedRgb.Screens.Protocol;
@@ -25,7 +28,7 @@ public sealed class NativeVideoVariantTests
 
     [Theory]
     [InlineData(0)]
-    [InlineData(94)]
+    [InlineData(34)]
     [InlineData(101)]
     public async Task A_lower_quality_or_invalid_quality_is_rejected_before_any_IO(int quality)
     {
@@ -39,6 +42,7 @@ public sealed class NativeVideoVariantTests
     [Theory]
     [InlineData(true,95)]
     [InlineData(false,100)]
+    [InlineData(false,80)]
     public async Task New_variants_cannot_change_the_accepted_H2_path(bool singleSlice, int quality)
     {
         await using var rig = new Rig(Rig.AllOutput, Devices.H2);
@@ -106,5 +110,84 @@ public sealed class NativeVideoVariantTests
         await Wait.UntilAsync(async()=> (await rig.Manager.GetScreenPerformanceAsync()).Single().NativeVideo?.EncodingNote?.Contains("Q95",StringComparison.Ordinal)==true,"default encoder restored after a new trial");
         (await rig.Manager.GetScreenPerformanceAsync()).Single().NativeVideo!.OverlayEncodingNote.Should().Be("RGBA8 WIC PNG");
         await rig.Manager.EndNativeVideoTrialAsync(legacy.TrialId);
+    }
+
+    [MediaFoundationFact]
+    public async Task Actual_lower_quality_single_slice_output_shrinks_access_unit_monotonically_and_decodes_cleanly()
+    {
+        var sizes = await Sta.RunAsync(() =>
+        {
+            var pixels = new byte[480 * 1920 * 4];
+            for (var y = 0; y < 1920; y++)
+            for (var x = 0; x < 480; x++)
+            {
+                var offset = (y * 480 + x) * 4;
+                pixels[offset] = (byte)(((x * 3 + y * 5) / 4 + ((x ^ y) & 31)) & 0xFF);
+                pixels[offset + 1] = (byte)(((x * 7 + y * 2) / 4 + ((x * y) & 15)) & 0xFF);
+                pixels[offset + 2] = (byte)(((x * 2 + y * 9) / 4) & 0xFF);
+                pixels[offset + 3] = 255;
+            }
+            var frame = new PixelFrame(480, 1920, pixels);
+            var lengths = new List<int>(4);
+            foreach (var q in new[] { 95, 85, 75, 60 })
+            {
+                using var encoder = new MfH264IntraEncoder(480, 1920, fullRange: true, singleSlice: true, quality: q);
+                var bytes = encoder.Encode(frame);
+                H264AnnexB.ValidateIdrAccessUnit(bytes, out var sliceCount).Should().BeTrue();
+                sliceCount.Should().Be(1);
+                var decoded = MfH264IntraEncoder.Decode(bytes, 480, 1920, fullRange: true);
+                decoded.Width.Should().Be(480);
+                decoded.Height.Should().Be(1920);
+                lengths.Add(bytes.Length);
+            }
+            return lengths;
+        });
+
+        sizes[3].Should().BeLessThan(sizes[2]);
+        sizes[2].Should().BeLessThan(sizes[1]);
+        sizes[1].Should().BeLessThan(sizes[0]);
+    }
+
+    [Fact]
+    public async Task TurzxVideoQuality_option_defaults_to_95_is_absent_from_shipped_settings_and_obeys_trial_precedence()
+    {
+        new ScreensOptions().TurzxVideoQuality.Should().Be(95);
+        var shipped = Path.Combine(AppContext.BaseDirectory, "appsettings.json");
+        File.ReadAllText(shipped).Should().NotContain(nameof(ScreensOptions.TurzxVideoQuality), "no source appsettings change");
+        Bind(new ConfigurationBuilder().AddJsonFile(shipped)).TurzxVideoQuality.Should().Be(95);
+        Bind(new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?> { ["UnifiedRgb:Screens:Enabled"] = "true" }))
+            .TurzxVideoQuality.Should().Be(95, "absent means default 95");
+        Bind(new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?> { ["UnifiedRgb:Screens:TurzxVideoQuality"] = "75" }))
+            .TurzxVideoQuality.Should().Be(75);
+
+        ScreenWorker.QualityOf(new ScreensOptions { TurzxVideoQuality = 75 }, ScreenFamily.Turzx, null, verified: true).Should().Be(75);
+        ScreenWorker.QualityOf(new ScreensOptions { TurzxVideoQuality = 75 }, ScreenFamily.Turzx, null, verified: false).Should().Be(95);
+        ScreenWorker.QualityOf(new ScreensOptions { TurzxVideoQuality = 75 }, ScreenFamily.H2, null, verified: true).Should().Be(95);
+        ScreenWorker.QualityOf(new ScreensOptions { TurzxVideoQuality = 75 }, ScreenFamily.TlLcd, null, verified: true).Should().Be(95);
+        ScreenWorker.QualityOf(new ScreensOptions { TurzxVideoQuality = 75 }, ScreenFamily.Turzx,
+            new NativeVideoTrialDto("t", Devices.Turzx.Id, 10000, 60, null), verified: true).Should().Be(95);
+        ScreenWorker.QualityOf(new ScreensOptions { TurzxVideoQuality = 75 }, ScreenFamily.Turzx,
+            new NativeVideoTrialDto("t", Devices.Turzx.Id, 10000, 60, null) { Quality = 65 }, verified: true).Should().Be(65);
+        FluentActions.Invoking(() => ScreenWorker.QualityOf(new ScreensOptions { TurzxVideoQuality = 34 }, ScreenFamily.Turzx, null, verified: true))
+            .Should().Throw<ScreenEncodeException>().WithMessage("TurzxVideoQuality must be in 35..100*");
+
+        foreach (var badQuality in new[] { 34, 101 })
+        {
+            await using var rig = new Rig(o =>
+            {
+                Rig.AllOutput(o);
+                o.NativeH264VerifiedScreenIds = [Devices.Turzx.Id];
+                o.TurzxVideoQuality = badQuality;
+            }, Devices.Turzx);
+            await rig.Manager.SetScreenDeviceSettingsAsync(new ScreenDeviceSettingsUpdateDto(Devices.Turzx.Id, 0, ScreenEncodingPolicies.NativeH264IntraV1));
+            var asset = await rig.Manager.UploadScreenAssetAsync(new("gif fixture", Convert.ToBase64String(Images.Gif(2, 2, GifFrame.Fill(0, 0, 2, 2, 1)))));
+            await FluentActions.Awaiting(() => rig.Manager.PreviewScreenAsync(new ScreenAssignmentDto(Devices.Turzx.Id, asset.Id)))
+                .Should().ThrowAsync<InvalidOperationException>()
+                .WithMessage("NOT SENDABLE: TurzxVideoQuality must be in 35..100*");
+            rig.Opener.Opens.Should().Be(0);
+        }
+
+        static ScreensOptions Bind(IConfigurationBuilder builder) =>
+            builder.Build().GetSection(UnifiedRgbOptions.Section).Get<UnifiedRgbOptions>()!.Screens;
     }
 }

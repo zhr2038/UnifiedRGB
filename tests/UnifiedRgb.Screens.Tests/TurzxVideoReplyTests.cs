@@ -56,6 +56,51 @@ public sealed class TurzxVideoReplyTests
         channel.Writes.Last().Fast.Should().BeFalse();
     }
 
+    [Fact]
+    public void Queue_status_122_negotiates_its_own_eight_pair_gate_independently_of_data_and_faults_on_bad_fast_reply()
+    {
+        var channel = new Channel(); var session = Session(channel); session.Begin(Png);
+        for (var i = 0; i < 10; i++) session.SendFrame(Picture);
+        channel.Writes.Where(w => w.Command == 121).Skip(8).Should().OnlyContain(w => w.Fast && w.Exact);
+
+        var timeoutsBefore122 = session.Work.Timeouts;
+        for (var i = 0; i < 8; i++) session.QueryQueueStatus().Should().Be(0);
+        channel.Writes.Where(w => w.Command == 122).Should().HaveCount(8).And.OnlyContain(w => !w.Fast && !w.Exact);
+        session.Work.Timeouts.Should().Be(timeoutsBefore122 + 8);
+
+        var timeoutsAfterNegotiation = session.Work.Timeouts;
+        var correlatedBeforeFastStatus = session.Work.Correlated;
+        session.QueryQueueStatus().Should().Be(0);
+        session.QueryQueueStatus().Should().Be(0);
+        channel.PacketsForNextData = (c, t) => [Ack(c, t, 4), []];
+        channel.QueueStatusDepth = () => 2;
+        session.SendFrame(Picture);
+        var statusWrites = channel.Writes.Where(w => w.Command == 122).ToArray();
+        statusWrites.Should().HaveCount(11);
+        statusWrites.Take(8).Should().OnlyContain(w => !w.Fast && !w.Exact);
+        statusWrites.Skip(8).Should().OnlyContain(w => w.Fast && w.Exact);
+        session.Work.Timeouts.Should().Be(timeoutsAfterNegotiation, "fast 122 reads consume [512B ACK, ZLP] without waiting for drain timeout");
+        session.Work.Correlated.Should().Be(correlatedBeforeFastStatus + 4);
+
+        session.SendOverlay(Png);
+        channel.Writes.Last(w => w.Command == 102).Fast.Should().BeFalse();
+
+        session.Stop();
+        channel.Writes.TakeLast(3).Should().OnlyContain(w => w.Command != 121 && w.Command != 122 && !w.Fast && !w.Exact);
+        channel.QueueStatusDepth = null;
+        session.Begin(Png);
+        session.QueryQueueStatus().Should().Be(0);
+        channel.Writes.Last().Fast.Should().BeFalse("reopening or beginning again resets the 122 gate too");
+
+        for (var i = 0; i < 7; i++) session.QueryQueueStatus();
+        channel.PacketsForNextStatus = (c, t) => [Ack(c, t, 2)]; // missing ZLP on fast 122
+        var badFast122 = () => session.QueryQueueStatus();
+        badFast122.Should().Throw<ScreenTransferException>().Which.Kind.Should().Be(ScreenTransferError.ResponseMismatch);
+        var writesBeforeStop = channel.Writes.Count;
+        session.Stop();
+        channel.Writes.Count.Should().Be(writesBeforeStop, "a bad fast 122 reply faults the channel with zero follow-up writes");
+    }
+
     [Theory]
     [InlineData(0)] // short ACK
     [InlineData(1)] // stale timestamp
@@ -208,6 +253,7 @@ public sealed class TurzxVideoReplyTests
         public List<WriteFact> Writes { get; } = [];
         public List<byte[]> Packets { get; } = [];
         public Func<byte, uint, byte[][]>? PacketsForNextData { get; set; }
+        public Func<byte, uint, byte[][]>? PacketsForNextStatus { get; set; }
         public Func<byte>? QueueStatusDepth { get; set; }
         public bool AbortNextRead { get; set; }
         public bool IoFailureNextRead { get; set; }
@@ -227,8 +273,11 @@ public sealed class TurzxVideoReplyTests
             Writes.Add(new(command, timestamp, CorrelatedReplies == true, ExactReplyPair));
             var replies = command == 121 && PacketsForNextData is { } next
                 ? next(command, timestamp)
+                : command == 122 && PacketsForNextStatus is { } nextStatus
+                ? nextStatus(command, timestamp)
                 : [Ack(command, timestamp, command == 122 && QueueStatusDepth is { } depth ? depth() : (byte)0), []];
             if (command == 121) PacketsForNextData = null;
+            if (command == 122) PacketsForNextStatus = null;
             foreach (var reply in replies) _packets.Enqueue(reply);
         }
         public int Read(Span<byte> buffer, int timeoutMs)

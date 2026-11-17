@@ -16,6 +16,7 @@ internal sealed class TurzxVideoSession(IScreenUsbChannel channel, ScreenTimesta
     private bool _faulted;
     private uint? _lastStamp;
     private readonly ScreenReplyCapability _dataReplyCapability = new();
+    private readonly ScreenReplyCapability _statusReplyCapability = new();
     private NativeVideoWork _work;
     private readonly byte[] _reply = new byte[512];
     private readonly byte[] _controlPacket = new byte[TurzxVideoProtocol.HeaderBlockBytes];
@@ -34,6 +35,7 @@ internal sealed class TurzxVideoSession(IScreenUsbChannel channel, ScreenTimesta
         if (_faulted) throw new InvalidOperationException("The failed native channel must be reopened.");
         if (_entered) return;
         _dataReplyCapability.Observe(false, default);
+        _statusReplyCapability.Observe(false, default);
         _entered = true; // cleanup is required even if a later initialization command fails
         Control(TurzxVideoProtocol.StopPlayback);
         Control(TurzxVideoProtocol.Prepare);
@@ -73,7 +75,7 @@ internal sealed class TurzxVideoSession(IScreenUsbChannel channel, ScreenTimesta
                     throw new ScreenTransferException(ScreenTransferError.Aborted, "Native video interrupted by a pending screen command.");
                 }
                 _work = _work with { QueueSleep = _work.QueueSleep + Stopwatch.GetElapsedTime(sleepStart).TotalMilliseconds };
-                var count = ControlCommand(122);
+                var count = ControlCommand(TurzxVideoProtocol.QueueStatusCommand);
                 if (count < 9) { _faulted = true; throw new ScreenTransferException(ScreenTransferError.ResponseMismatch, "Video status reply is too short."); }
                 LastQueueDepth = _reply[8];
                 busy = LastQueueDepth > 2;
@@ -101,7 +103,7 @@ internal sealed class TurzxVideoSession(IScreenUsbChannel channel, ScreenTimesta
     public int QueryQueueStatus()
     {
         if (!_entered || _faulted) throw new InvalidOperationException("Video session is not initialized or its channel must be reopened.");
-        var count = ControlCommand(122);
+        var count = ControlCommand(TurzxVideoProtocol.QueueStatusCommand);
         if (count < 9) { _faulted = true; throw new ScreenTransferException(ScreenTransferError.ResponseMismatch, "Video status reply is too short."); }
         return _reply[8];
     }
@@ -128,11 +130,13 @@ internal sealed class TurzxVideoSession(IScreenUsbChannel channel, ScreenTimesta
         if (_faulted) throw new IOException("Native video channel must be reopened before another command.");
         var diagnostics = channel as IScreenUsbDiagnostics;
         var data = command == TurzxVideoProtocol.DataCommand;
-        var fast = data && allowCorrelatedReplies && _dataReplyCapability.Verified && diagnostics is not null;
+        var status = command == TurzxVideoProtocol.QueueStatusCommand;
+        var fast = allowCorrelatedReplies && diagnostics is not null
+            && ((data && _dataReplyCapability.Verified) || (status && _statusReplyCapability.Verified));
         if (diagnostics is not null)
         {
             diagnostics.ReplyQuietMs = 2;
-            diagnostics.CorrelatedReplies = fast; // controls/overlay never inherit image or data capabilities
+            diagnostics.CorrelatedReplies = fast; // data (121) and status (122) use independent 8-pair gates; other controls/overlay never negotiate fast pairs
             diagnostics.ExactReplyPair = fast;
             diagnostics.ExpectResponse(command, timestamp);
         }
@@ -150,6 +154,7 @@ internal sealed class TurzxVideoSession(IScreenUsbChannel channel, ScreenTimesta
             if (fast && (count != 512 || facts is not { Reads: 2, Matched: 1, ZeroLength: 1, Timeouts: 0 }))
                 throw new ScreenTransferException(ScreenTransferError.ResponseMismatch, "Native data reply shape changed after negotiation; reopen conservatively.");
             if (data && !fast) _dataReplyCapability.Observe(count == 512, facts);
+            else if (status && !fast) _statusReplyCapability.Observe(count == 512, facts);
             _work = _work with
             {
                 DataWrite = _work.DataWrite + (data ? write : 0), DataRead = _work.DataRead + (data ? read : 0),

@@ -519,9 +519,10 @@ internal sealed partial class ScreenWorker : IDisposable
                             var utcNow = _ctx.Time.GetUtcNow();
                             var sampledReading = SampledTelemetry(renderAssignment, videoTelemetry, videoTrial?.Info.TrialId, out var telemetryGen, out var telemetryTakenAt);
                             var actualStale = OverlayRenderer.IsStale(sampledReading, utcNow);
+                            var verified = _ctx.NativeVideoAllowed(_device.Id);
                             var variant = new LookaheadEncoderVariant(
-                                SingleSliceOf(_ctx.Options, family.Family, videoTrial?.Info, _ctx.NativeVideoAllowed(_device.Id)),
-                                videoTrial?.Info.Quality ?? 95,
+                                SingleSliceOf(_ctx.Options, family.Family, videoTrial?.Info, verified),
+                                QualityOf(_ctx.Options, family.Family, videoTrial?.Info, verified),
                                 _ctx.Options.TurzxLandscapeRotation);
                             LookaheadResult? lookaheadHit = null;
                             if (_videoSession is TurzxVideoSession activeSession)

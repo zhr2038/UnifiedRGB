@@ -20,11 +20,13 @@ public sealed partial class ScreenManager : IScreenVideoService
     public async Task<NativeVideoTrialDto> BeginNativeVideoTrialAsync(NativeVideoTrialRequestDto request, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(request); ct.ThrowIfCancellationRequested();
-        if (request.DurationMs is < 1000 or > 60000 || request.Fps is < 1 or > 60 || request.Quality is < 95 or > 100
+        if (request.DurationMs is < 1000 or > 60000 || request.Fps is < 1 or > 60
+            || request.Quality is < Encoding.MfH264IntraEncoder.MinQuality or > Encoding.MfH264IntraEncoder.MaxQuality
             || !ScreenIds.TryParse(request.ScreenId, out var family, out _) || family.Family is not (ScreenFamily.Turzx or ScreenFamily.H2))
             throw new ArgumentException("A video trial needs one H2/TURZX id, 1..60 FPS and 1..60 seconds.", nameof(request));
-        if ((request.SingleSlice || request.SimpleOverlayPng || (request.Quality ?? 95) != 95) && family.Family != ScreenFamily.Turzx)
-            throw new ArgumentException("Experimental slice and increased-quality settings are TURZX-only.", nameof(request));
+        if ((request.SingleSlice || request.SimpleOverlayPng || (request.Quality ?? Encoding.MfH264IntraEncoder.DefaultQuality) != Encoding.MfH264IntraEncoder.DefaultQuality)
+            && family.Family != ScreenFamily.Turzx)
+            throw new ArgumentException("Experimental slice and quality settings are TURZX-only.", nameof(request));
         if ((request.PreparedOverlay || request.MeasureQueueAfterOverlay) && family.Family != ScreenFamily.Turzx)
             throw new ArgumentException("Prepared-overlay and overlay-queue measurements are TURZX-only.", nameof(request));
         if (request.BakeTelemetry && family.Family != ScreenFamily.Turzx)

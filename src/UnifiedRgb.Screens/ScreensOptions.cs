@@ -82,6 +82,13 @@ public sealed class ScreensOptions
     /// </summary>
     public bool TurzxSingleSlice { get; set; }
 
+    /// <summary>
+    /// Normal native TURZX H.264 intra quality (35..100) for an id in <see cref="NativeH264VerifiedScreenIds"/>. Default 95 preserves
+    /// the original encoder output byte for byte. An active explicit native video trial always uses its own Quality (95 when omitted).
+    /// Configuration only; H2 and non-video paths are unaffected.
+    /// </summary>
+    public int TurzxVideoQuality { get; set; } = 95;
+
     public ScreenFamilyOptions For(ScreenFamily family) => family switch
     {
         ScreenFamily.TlLcd => TlLcd,

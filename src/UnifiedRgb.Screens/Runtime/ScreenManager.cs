@@ -364,11 +364,20 @@ public sealed partial class ScreenManager : IScreenService, IScreenSceneBinding,
             var composed = compositor.Compose(family, separate ? shownAssignment with { Overlay = "none", OverlayLayout = null } : shownAssignment, 0, telemetry, now);
             if (video)
             {
-                // the worker's own slicing rule too: a trial's own SingleSlice, else TurzxSingleSlice of a verified TURZX
-                var preview = ScreenWorker.PreviewVideo(family, shownAssignment, composed.Canvas, telemetry, now, rotation,
-                    ScreenWorker.SingleSliceOf(_options, family.Family, videoTrial, NativeVideoVerified(assignment.ScreenId)), videoTrial?.Quality ?? 95,
-                    videoTrial?.SimpleOverlayPng ?? false, videoTelemetry);
-                return (WpfCodec.EncodePng(preview.Shown), preview.Note);
+                try
+                {
+                    // the worker's own slicing & quality rules: a trial's own flags, else TurzxSingleSlice / TurzxVideoQuality of a verified TURZX
+                    var verified = NativeVideoVerified(assignment.ScreenId);
+                    var preview = ScreenWorker.PreviewVideo(family, shownAssignment, composed.Canvas, telemetry, now, rotation,
+                        ScreenWorker.SingleSliceOf(_options, family.Family, videoTrial, verified),
+                        ScreenWorker.QualityOf(_options, family.Family, videoTrial, verified),
+                        videoTrial?.SimpleOverlayPng ?? false, videoTelemetry);
+                    return (WpfCodec.EncodePng(preview.Shown), preview.Note);
+                }
+                catch (ScreenEncodeException ex)
+                {
+                    throw new InvalidOperationException("NOT SENDABLE: " + ex.Message, ex);
+                }
             }
             EncodedFrame encoded;
             try

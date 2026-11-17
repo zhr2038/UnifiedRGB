@@ -13,6 +13,9 @@ namespace UnifiedRgb.Screens.Encoding;
 internal sealed class MfH264IntraEncoder : IDisposable
 {
     internal const int MaxEncodedBytes = 2 * 1024 * 1024;
+    internal const int MinQuality = 35;
+    internal const int MaxQuality = 100;
+    internal const int DefaultQuality = 95;
     private readonly int _width, _height;
     private readonly bool _fullRange;
     private readonly bool _singleSlice;
@@ -28,9 +31,10 @@ internal sealed class MfH264IntraEncoder : IDisposable
     private bool _disposed;
     public int LastSliceCount { get; private set; }
 
-    public MfH264IntraEncoder(int width, int height, bool fullRange = false, bool singleSlice = false, int quality = 95)
+    public MfH264IntraEncoder(int width, int height, bool fullRange = false, bool singleSlice = false, int quality = DefaultQuality)
     {
-        if (quality is < 95 or > 100) throw new ArgumentOutOfRangeException(nameof(quality), "Native quality may only remain95 or increase to100.");
+        if (quality is < MinQuality or > MaxQuality)
+            throw new ArgumentOutOfRangeException(nameof(quality), "Native TURZX H.264 quality must be in 35..100.");
         if (width < 2 || height < 2 || (width & 1) != 0 || (height & 1) != 0 || (long)width * height > 1920L * 1920)
             throw new ArgumentOutOfRangeException(nameof(width), "H.264 needs an even, bounded raster.");
         _width = width; _height = height; _fullRange = fullRange; _singleSlice = singleSlice;
