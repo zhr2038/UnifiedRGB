@@ -104,51 +104,218 @@ internal sealed partial class AssetStore
     private static HashSet<string> SequenceOwned(VideoSequenceMeta meta) => meta.Clips.Select(c => c.File).Append(SequenceMetaFile).ToHashSet(StringComparer.OrdinalIgnoreCase);
 }
 
-/// <summary>One compositor's STA-owned current clip decoder and one raster. Clip/loop/seek never changes the scene epoch.</summary>
+/// <summary>One compositor's STA-owned current clip decoder and bounded 8-frame sliding ring. Clip/loop/seek never changes the scene epoch.</summary>
 internal sealed class SequenceFrameReader(AssetStore store) : IDisposable
 {
+    internal const int RecentRingCapacity = 8;
+
+    private sealed class RingSlot
+    {
+        public string? AssetId;
+        public int GlobalFrame = -1;
+        public PixelFrame? Pixels;
+    }
+
+    private readonly RingSlot[] _ring = [.. Enumerable.Range(0, RecentRingCapacity).Select(_ => new RingSlot())];
+    private int _ringWrite;
     private Mp4FrameReader? _reader;
     private string? _asset;
     private int _clip = -1, _frame = -1;
     private long _origin;
-    private VideoSample? _sample;
+
+    internal long SeekCount { get; private set; }
+    internal long RingHits { get; private set; }
 
     public PixelFrame Read(StoredAsset asset, int frame)
     {
-        if (asset.Sequence is not { } meta || frame < 0 || frame >= asset.FrameCount) throw new ArgumentOutOfRangeException(nameof(frame));
-        var local = frame; var clip = 0;
-        while (local >= meta.Clips[clip].DelaysMs.Length) local -= meta.Clips[clip++].DelaysMs.Length;
+        if (asset.Sequence is not { } meta || frame < 0 || frame >= asset.FrameCount)
+            throw new ArgumentOutOfRangeException(nameof(frame));
+
+        if (TryGetRecent(asset.Id, frame, out var cached))
+        {
+            RingHits++;
+            return cached;
+        }
+
+        var local = frame;
+        var clip = 0;
+        while (local >= meta.Clips[clip].DelaysMs.Length)
+        {
+            local -= meta.Clips[clip++].DelaysMs.Length;
+        }
+
+        var clipGlobalStart = frame - local;
         var source = meta.Clips[clip];
-        if (_reader is null || _asset != asset.Id || _clip != clip)
+
+        try
         {
-            Dispose();
-            _reader = new(store.SequencePath(asset, source), source.Sha256);
-            if (_reader.Width != asset.Width || _reader.Height != asset.Height) { Dispose(); throw new InvalidDataException("Sequence dimensions changed."); }
-            _sample = _reader.ReadNext() ?? throw new InvalidDataException("Empty sequence source.");
-            _origin = _sample.Timestamp; _frame = 0; _asset = asset.Id; _clip = clip;
+            if (_reader is null || _asset != asset.Id || _clip != clip)
+            {
+                var sameAsset = string.Equals(_asset, asset.Id, StringComparison.Ordinal);
+                CloseReader();
+                if (!sameAsset)
+                {
+                    ResetRing(asset.Width, asset.Height);
+                }
+
+                _reader = new(store.SequencePath(asset, source), source.Sha256);
+                if (_reader.Width != asset.Width || _reader.Height != asset.Height)
+                {
+                    throw new InvalidDataException("Sequence dimensions changed.");
+                }
+
+                var slot0 = AcquireRingBuffer(asset.Width, asset.Height);
+                var first = _reader.ReadNext(long.MinValue, slot0) ?? throw new InvalidDataException("Empty sequence source.");
+                CommitRingSlot(asset.Id, clipGlobalStart, slot0);
+                _origin = first.Timestamp;
+                _frame = 0;
+                _asset = asset.Id;
+                _clip = clip;
+                if (local == 0)
+                {
+                    return slot0;
+                }
+            }
+
+            if (local < _frame || local > _frame + 150)
+            {
+                // Media positions are relative to the clip origin; decoded PTS may
+                // include the codec/edit-list offset and use a different domain.
+                _reader.Seek(source.Positions100ns[local]);
+                _frame = -1;
+                SeekCount++;
+            }
+
+            var expected = checked(_origin + source.Positions100ns[local]);
+            if (_frame >= 0 && local == _frame + 1)
+            {
+                var targetBuf = AcquireRingBuffer(asset.Width, asset.Height);
+                var sample = _reader.ReadNext(expected, targetBuf) ?? throw new InvalidDataException("Sequence ended before its declared picture.");
+                if (sample.Timestamp == expected)
+                {
+                    CommitRingSlot(asset.Id, frame, targetBuf);
+                    _frame = local;
+                    return targetBuf;
+                }
+
+                if (sample.Timestamp > expected)
+                {
+                    throw new InvalidDataException("Sequence decoder PTS differs from its validated index.");
+                }
+            }
+
+            var captureStartLocal = Math.Max(0, local - (RecentRingCapacity - 1));
+            var minCopyPts = checked(_origin + source.Positions100ns[captureStartLocal]);
+            var watch = System.Diagnostics.Stopwatch.StartNew();
+            for (var reads = 0; reads <= Mp4Importer.MaxFrames; reads++)
+            {
+                if (watch.Elapsed > TimeSpan.FromSeconds(2))
+                {
+                    throw new InvalidDataException("Sequence seek exceeded its work budget.");
+                }
+
+                var sample = _reader.ReadNext(minCopyPts) ?? throw new InvalidDataException("Sequence ended before its declared picture.");
+                if (sample.Timestamp < minCopyPts)
+                {
+                    continue;
+                }
+
+                if (sample.Timestamp < expected)
+                {
+                    var sampleLocal = Array.BinarySearch(source.Positions100ns, sample.Timestamp - _origin);
+                    if (sampleLocal >= 0)
+                    {
+                        var intermediateBuf = AcquireRingBuffer(asset.Width, asset.Height);
+                        intermediateBuf.CopyFrom(sample.Pixels);
+                        CommitRingSlot(asset.Id, clipGlobalStart + sampleLocal, intermediateBuf);
+                    }
+
+                    continue;
+                }
+
+                if (sample.Timestamp != expected)
+                {
+                    throw new InvalidDataException("Sequence decoder PTS differs from its validated index.");
+                }
+
+                var finalBuf = AcquireRingBuffer(asset.Width, asset.Height);
+                finalBuf.CopyFrom(sample.Pixels);
+                CommitRingSlot(asset.Id, frame, finalBuf);
+                _frame = local;
+                return finalBuf;
+            }
+
+            throw new InvalidDataException("Sequence seek exceeded its sample budget.");
         }
-        if (_frame == local) return _sample!.Pixels;
-        var expected = checked(_origin + source.Positions100ns[local]);
-        if (local < _frame || local > _frame + 120)
+        catch
         {
-            // Media positions are relative to the clip origin; decoded PTS may
-            // include the codec/edit-list offset and use a different domain.
-            _reader.Seek(source.Positions100ns[local]); _frame = -1; _sample = null;
+            CloseReader();
+            ResetRing(0, 0);
+            throw;
         }
-        var watch = System.Diagnostics.Stopwatch.StartNew();
-        for (var reads = 0; reads <= Mp4Importer.MaxFrames; reads++)
+    }
+
+    private bool TryGetRecent(string assetId, int globalFrame, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out PixelFrame? pixels)
+    {
+        foreach (var slot in _ring)
         {
-            if (watch.Elapsed > TimeSpan.FromSeconds(2)) throw new InvalidDataException("Sequence seek exceeded its work budget.");
-            _sample = _reader.ReadNext() ?? throw new InvalidDataException("Sequence ended before its declared picture.");
-            if (_sample.Timestamp < expected) continue;
-            if (_sample.Timestamp != expected) throw new InvalidDataException("Sequence decoder PTS differs from its validated index.");
-            _frame = local; return _sample.Pixels;
+            if (slot.GlobalFrame == globalFrame && slot.Pixels is not null && string.Equals(slot.AssetId, assetId, StringComparison.Ordinal))
+            {
+                pixels = slot.Pixels;
+                return true;
+            }
         }
-        throw new InvalidDataException("Sequence seek exceeded its sample budget.");
+
+        pixels = null;
+        return false;
+    }
+
+    private PixelFrame AcquireRingBuffer(int width, int height)
+    {
+        var slot = _ring[_ringWrite];
+        slot.AssetId = null;
+        slot.GlobalFrame = -1;
+        if (slot.Pixels is not { Width: var w, Height: var h } || w != width || h != height)
+        {
+            slot.Pixels = new PixelFrame(width, height);
+        }
+
+        return slot.Pixels;
+    }
+
+    private void CommitRingSlot(string assetId, int globalFrame, PixelFrame pixels)
+    {
+        var slot = _ring[_ringWrite];
+        slot.AssetId = assetId;
+        slot.GlobalFrame = globalFrame;
+        slot.Pixels = pixels;
+        _ringWrite = (_ringWrite + 1) % RecentRingCapacity;
+    }
+
+    private void CloseReader()
+    {
+        _reader?.Dispose();
+        _reader = null;
+        _asset = null;
+        _clip = _frame = -1;
+    }
+
+    private void ResetRing(int keepWidth, int keepHeight)
+    {
+        foreach (var slot in _ring)
+        {
+            slot.AssetId = null;
+            slot.GlobalFrame = -1;
+            if (keepWidth <= 0 || keepHeight <= 0 || slot.Pixels is not { Width: var w, Height: var h } || w != keepWidth || h != keepHeight)
+            {
+                slot.Pixels = null;
+            }
+        }
     }
 
     public void Dispose()
     {
-        _reader?.Dispose(); _reader = null; _sample = null; _asset = null; _clip = _frame = -1;
+        CloseReader();
+        ResetRing(0, 0);
     }
 }

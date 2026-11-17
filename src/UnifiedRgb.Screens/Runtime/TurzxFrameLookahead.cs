@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.ExceptionServices;
 using System.Windows.Threading;
 using UnifiedRgb.Contracts.Dto;
 using UnifiedRgb.Screens.Composition;
@@ -59,23 +60,46 @@ internal readonly record struct LookaheadStats(
     long Errors);
 
 /// <summary>
-/// Bounded depth-3 async CPU pipeline for <c>TurzxCompositeTelemetry</c>:
-/// Stage 1 runs sequential <c>ScreenCompositor.Compose</c> + <c>PixelOps.RotateInto</c> on one STA thread (preserving sequential
-/// MP4 stream decoding with zero skip-decode penalty and pooled rotated rasters), feeding up to 2 Stage-2 STA worker threads,
-/// each owning a persistent <see cref="MfH264IntraEncoder"/>. Overlapping CPU work across two H.264 encoders keeps steady-state
-/// CPU throughput well within a 16.67 ms (60 FPS) WinUSB budget while matching strictly on <c>ExpectedFrameIndex</c> with
-/// 1-to-1 slot reservation and immediate invalidation of stale prefetched frames.
+/// Bounded depth-4 async CPU pipeline for <c>TurzxCompositeTelemetry</c>:
+/// Stage 1 runs ALL <c>ScreenCompositor.Compose</c> (both async lookahead and priority synchronous compose + idle source prefetch)
+/// sequentially on one STA thread so <see cref="SequenceFrameReader"/> is single-owned with an 8-frame sliding ring and zero
+/// skip-decode ping-pong. Stage 2 fans encoded rotation work out to up to 2 persistent STA <see cref="MfH264IntraEncoder"/> threads,
+/// keeping CPU throughput well inside a 16.67 ms (60 FPS) WinUSB budget while matching strictly on <c>ExpectedFrameIndex</c>.
 /// </summary>
 internal sealed class TurzxFrameLookahead : IDisposable
 {
     public static readonly TimeSpan JoinTimeout = TimeSpan.FromMilliseconds(500);
-    internal const int MaxPipelineDepth = 3;
+    internal const int MaxPipelineDepth = 4;
     private const int MaxEncoderThreads = 2;
-    private const int MaxPooledRotateFrames = 5;
+    private const int MaxPooledRotateFrames = 6;
+    private const int MaxIdlePrefetch = 2;
 
     private sealed record SequencedJob(long Seq, LookaheadJob Job);
     private sealed record ComposedWork(long Seq, LookaheadJob Job, PixelFrame RotatedBuffer, double ComposeMs, bool Still);
     private sealed record SequencedResult(long Seq, LookaheadResult Result);
+
+    private sealed class SyncComposeWork(
+        ScreenFamilyInfo family,
+        ScreenAssignmentDto renderAssignment,
+        long elapsedMs,
+        PcTelemetryDto? telemetry,
+        DateTimeOffset evalUtc,
+        int internalRotation)
+    {
+        public ScreenFamilyInfo Family { get; } = family;
+        public ScreenAssignmentDto RenderAssignment { get; } = renderAssignment;
+        public long ElapsedMs { get; } = elapsedMs;
+        public PcTelemetryDto? Telemetry { get; } = telemetry;
+        public DateTimeOffset EvalUtc { get; } = evalUtc;
+        public int InternalRotation { get; } = internalRotation;
+        public PixelFrame? RotatedBuffer;
+        public ComposeResult? WarningResult;
+        public double ComposeMs;
+        public bool Still;
+        public bool Done;
+        public bool Cancelled;
+        public Exception? Error;
+    }
 
     private readonly AssetStore _assets;
     private readonly long _cacheBytes;
@@ -86,13 +110,20 @@ internal sealed class TurzxFrameLookahead : IDisposable
     private readonly Stack<PixelFrame> _freeRotateBuffers = new(MaxPooledRotateFrames);
     private readonly SequencedJob?[] _encoding = new SequencedJob?[MaxEncoderThreads];
     private readonly Thread?[] _encodeThreads = new Thread?[MaxEncoderThreads];
+    private readonly int[] _idlePrefetchFrames = new int[MaxIdlePrefetch];
     private Thread? _composeThread;
     private SequencedJob? _composing;
+    private SyncComposeWork? _syncCompose;
+    private string? _idlePrefetchAssetId;
+    private int _idlePrefetchCount;
+    private bool _prefetching;
+    private bool _clearCompositorCache;
     private bool _stopping;
     private bool _disposed;
     private long _epoch = 1;
     private long _nextSeq = 1;
     private long _submitted, _completedCount, _consumed, _discarded, _inFlightWaits, _errors;
+    private long _sequenceSeeks, _sequenceRingHits;
 
     public TurzxFrameLookahead(AssetStore assets, long cacheBytes)
     {
@@ -111,6 +142,16 @@ internal sealed class TurzxFrameLookahead : IDisposable
         get { lock (_gate) return new(_submitted, _completedCount, _consumed, _discarded, _inFlightWaits, _errors); }
     }
 
+    internal (long Seeks, long RingHits) SequenceStats
+    {
+        get { lock (_gate) return (_sequenceSeeks, _sequenceRingHits); }
+    }
+
+    internal bool IsPrefetchSettled
+    {
+        get { lock (_gate) return !_prefetching && _idlePrefetchCount == 0; }
+    }
+
     /// <summary>Invalidates any pending, in-flight or held prefetched result without blocking on stale work.</summary>
     public void Invalidate()
     {
@@ -125,24 +166,34 @@ internal sealed class TurzxFrameLookahead : IDisposable
     {
         ArgumentNullException.ThrowIfNull(job);
         LookaheadJob[] single = [job];
-        Schedule(single);
+        Schedule(single, null, default);
     }
 
-    /// <summary>
-    /// Synchronizes the bounded depth-3 prefetch pipeline with the upcoming target window via strict 1-to-1 slot claiming,
-    /// retaining already-queued/in-flight/completed exact frame targets without aliasing multiple slots to one job.
-    /// </summary>
-    public void Schedule(ReadOnlySpan<LookaheadJob> jobs)
-    {
-        if (jobs.IsEmpty)
-        {
-            return;
-        }
+    /// <summary>Synchronizes the bounded depth-4 prefetch pipeline with the upcoming target window via strict 1-to-1 slot claiming.</summary>
+    public void Schedule(ReadOnlySpan<LookaheadJob> jobs) => Schedule(jobs, null, default);
 
+    /// <summary>
+    /// Synchronizes the bounded depth-4 prefetch pipeline with the upcoming target window via strict 1-to-1 slot claiming and
+    /// optionally queues idle source-frame warmup past telemetry-refresh boundaries.
+    /// </summary>
+    public void Schedule(ReadOnlySpan<LookaheadJob> jobs, string? idlePrefetchAssetId, ReadOnlySpan<int> idlePrefetchFrames)
+    {
         lock (_gate)
         {
             if (_disposed || _stopping)
             {
+                return;
+            }
+
+            SetIdlePrefetchLocked(idlePrefetchAssetId, idlePrefetchFrames);
+            if (jobs.IsEmpty)
+            {
+                if (_idlePrefetchCount > 0)
+                {
+                    EnsureComposeThreadLocked();
+                    Monitor.PulseAll(_gate);
+                }
+
                 return;
             }
 
@@ -230,9 +281,94 @@ internal sealed class TurzxFrameLookahead : IDisposable
         }
     }
 
+    /// <summary>Executes a synchronous compose+rotate on the single owner STA compositor thread so no second decoder is ever opened.</summary>
+    public bool TryComposeSync(
+        ScreenFamilyInfo family,
+        ScreenAssignmentDto renderAssignment,
+        long elapsedMs,
+        PcTelemetryDto? telemetry,
+        DateTimeOffset evalUtc,
+        int internalRotation,
+        out PixelFrame? rotatedBuffer,
+        out ComposeResult? warningResult,
+        out double composeMs,
+        out bool still,
+        Func<bool> shouldAbort)
+    {
+        ArgumentNullException.ThrowIfNull(family);
+        ArgumentNullException.ThrowIfNull(renderAssignment);
+        ArgumentNullException.ThrowIfNull(shouldAbort);
+
+        SyncComposeWork req;
+        lock (_gate)
+        {
+            if (_disposed || _stopping || shouldAbort())
+            {
+                rotatedBuffer = null;
+                warningResult = null;
+                composeMs = 0;
+                still = false;
+                return false;
+            }
+
+            EnsureComposeThreadLocked();
+            req = new SyncComposeWork(family, renderAssignment, elapsedMs, telemetry, evalUtc, internalRotation);
+            _syncCompose = req;
+            Monitor.PulseAll(_gate);
+
+            while (!req.Done && !_disposed && !_stopping && !shouldAbort())
+            {
+                Monitor.Wait(_gate, 5);
+            }
+
+            if (!req.Done)
+            {
+                req.Cancelled = true;
+                if (ReferenceEquals(_syncCompose, req))
+                {
+                    _syncCompose = null;
+                }
+
+                rotatedBuffer = null;
+                warningResult = null;
+                composeMs = 0;
+                still = false;
+                return false;
+            }
+        }
+
+        if (req.Error is not null)
+        {
+            ExceptionDispatchInfo.Capture(req.Error).Throw();
+        }
+
+        rotatedBuffer = req.RotatedBuffer;
+        warningResult = req.WarningResult;
+        composeMs = req.ComposeMs;
+        still = req.Still;
+        return true;
+    }
+
+    /// <summary>Returns a rotated buffer acquired from <see cref="TryComposeSync"/> back to the lookahead pool.</summary>
+    public void ReleaseRotateBuffer(PixelFrame? frame)
+    {
+        if (frame is null)
+        {
+            return;
+        }
+
+        lock (_gate)
+        {
+            if (!_disposed && !_stopping)
+            {
+                ReleaseRotateBufferLocked(frame);
+            }
+        }
+    }
+
     /// <summary>
     /// Validates live state against any completed or matching in-flight frame. Returns a valid result immediately (or
-    /// after bounded completion of a matching in-flight frame) or invalidates and discards stale work with zero wait.
+    /// after bounded completion of a matching in-flight frame) or prunes stale entries while preserving valid future work.
     /// </summary>
     public LookaheadResult? TryTake(LookaheadMatchCriteria criteria, Func<bool> shouldAbort)
     {
@@ -253,11 +389,7 @@ internal sealed class TurzxFrameLookahead : IDisposable
 
             if (!HasMatchingInFlightLocked(criteria))
             {
-                if (_completed.Count > 0 || _pendingCompose.Count > 0 || _composing is not null || _pendingEncode.Count > 0 || AnyEncodingLocked())
-                {
-                    InvalidateLocked();
-                }
-
+                PruneStaleForCriteriaLocked(criteria);
                 return null;
             }
 
@@ -271,6 +403,7 @@ internal sealed class TurzxFrameLookahead : IDisposable
 
                 if (!HasMatchingInFlightLocked(criteria))
                 {
+                    PruneStaleForCriteriaLocked(criteria);
                     return null;
                 }
 
@@ -384,7 +517,7 @@ internal sealed class TurzxFrameLookahead : IDisposable
         if (job.TelemetryMode != actual.TelemetryMode) return false;
         if (job.Variant != actual.Variant) return false;
 
-        var maxForward = Math.Max(12.0, actual.PeriodMs * 3.5);
+        var maxForward = Math.Max(16.0, actual.PeriodMs * 4.5);
         var duration = actual.AssetDurationMs;
         if (actual.RenderAssignment.TimelineId is not null && duration > 0)
         {
@@ -537,9 +670,64 @@ internal sealed class TurzxFrameLookahead : IDisposable
         }
     }
 
+    private void PruneStaleForCriteriaLocked(LookaheadMatchCriteria criteria)
+    {
+        for (var i = _completed.Count - 1; i >= 0; i--)
+        {
+            var job = _completed[i].Result.Job;
+            if (job.Epoch != _epoch || (!Matches(job, criteria) && !IsFutureCandidate(job, criteria)))
+            {
+                _completed.RemoveAt(i);
+                _discarded++;
+            }
+        }
+
+        for (var i = _pendingEncode.Count - 1; i >= 0; i--)
+        {
+            var job = _pendingEncode[i].Job;
+            if (job.Epoch != _epoch || (!Matches(job, criteria) && !IsFutureCandidate(job, criteria)))
+            {
+                ReleaseRotateBufferLocked(_pendingEncode[i].RotatedBuffer);
+                _pendingEncode.RemoveAt(i);
+                _discarded++;
+            }
+        }
+
+        for (var i = _pendingCompose.Count - 1; i >= 0; i--)
+        {
+            var job = _pendingCompose[i].Job;
+            if (job.Epoch != _epoch || (!Matches(job, criteria) && !IsFutureCandidate(job, criteria)))
+            {
+                _pendingCompose.RemoveAt(i);
+                _discarded++;
+            }
+        }
+    }
+
+    private void SetIdlePrefetchLocked(string? assetId, ReadOnlySpan<int> frames)
+    {
+        if (assetId is null || frames.IsEmpty)
+        {
+            _idlePrefetchAssetId = null;
+            _idlePrefetchCount = 0;
+            return;
+        }
+
+        var n = Math.Min(frames.Length, MaxIdlePrefetch);
+        _idlePrefetchAssetId = assetId;
+        _idlePrefetchCount = n;
+        for (var i = 0; i < n; i++)
+        {
+            _idlePrefetchFrames[i] = frames[i];
+        }
+    }
+
     private void InvalidateLocked()
     {
         _epoch++;
+        _clearCompositorCache = true;
+        _idlePrefetchAssetId = null;
+        _idlePrefetchCount = 0;
         if (_pendingCompose.Count > 0)
         {
             _discarded += _pendingCompose.Count;
@@ -566,7 +754,7 @@ internal sealed class TurzxFrameLookahead : IDisposable
         Monitor.PulseAll(_gate);
     }
 
-    private void EnsureThreadsLocked(int requiredEncoders)
+    private void EnsureComposeThreadLocked()
     {
         if (_composeThread is null)
         {
@@ -575,6 +763,11 @@ internal sealed class TurzxFrameLookahead : IDisposable
             _composeThread = compose;
             compose.Start();
         }
+    }
+
+    private void EnsureThreadsLocked(int requiredEncoders)
+    {
+        EnsureComposeThreadLocked();
 
         var count = Math.Clamp(requiredEncoders, 1, MaxEncoderThreads);
         for (var i = 0; i < count; i++)
@@ -600,10 +793,18 @@ internal sealed class TurzxFrameLookahead : IDisposable
         {
             while (true)
             {
-                SequencedJob work;
+                SyncComposeWork? syncWork = null;
+                SequencedJob work = null!;
+                string? prefetchAssetId = null;
+                var prefetchFrame = -1;
+                var clearCache = false;
                 lock (_gate)
                 {
-                    while (!_stopping && !_disposed && (_pendingCompose.Count == 0 || _pendingEncode.Count >= MaxPipelineDepth))
+                    while (!_stopping && !_disposed
+                        && _syncCompose is null
+                        && !_clearCompositorCache
+                        && !(_pendingCompose.Count > 0 && _pendingEncode.Count < MaxPipelineDepth)
+                        && !(_pendingCompose.Count == 0 && _idlePrefetchCount > 0))
                     {
                         Monitor.Wait(_gate);
                     }
@@ -613,16 +814,130 @@ internal sealed class TurzxFrameLookahead : IDisposable
                         break;
                     }
 
-                    work = _pendingCompose[0];
-                    _pendingCompose.RemoveAt(0);
-                    if (work.Job.Epoch != _epoch)
+                    if (_clearCompositorCache)
                     {
-                        _discarded++;
-                        continue;
+                        clearCache = true;
+                        _clearCompositorCache = false;
                     }
 
-                    _composing = work;
-                    Monitor.PulseAll(_gate);
+                    if (_syncCompose is { } pendingSync)
+                    {
+                        syncWork = pendingSync;
+                        _syncCompose = null;
+                    }
+                    else if (_pendingCompose.Count > 0 && _pendingEncode.Count < MaxPipelineDepth)
+                    {
+                        work = _pendingCompose[0];
+                        _pendingCompose.RemoveAt(0);
+                        if (work.Job.Epoch != _epoch)
+                        {
+                            _discarded++;
+                            Monitor.PulseAll(_gate);
+                            continue;
+                        }
+
+                        _composing = work;
+                        Monitor.PulseAll(_gate);
+                    }
+                    else if (_pendingCompose.Count == 0 && _idlePrefetchCount > 0 && _idlePrefetchAssetId is { } assetId)
+                    {
+                        prefetchAssetId = assetId;
+                        prefetchFrame = _idlePrefetchFrames[0];
+                        if (_idlePrefetchCount > 1)
+                        {
+                            _idlePrefetchFrames[0] = _idlePrefetchFrames[1];
+                        }
+
+                        _idlePrefetchCount--;
+                        _prefetching = true;
+                    }
+                    else
+                    {
+                        continue;
+                    }
+                }
+
+                if (clearCache)
+                {
+                    compositor.ClearCache();
+                }
+
+                if (syncWork is not null)
+                {
+                    PixelFrame? ownedRot = null;
+                    try
+                    {
+                        if (!syncWork.Cancelled)
+                        {
+                            var composeStart = Stopwatch.GetTimestamp();
+                            var composed = compositor.Compose(syncWork.Family, syncWork.RenderAssignment, syncWork.ElapsedMs,
+                                syncWork.Telemetry, syncWork.EvalUtc, composeBuffers);
+                            syncWork.ComposeMs = Stopwatch.GetElapsedTime(composeStart).TotalMilliseconds;
+                            syncWork.Still = !compositor.IsDynamic(syncWork.RenderAssignment);
+                            if (composed.Warning is not null)
+                            {
+                                syncWork.WarningResult = new ComposeResult(composed.Canvas.Clone(), composed.Warning);
+                            }
+                            else if (!syncWork.Cancelled)
+                            {
+                                var rotatedW = syncWork.InternalRotation is 90 or 270 ? composed.Canvas.Height : composed.Canvas.Width;
+                                var rotatedH = syncWork.InternalRotation is 90 or 270 ? composed.Canvas.Width : composed.Canvas.Height;
+                                lock (_gate)
+                                {
+                                    ownedRot = PopMatchingRotateBufferLocked(rotatedW, rotatedH);
+                                }
+
+                                ownedRot ??= new PixelFrame(rotatedW, rotatedH);
+                                PixelOps.RotateInto(composed.Canvas, ownedRot, syncWork.InternalRotation);
+                            }
+                        }
+                    }
+#pragma warning disable CA1031 // propagate compose exceptions cleanly to caller without crashing STA compose thread
+                    catch (Exception ex)
+#pragma warning restore CA1031
+                    {
+                        syncWork.Error = ex;
+                    }
+
+                    lock (_gate)
+                    {
+                        _sequenceSeeks = compositor.SequenceSeekCount;
+                        _sequenceRingHits = compositor.SequenceRingHits;
+                        if (syncWork.Cancelled || syncWork.Error is not null || syncWork.WarningResult is not null)
+                        {
+                            ReleaseRotateBufferLocked(ownedRot);
+                            syncWork.RotatedBuffer = null;
+                        }
+                        else
+                        {
+                            syncWork.RotatedBuffer = ownedRot;
+                        }
+
+                        syncWork.Done = true;
+                        Monitor.PulseAll(_gate);
+                    }
+
+                    continue;
+                }
+
+                if (prefetchAssetId is not null)
+                {
+                    try
+                    {
+                        compositor.PrefetchSequenceFrame(prefetchAssetId, prefetchFrame);
+                    }
+                    finally
+                    {
+                        lock (_gate)
+                        {
+                            _sequenceSeeks = compositor.SequenceSeekCount;
+                            _sequenceRingHits = compositor.SequenceRingHits;
+                            _prefetching = false;
+                            Monitor.PulseAll(_gate);
+                        }
+                    }
+
+                    continue;
                 }
 
                 PixelFrame? rotateBuf = null;
@@ -660,6 +975,8 @@ internal sealed class TurzxFrameLookahead : IDisposable
 
                 lock (_gate)
                 {
+                    _sequenceSeeks = compositor.SequenceSeekCount;
+                    _sequenceRingHits = compositor.SequenceRingHits;
                     _composing = null;
                     if (ok && !_stopping && !_disposed && work.Job.Epoch == _epoch)
                     {

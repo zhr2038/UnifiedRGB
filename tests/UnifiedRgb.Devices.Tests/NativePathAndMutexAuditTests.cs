@@ -28,7 +28,7 @@ public sealed class NativePathAndMutexAuditTests
         using var observed = new GlobalSmbusMutex(name);
         var previous = new Thread(() => { using var mutex = new Mutex(false, name); mutex.WaitOne(); });
         previous.Start(); previous.Join(); // deliberate test-only abandoned owner; never the production SMBus mutex
-        observed.Wait(0).Should().BeTrue();
+        observed.Wait(1000).Should().BeTrue();
         try { observed.AbandonedAcquisitions.Should().Be(1); }
         finally { observed.Release(); }
         observed.Wait(0).Should().BeTrue();

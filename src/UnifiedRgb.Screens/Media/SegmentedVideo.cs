@@ -152,6 +152,7 @@ internal sealed record VideoSample(PixelFrame Pixels, long Timestamp, long Durat
 /// <summary>STA-owned Windows reader. Holds one decoded raster; originals remain hash-pinned and write-locked while open.</summary>
 internal sealed class Mp4FrameReader : IDisposable
 {
+    private static readonly PixelFrame SkippedRaster = new(1, 1);
     private readonly int _thread = Environment.CurrentManagedThreadId;
     private readonly FileStream _lease;
     private IMFSourceReader? _reader;
@@ -194,7 +195,9 @@ internal sealed class Mp4FrameReader : IDisposable
         catch { Dispose(); throw; }
     }
 
-    public VideoSample? ReadNext()
+    public VideoSample? ReadNext() => ReadNext(long.MinValue, null);
+
+    public VideoSample? ReadNext(long minCopyTimestamp100ns, PixelFrame? destination = null)
     {
         AssertOwner();
         if (_ended) return null;
@@ -216,10 +219,18 @@ internal sealed class Mp4FrameReader : IDisposable
             }
             if ((flags & SourceReaderFlag.EndOfStream) != 0) _ended = true;
             if (sample is null) { if (_ended) return null; continue; }
+            if (timestamp < minCopyTimestamp100ns)
+            {
+                _havePicture = true;
+                return new(SkippedRaster, timestamp, sample.SampleDuration);
+            }
+
             using var buffer = sample.ConvertToContiguousBuffer(); buffer.Lock(out var pointer, out _, out var length);
-            var raster = _raster is { Width: var rw, Height: var rh } && rw == Width && rh == Height
-                ? _raster
-                : (_raster = new PixelFrame(Width, Height));
+            var raster = destination is { Width: var dw, Height: var dh } && dw == Width && dh == Height
+                ? destination
+                : _raster is { Width: var rw, Height: var rh } && rw == Width && rh == Height
+                    ? _raster
+                    : (_raster = new PixelFrame(Width, Height));
             try
             {
                 if (length < Math.Abs((long)_stride) * (Height - 1) + Width * 4L) throw new InvalidDataException("Sequence decoder returned a short raster.");

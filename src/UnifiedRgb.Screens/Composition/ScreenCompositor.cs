@@ -89,6 +89,34 @@ internal sealed class ScreenCompositor(AssetStore assets, long cacheBytes, Overl
         ClearCache();
     }
 
+    internal bool HasSequenceReader => _sequenceReader is not null;
+    internal long SequenceSeekCount => _sequenceReader?.SeekCount ?? 0;
+    internal long SequenceRingHits => _sequenceReader?.RingHits ?? 0;
+
+    /// <summary>Warms the active sequence decoder/ring ahead of a scheduled compose without performing overlay render or telemetry access.</summary>
+    public void PrefetchSequenceFrame(string assetId, int frameIndex)
+    {
+        ArgumentNullException.ThrowIfNull(assetId);
+        if (!string.Equals(_sourceId, assetId, StringComparison.Ordinal))
+        {
+            _sequenceReader?.Dispose();
+            _sequenceReader = null;
+            _sourceId = assetId;
+        }
+
+        if (assets.Find(assetId) is { Sequence: not null } asset && (uint)frameIndex < (uint)asset.FrameCount)
+        {
+            try
+            {
+                _ = (_sequenceReader ??= new SequenceFrameReader(assets)).Read(asset, frameIndex);
+            }
+            catch (Exception ex) when (ex is IOException or InvalidDataException or ArgumentException or SharpGen.Runtime.SharpGenException or System.Runtime.InteropServices.COMException)
+            {
+                // Best-effort warmup only; authoritative Compose reports blocked media deterministically.
+            }
+        }
+    }
+
     public OverlayRenderer Overlay => _overlay;
 
     public ComposeResult Compose(ScreenFamilyInfo family, ScreenAssignmentDto a, long elapsedMs, PcTelemetryDto? telemetry, DateTimeOffset now,
@@ -206,8 +234,9 @@ internal sealed class ScreenCompositor(AssetStore assets, long cacheBytes, Overl
 
     private FittedFrame Fitted(StoredAsset asset, int frame, int cw, int ch, string fit, bool allowTransientAlias)
     {
+        var cacheable = asset.Sequence is null;
         var key = (asset.Id, frame, cw, ch, fit);
-        if (_cache.TryGetValue(key, out var hit))
+        if (cacheable && _cache.TryGetValue(key, out var hit))
         {
             return hit;
         }
@@ -215,11 +244,10 @@ internal sealed class ScreenCompositor(AssetStore assets, long cacheBytes, Overl
         var src = asset.Sequence is not null ? (_sequenceReader ??= new SequenceFrameReader(assets)).Read(asset, frame)
             : WpfCodec.DecodePng(assets.ReadFrame(asset, frame), 1920L * 1920);
         var exactSize = src.Width == cw && src.Height == ch;
-        var willCacheExact = exactSize && _cachedBytes + (cw * ch * 4L) <= cacheBytes;
         PixelFrame fitted;
         if (exactSize)
         {
-            fitted = (willCacheExact || !allowTransientAlias) && asset.Sequence is not null ? src.Clone() : src;
+            fitted = !allowTransientAlias && asset.Sequence is not null ? src.Clone() : src;
         }
         else if (fit == "cover")
         {
@@ -238,7 +266,7 @@ internal sealed class ScreenCompositor(AssetStore assets, long cacheBytes, Overl
 
         var opaque = (asset.Sequence is not null && exactSize) || IsOpaque(fitted);
         var result = new FittedFrame(fitted, opaque);
-        if (_cachedBytes + fitted.ByteCount <= cacheBytes)
+        if (cacheable && _cachedBytes + fitted.ByteCount <= cacheBytes)
         {
             _cache[key] = result;
             _cachedBytes += fitted.ByteCount;

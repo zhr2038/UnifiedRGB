@@ -537,7 +537,7 @@ public sealed class TurzxFramerateOptimizationTests(ITestOutputHelper output)
                 using var uncached = new ScreenCompositor(assets, cacheBytes: 0);
                 using var reference = new ScreenCompositor(assets, cacheBytes: 0);
                 var buffers = new ScreenComposeBuffers();
-                for (var f = 0; f < 3; f++)
+                for (var f = 0; f < SequenceFrameReader.RecentRingCapacity; f++)
                 {
                     var el = f * 42L;
                     var a = uncached.Compose(Devices.Turzx.Family, seqAssignment, el, collector, now, buffers);
@@ -546,7 +546,7 @@ public sealed class TurzxFramerateOptimizationTests(ITestOutputHelper output)
                 }
 
                 var beforeBytes = GC.GetAllocatedBytesForCurrentThread();
-                for (var f = 3; f < 15; f++)
+                for (var f = SequenceFrameReader.RecentRingCapacity; f < SequenceFrameReader.RecentRingCapacity + 12; f++)
                 {
                     _ = uncached.Compose(Devices.Turzx.Family, seqAssignment, f * 42L, collector, now, buffers);
                 }
@@ -760,7 +760,180 @@ public sealed class TurzxFramerateOptimizationTests(ITestOutputHelper output)
         finally { Directory.Delete(root, recursive: true); }
     }
 
-    private static byte[] CreateMarked60FpsMp4Clip(string scratchDir, int width, int height, int frameCount)
+    [MediaFoundationFact]
+    public async Task Stage6_1920x480_long_gop_mp4_across_2s_telemetry_refresh_never_triggers_gop_seek_storm()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "urgb-turzx-stage6-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var clipBytes = await Sta.RunAsync(() => CreateMarked60FpsMp4Clip(root, width: 1920, height: 480, frameCount: 180, maxKeyframeSpacing: 144));
+            var syncSamples = CountStssSyncSamples(clipBytes);
+            syncSamples.Should().BeInRange(1, 2, "test MP4 clip must have >= 144-frame long GOP to reproduce live deb6675c83caff78 kinematics");
+
+            var clipProbe = await Sta.RunAsync(() => SegmentedVideo.Probe(clipBytes, Path.Combine(root, "probe"), CancellationToken.None));
+            clipProbe.DelaysMs.Should().HaveCount(180);
+            clipProbe.DurationMs.Should().Be(3000);
+
+            var assets = new AssetStore(Path.Combine(root, "assets"), 1L << 30, 64, NullLogger.Instance);
+            var seqAsset = assets.CommitSequence(
+                "marked-1920x480-long-gop",
+                [new ScreenVideoSegment(clipBytes, clipProbe.DurationMs), new ScreenVideoSegment(clipBytes, clipProbe.DurationMs)],
+                [clipProbe, clipProbe]);
+            seqAsset.FrameCount.Should().Be(360);
+            seqAsset.DurationMs.Should().Be(6000);
+
+            // Part A: SequenceFrameReader 8-slot sliding ring handles intra-clip & cross-clip backward jitter with SeekCount == 0.
+            await Sta.RunAsync(() =>
+            {
+                using var reader = new SequenceFrameReader(assets);
+                for (var f = 0; f <= 143; f++)
+                {
+                    _ = reader.Read(seqAsset, f);
+                }
+
+                var backwardChecks = new List<(int Frame, int Decoded)> { };
+                var sw = Stopwatch.StartNew();
+                foreach (var back in new[] { 142, 140, 137 })
+                {
+                    var pf = reader.Read(seqAsset, back);
+                    backwardChecks.Add((back, Read6BitStripes(pf)));
+                }
+
+                for (var f = 144; f <= 181; f++)
+                {
+                    _ = reader.Read(seqAsset, f);
+                }
+
+                var crossClipBack = reader.Read(seqAsset, 179);
+                var backMs = sw.Elapsed.TotalMilliseconds;
+                backwardChecks.Add((179, Read6BitStripes(crossClipBack)));
+
+                reader.SeekCount.Should().Be(0, "8-slot sliding ring absorbs short backward jitter and cross-clip steps without GOP seeks");
+                reader.RingHits.Should().BeGreaterThanOrEqualTo(4);
+                backMs.Should().BeLessThan(2000.0);
+                foreach (var (frame, decoded) in backwardChecks)
+                {
+                    decoded.Should().Be((frame % 180) & 63, $"ring hit frame {frame} preserves exact image content");
+                }
+
+                output.WriteLine($"[Stage6 Part A 1920x480 Ring] syncSamples={syncSamples}, seeks={reader.SeekCount}, ringHits={reader.RingHits}");
+                return true;
+            });
+
+            // Part B: Deterministic 195-beat (0..3,234 ms) 1920x480 60-Hz ScreenWorker across 2.0s TelemetrySamplePeriod + 3.0s clip seam.
+            var time = new ManualTime(HeadlessProbe.Now);
+            var timeline = new SourceStepScenario.StepTimeline { Sample = new(0, "device-clock") };
+            var opener = new FakeOpener
+            {
+                Configure = c => c.Reply = packet =>
+                {
+                    var hdr = ScreenProtocol.DecryptHeader(ScreenFamily.Turzx, packet.AsSpan(0, 512));
+                    var stamp = BinaryPrimitives.ReadUInt32LittleEndian(hdr.AsSpan(4));
+                    var ack = new byte[512];
+                    ack[0] = hdr[0];
+                    ack[1] = 200;
+                    BinaryPrimitives.WriteUInt32LittleEndian(ack.AsSpan(2), stamp);
+                    return ack;
+                }
+            };
+
+            var collectorReads = 0;
+            var options = new ScreensOptions { Enabled = true, NvmlTelemetry = false, TurzxCompositeTelemetry = true, TurzxSingleSlice = true };
+            Rig.AllOutput(options);
+            var assignment = new ScreenAssignmentDto(Devices.Turzx.Id, seqAsset.Id, Overlay: "dashboard", Fps: 60,
+                AccentColor: "#E3BC72", Fit: "contain", OverlayLayout: TypicalLayout, TimelineId: "pkg:stage6-long-gop");
+            ScreenRateTrial? rateTrial = new(new("stage6-rate", [Devices.Turzx.Id], 60, 60_000, false, 256), 0, long.MaxValue);
+            var ctx = new ScreenWorkerContext(options, opener, new FakeContention(), assets,
+                () =>
+                {
+                    var n = Interlocked.Increment(ref collectorReads);
+                    return new PcTelemetryDto(time.GetUtcNow(), 30.0 + (n % 20), 12L << 30, 32L << 30, 45.0 + (n % 15), 52.0, 8L << 30, 24L << 30, "stage6", null);
+                },
+                time,
+                NullLogger.Instance)
+            {
+                EncodingOf = _ => new ScreenEncodingSelection(ScreenEncodingPolicies.NativeH264IntraV1, false),
+                NativeVideoAllowed = _ => true,
+                TrialOf = _ => rateTrial,
+                Timeline = () => timeline,
+            };
+
+            using var worker = new ScreenWorker(Devices.Turzx, ctx, new WorkerCommand(assignment, false));
+
+            static int DataPacketCount(FakeOpener o) =>
+                o.Channels.SelectMany(ch => ch.Writes).Count(p => ScreenProtocol.DecryptHeader(ScreenFamily.Turzx, p.AsSpan(0, 512))[0] == TurzxVideoProtocol.DataCommand);
+
+            async Task WaitSettledAsync(int expectedWrites)
+            {
+                await Wait.UntilAsync(() => DataPacketCount(opener) >= expectedWrites, $"write #{expectedWrites}");
+                await Wait.UntilAsync(() =>
+                    (worker.LookaheadStats.Completed + worker.LookaheadStats.Discarded) >= worker.LookaheadStats.Submitted
+                    && worker.LookaheadPrefetchSettled,
+                    $"lookahead and prefetch settle after write #{expectedWrites}");
+            }
+
+            await WaitSettledAsync(1);
+            var sentPositions = new List<long> { 0 };
+            var clockMs = 0L;
+            for (var beat = 1; beat < 195; beat++)
+            {
+                var targetClockMs = (long)Math.Floor(beat * 1000.0 / 60.0) + 1;
+                var deltaMs = Math.Max(1, checked((int)(targetClockMs - clockMs)));
+                clockMs = targetClockMs;
+                timeline.Sample = new(targetClockMs, "device-clock");
+                sentPositions.Add(targetClockMs);
+                time.Advance(TimeSpan.FromMilliseconds(deltaMs));
+                await WaitSettledAsync(beat + 1);
+            }
+
+            var perf = worker.Performance;
+            var expectedIndices = sentPositions.Select(p => seqAsset.FrameAt(p)).ToArray();
+
+            output.WriteLine(
+                $"[Stage6 Part B 1920x480 60Hz Deterministic] beats={sentPositions.Count}, collectorReads={Volatile.Read(ref collectorReads)}, " +
+                $"workerSeqReader={worker.WorkerOpenedSequenceReader}, seqStats={worker.LookaheadSequenceStats}, lookahead={worker.LookaheadStats}");
+
+            worker.WorkerOpenedSequenceReader.Should().BeFalse("Single-owner design never opens a second SequenceFrameReader on the worker thread, even on Frame 0 or at the 2.0s telemetry refresh");
+            worker.LookaheadSequenceStats.Seeks.Should().Be(0, "144-frame long-GOP playback across 2.0s telemetry refresh and 3.0s clip seam performs zero GOP seeks");
+            worker.LookaheadSequenceStats.RingHits.Should().BeGreaterThanOrEqualTo(1, "2.0s telemetry refresh reuses the idle-prefetched source raster from the 8-slot ring");
+            Volatile.Read(ref collectorReads).Should().Be(2, "telemetry collector sampled once at t=0 and once at t=2.0s");
+            worker.LookaheadStats.Errors.Should().Be(0);
+            worker.Snapshot().Dropped.Should().Be(0);
+            worker.LookaheadStats.Consumed.Should().BeGreaterThanOrEqualTo(170, "sustained high lookahead hit rate across 194 contiguous 60-Hz beats");
+            perf.SourceFrames!.Select(r => r.SourceIndex).Should().Equal(expectedIndices, "every single beat delivers the exact expected MP4 frame across 2.0s refresh and 3.0s clip seam");
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    private static int CountStssSyncSamples(byte[] mp4Bytes)
+    {
+        var span = mp4Bytes.AsSpan();
+        var tag = "stss"u8;
+        var idx = span.IndexOf(tag);
+        idx.Should().BeGreaterThanOrEqualTo(4, "MP4 moov must contain an stss sync-sample table");
+        return checked((int)BinaryPrimitives.ReadUInt32BigEndian(span.Slice(idx + 8, 4)));
+    }
+
+    private static int Read6BitStripes(PixelFrame shown)
+    {
+        var stripeWidth = shown.Width / 6;
+        var idx = 0;
+        var y = shown.Height - Math.Max(4, shown.Height / 12);
+        for (var bit = 0; bit < 6; bit++)
+        {
+            var cx = (bit * stripeWidth) + (stripeWidth / 2);
+            var (b, g, r, _) = shown.At(cx, y);
+            if (((b + g + r) / 3) > 128)
+            {
+                idx |= 1 << bit;
+            }
+        }
+
+        return idx;
+    }
+
+    private static byte[] CreateMarked60FpsMp4Clip(string scratchDir, int width, int height, int frameCount, uint? maxKeyframeSpacing = null)
     {
         var path = Path.Combine(scratchDir, "marked60-" + Guid.NewGuid().ToString("N") + ".mp4");
         MFStartup().CheckError();
@@ -775,6 +948,11 @@ public sealed class TurzxFramerateOptimizationTests(ITestOutputHelper output)
             outType.Set(MediaTypeAttributeKeys.InterlaceMode, (uint)2).CheckError();
             outType.Set(MediaTypeAttributeKeys.AvgBitrate, (uint)8_000_000).CheckError();
             outType.Set(MediaTypeAttributeKeys.Mpeg2Profile, (uint)66).CheckError();
+            if (maxKeyframeSpacing is { } gop)
+            {
+                // MF_MT_MAX_KEYFRAME_SPACING on SinkWriter output media type
+                outType.Set(new Guid("16eb52b8-73a1-476f-8d62-839d6a020652"), gop).CheckError();
+            }
 
             using var inType = MFCreateMediaType();
             inType.Set(MediaTypeAttributeKeys.MajorType, MediaTypeGuids.Video).CheckError();
@@ -785,9 +963,17 @@ public sealed class TurzxFramerateOptimizationTests(ITestOutputHelper output)
             inType.Set(MediaTypeAttributeKeys.InterlaceMode, (uint)2).CheckError();
             inType.Set(MediaTypeAttributeKeys.DefaultStride, (uint)(width * 4)).CheckError();
 
+            IMFAttributes? encParams = null;
+            if (maxKeyframeSpacing is { } paramGop)
+            {
+                encParams = MFCreateAttributes(1);
+                encParams.Set(new Guid("95f31b26-95a4-41aa-9303-246a7fc6eef1"), paramGop).CheckError(); // CODECAPI_AVEncMPVGOPSize
+            }
+
+            using var ownedEncParams = encParams;
             using var writer = MFCreateSinkWriterFromURL(path, null, null);
             var stream = writer.AddStream(outType);
-            writer.SetInputMediaType(stream, inType, null);
+            writer.SetInputMediaType(stream, inType, ownedEncParams);
             writer.BeginWriting();
 
             var pixels = new byte[width * height * 4];

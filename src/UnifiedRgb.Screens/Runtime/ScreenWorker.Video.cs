@@ -24,10 +24,15 @@ internal sealed partial class ScreenWorker
     private NativeVideoPerformanceDto? _videoFacts;
     private double _videoOverlayComposeMs, _videoOverlayEncodeMs;
     private double _lastVideoDataSendMs;
+    private LookaheadResult? _lastSentBaked;
     private bool _lastVideoOverlaySimplePng;
     private string? _videoOverlayEncodingNote;
+    private volatile bool _workerOpenedSequenceReader;
 
     internal LookaheadStats LookaheadStats => _frameLookahead?.Stats ?? default;
+    internal bool WorkerOpenedSequenceReader => _workerOpenedSequenceReader;
+    internal (long Seeks, long RingHits) LookaheadSequenceStats => _frameLookahead?.SequenceStats ?? default;
+    internal bool LookaheadPrefetchSettled => _frameLookahead?.IsPrefetchSettled ?? true;
 
     /// <summary>
     /// The one slicing rule of worker and preview: an active explicit trial's own SingleSlice flag (false included, so a trial can A/B against
@@ -61,6 +66,14 @@ internal sealed partial class ScreenWorker
         {
             native = canvas;
         }
+        return EncodeRotatedVideo(native, telemetry);
+    }
+
+    private ScreenImage EncodeRotatedVideo(PixelFrame native, VideoTelemetry telemetry = VideoTelemetry.PngLayer)
+    {
+        var turzx = _device.Family.Family == ScreenFamily.Turzx;
+        if (_device.Family.Family is not (ScreenFamily.Turzx or ScreenFamily.H2) || !_ctx.NativeVideoAllowed(_device.Id))
+            throw new ScreenEncodeException("Native H.264 needs a verified H2/TURZX or an explicit bounded trial.");
         var trial = _ctx.VideoTrialOf(_device.Id)?.Info;
         var variant = (SingleSlice: SingleSliceOf(_ctx.Options, _device.Family.Family, trial, _ctx.NativeVideoAllowed(_device.Id)),
             Quality: turzx ? trial?.Quality ?? 95 : 95);
@@ -167,6 +180,7 @@ internal sealed partial class ScreenWorker
         Volatile.Write(ref _videoFacts, null); _previousVideoPosition = 0; _videoWraps = 0;
         _lastVideoOverlay = null; _lastVideoOverlayAssignment = null; _videoOverlayEncodingNote = null;
         _lastVideoDataSendMs = 0;
+        _lastSentBaked = null;
         _frameLookahead?.Invalidate();
         ResetTelemetrySample(); // a new session starts with a fresh display reading
         StopPreparedOverlay(); // invalidates older prepared work before the stop controls; no join here
@@ -175,6 +189,7 @@ internal sealed partial class ScreenWorker
 
     private void DisposeLookahead()
     {
+        _lastSentBaked = null;
         _frameLookahead?.Dispose();
         _frameLookahead = null;
     }
