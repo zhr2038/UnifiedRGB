@@ -142,4 +142,134 @@ public sealed class StrictFrameSetTests
             loop.PreflightStrict(SceneOf(Id, new ZoneRef(Chain, new ZoneId(1)))).Blocked.Should().ContainSingle();
         }
     }
+
+    [Fact]
+    public void Sleeping_keyboard_or_mouse_preserves_case_loops_unblocked_timeline_and_exact_zone_rgb_alignment()
+    {
+        var caseController = new ControllerId("case:1");
+        var kbController = new ControllerId("rog:kb");
+        var mouseController = new ControllerId("rog:mouse");
+        ZoneRef[] targets =
+        [
+            new(Chain, new ZoneId(0)),
+            new(caseController, new ZoneId(0)),
+            new(kbController, new ZoneId(0)),
+            new(mouseController, new ZoneId(0)),
+        ];
+
+        const int frames = 4;
+        byte[] Fill(int leds, Func<int, Rgb> colorAtFrame)
+        {
+            var buf = new byte[frames * leds * 3];
+            for (var f = 0; f < frames; f++)
+            {
+                var c = colorAtFrame(f);
+                for (var i = 0; i < leds; i++)
+                {
+                    var o = ((f * leds) + i) * 3;
+                    buf[o] = c.R;
+                    buf[o + 1] = c.G;
+                    buf[o + 2] = c.B;
+                }
+            }
+
+            return buf;
+        }
+
+        var set = new FrameSet(Id, frames, 60, [4, 4, 81, 1], [
+            Fill(4, f => new Rgb((byte)(5 + f), 0, 0)),
+            Fill(4, f => new Rgb((byte)(10 + f), 0, 0)),
+            Fill(81, f => new Rgb(0, (byte)(80 + f), 0)),
+            Fill(1, f => new Rgb(0, 0, (byte)(200 + f))),
+        ]) { Timing = FrameSetTiming.PhysicalMs };
+
+        var chainDesc = new ControllerDescriptor(Chain, "LianLi", "chain", DeviceType.Cooler, DeviceClass.LianLi, "1",
+            [new ZoneDescriptor(new ZoneId(0), "chain", ZoneLayout.Linear(4))], Capabilities.UploadedLoopOnly(4096, 1, 12288));
+        var caseDesc = new ControllerDescriptor(caseController, "MSI", "case", DeviceType.Motherboard, DeviceClass.MsiGpu, "2",
+            [new ZoneDescriptor(new ZoneId(0), "case", ZoneLayout.Linear(4))], Capabilities.DirectOnly(60));
+        var kbDesc = new ControllerDescriptor(kbController, "ROG", "kb", DeviceType.Keyboard, DeviceClass.AsusRog, "3",
+            [new ZoneDescriptor(new ZoneId(0), "keys", ZoneLayout.Linear(81))], Capabilities.DirectOnly(60));
+        var mouseDesc = new ControllerDescriptor(mouseController, "ROG", "mouse", DeviceType.Mouse, DeviceClass.AsusRog, "4",
+            [new ZoneDescriptor(new ZoneId(0), "logo", ZoneLayout.Linear(1))], Capabilities.DirectOnly(60));
+
+        var scene = new Scene([new Assignment(targets, "StaticColor", new EffectParams([new Rgb(255, 0, 0)]), "g", ContentStrategy.Frames) { FrameSetId = Id }]);
+
+        using var bus = new FrameBus();
+        using var loop = new RenderLoop(EffectRegistry.Default, bus) { FrameSets = new StrictSource(set, bound: targets) };
+        loop.SetControllers([chainDesc, caseDesc, kbDesc, mouseDesc]);
+        loop.SetScene(scene);
+
+        _ = Published(bus);
+        loop.RenderFrame(0, 0.06);
+        bus[caseController]!.TryConsume(out var cf).Should().BeTrue();
+        cf.Zones[0][0].Should().Be(new Rgb(10, 0, 0));
+        bus[kbController]!.TryConsume(out var kf).Should().BeTrue();
+        kf.Zones[0][0].Should().Be(new Rgb(0, 80, 0));
+        bus[mouseController]!.TryConsume(out var mf).Should().BeTrue();
+        mf.Zones[0].Should().Equal([new Rgb(0, 0, 200)]);
+
+        // Keyboard sleeps: case loop is unchanged (0 publishes), shared timeline stays unblocked, and Mouse keeps its own ZoneRgb[3].
+        loop.SetSleepingPeripherals(new Dictionary<ZoneRef, int> { [targets[2]] = 81 });
+        loop.SetControllers([chainDesc, caseDesc, mouseDesc]);
+
+        loop.BlockedContent.Should().BeEmpty();
+        loop.Timeline(Id)!.Blocked.Should().BeNull();
+        bus[Chain]!.HasPendingLoop.Should().BeFalse("case loop must never re-upload or black out when a keyboard sleeps");
+        loop.LastLoopCompile!.Published.Should().Be(0);
+        loop.LastLoopCompile!.Unchanged.Should().Be(1);
+
+        loop.RenderFrame(0.06, 0.06);
+        bus[caseController]!.TryConsume(out cf).Should().BeTrue();
+        cf.Zones[0][0].Should().Be(new Rgb(11, 0, 0));
+        bus[mouseController]!.TryConsume(out mf).Should().BeTrue();
+        mf.Zones[0].Should().Equal([new Rgb(0, 0, 201)], "sleeping Keyboard at index 2 must not shift Mouse to index 2");
+
+        // Keyboard wakes back up: case loop still untouched and Keyboard resumes its exact ZoneRgb[2].
+        loop.SetSleepingPeripherals(null);
+        loop.SetControllers([chainDesc, caseDesc, kbDesc, mouseDesc]);
+
+        loop.BlockedContent.Should().BeEmpty();
+        bus[Chain]!.HasPendingLoop.Should().BeFalse("waking Keyboard must not force Lian Li RF re-uploads");
+        loop.LastLoopCompile!.Published.Should().Be(0);
+        loop.LastLoopCompile!.Unchanged.Should().Be(1);
+
+        loop.RenderFrame(0.12, 0.06);
+        bus[kbController]!.TryConsume(out kf).Should().BeTrue();
+        kf.Zones[0][0].Should().Be(new Rgb(0, 82, 0));
+    }
+
+    [Fact]
+    public void Peripheral_only_strict_package_keeps_local_timeline_when_all_peripherals_sleep_but_unregistered_missing_blocks()
+    {
+        var kbController = new ControllerId("rog:kb");
+        var mouseController = new ControllerId("rog:mouse");
+        ZoneRef[] targets = [new(kbController, new ZoneId(0)), new(mouseController, new ZoneId(0))];
+        var set = new FrameSet(Id, 200, 60, [4, 4], [Rgb(200), Rgb(200)]) { Timing = FrameSetTiming.PhysicalMs };
+        var kbDesc = new ControllerDescriptor(kbController, "ROG", "kb", DeviceType.Keyboard, DeviceClass.AsusRog, "3",
+            [new ZoneDescriptor(new ZoneId(0), "keys", ZoneLayout.Linear(4))], Capabilities.DirectOnly(60));
+        var mouseDesc = new ControllerDescriptor(mouseController, "ROG", "mouse", DeviceType.Mouse, DeviceClass.AsusRog, "4",
+            [new ZoneDescriptor(new ZoneId(0), "logo", ZoneLayout.Linear(4))], Capabilities.DirectOnly(60));
+        var scene = new Scene([new Assignment(targets, "StaticColor", new EffectParams([new Rgb(255, 0, 0)]), "g", ContentStrategy.Frames) { FrameSetId = Id }]);
+
+        using var bus = new FrameBus();
+        using var loop = new RenderLoop(EffectRegistry.Default, bus) { FrameSets = new StrictSource(set, bound: targets) };
+        loop.SetSleepingPeripherals(new Dictionary<ZoneRef, int> { [targets[0]] = 4, [targets[1]] = 4 });
+        loop.SetControllers([]);
+        loop.SetScene(scene, allowMissingZones: true);
+
+        loop.BlockedContent.Should().BeEmpty();
+        var timeline = loop.Timeline(Id)!;
+        timeline.Blocked.Should().BeNull();
+        timeline.Source.Should().Be(TimelineSources.LocalEpoch);
+        loop.TimelineAt(Id, 1.5)!.PositionMs.Should().BeApproximately(1500, 1);
+
+        loop.SetControllers([kbDesc, mouseDesc]);
+        loop.SetSleepingPeripherals(null);
+        loop.BlockedContent.Should().BeEmpty();
+
+        // Removing both without registering them as sleeping peripherals (e.g., non-sleepable absence) must still block dark.
+        loop.SetControllers([]);
+        loop.BlockedContent.Should().ContainSingle().Which.Should().Contain("BLOCKED");
+        loop.Timeline(Id)!.Source.Should().Be(TimelineSources.Blocked);
+    }
 }

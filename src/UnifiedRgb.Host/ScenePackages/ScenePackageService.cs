@@ -559,7 +559,7 @@ public sealed partial class ScenePackageService : IScenePackageService, ISceneLi
                 problems.Add($"Lighting role {l.Role}: {l.FrameDurationMs} ms is not exactly representable as RF raw ticks at {FrameSet.DeviceTicksPerSecond:0}/s.");
             }
 
-            if (requireActive && LightingEngine.StrictUnavailable(c) is { } why)
+            if (requireActive && !_engine.IsSleepablePeripheral(c) && LightingEngine.StrictUnavailable(c) is { } why)
             {
                 problems.Add($"Lighting role {l.Role}: controller {zone.Controller} {why}; a package plays on all of its targets or not at all.");
             }

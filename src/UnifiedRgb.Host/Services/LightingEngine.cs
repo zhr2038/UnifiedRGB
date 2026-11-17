@@ -186,6 +186,7 @@ public sealed partial class LightingEngine(
                     throw new InvalidOperationException("Repair requires a complete saved RGB + screen profile; live/partial scene edits are refused.");
                 // Repair is a durable offline restore, never a playback admission. Content/binding hashes stay strict;
                 // hardware readiness is checked on the next normal restart, with all output disabled in this process.
+                RefreshSleepingPeripherals();
                 ValidateStrict(scene, nameof(scene), requireActive: !repair);
                 var effectiveAllowMissing = allowMissing || (!repair && AllowSleepableMissingZones(scene));
                 _loop.SetScene(scene, effectiveAllowMissing, () =>
@@ -220,6 +221,7 @@ public sealed partial class LightingEngine(
 
         lock (_sceneGate)
         {
+            RefreshSleepingPeripherals();
             var merged = Merge(_loop.Scene, assignment);
             ValidateStrict(merged, nameof(assignment));
             _loop.SetScene(merged, allowMissingZones: true, () => profiles.SaveActiveWith(new ProfileDto(CustomProfileName, DtoMapper.ToDto(merged)), []));
@@ -228,6 +230,55 @@ public sealed partial class LightingEngine(
             notifier.PublishScene(DtoMapper.ToDto(merged));
         }
     }
+
+    /// <summary>
+    /// External peripherals (keyboard/mouse over USB or 2.4G RF) may independently enter wireless standby, unplug, or switch
+    /// transport without a user lease or external WriterGuard contention. Note: WiredKeyboardAdapter throws DeviceBlockedException
+    /// during standby/handover (setting entry.Verdict = Blocked), so check guard.Check(entry.Adapter.Class) rather than entry.Verdict.
+    /// </summary>
+    internal bool IsSleepablePeripheral(ControllerEntry? entry) => IsSleepablePeripheral(entry, guard);
+
+    internal static bool IsSleepablePeripheral(ControllerEntry? entry, IWriterGuard guard)
+    {
+        if (entry is not { IsActive: false, BringupLease: null, Descriptor.DeviceType: DeviceType.Mouse or DeviceType.Keyboard })
+        {
+            return false;
+        }
+
+        if (guard.Check(entry.Adapter.Class).State != GuardState.Clear)
+        {
+            return false;
+        }
+
+        if (entry.Adapter is INativeBringup native
+            && (!guard.IsTakeoverEnabled(entry.Descriptor.Class) || !native.IsControlVerified(entry.Descriptor.Id)))
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    internal IReadOnlyDictionary<ZoneRef, int> SleepingPeripherals(IEnumerable<ControllerEntry> entries)
+    {
+        var map = new Dictionary<ZoneRef, int>();
+        foreach (var entry in entries)
+        {
+            if (!IsSleepablePeripheral(entry))
+            {
+                continue;
+            }
+
+            foreach (var z in entry.Descriptor.Zones)
+            {
+                map[new ZoneRef(entry.Descriptor.Id, z.Id)] = z.Layout.LedCount;
+            }
+        }
+
+        return map;
+    }
+
+    private void RefreshSleepingPeripherals() => _loop.SetSleepingPeripherals(SleepingPeripherals(adapters.Controllers));
 
     private bool AllowSleepableMissingZones(Scene scene)
     {
@@ -242,8 +293,7 @@ public sealed partial class LightingEngine(
         foreach (var t in missing)
         {
             var entry = entries.FirstOrDefault(e => e.Descriptor.Id == t.Controller);
-            if (entry is not { IsActive: false, Verdict.State: GuardState.Clear, Descriptor.DeviceType: DeviceType.Mouse }
-                || !entry.Descriptor.Zones.Any(z => z.Id == t.Zone))
+            if (!IsSleepablePeripheral(entry) || !entry!.Descriptor.Zones.Any(z => z.Id == t.Zone))
             {
                 return false;
             }
@@ -746,10 +796,12 @@ public sealed partial class LightingEngine(
     {
         var entries = adapters.Controllers;
         var active = entries.Where(c => c.IsActive).Select(c => c.Descriptor).ToArray();
+        var sleeping = SleepingPeripherals(entries);
         var clocks = options.LianLi.UseDeviceClock ? DeviceClocks(entries) : null;
         lock (_sceneGate)
         {
             _loop.SetDeviceClocks(clocks);
+            _loop.SetSleepingPeripherals(sleeping);
             _loop.SetControllers(active);
         }
     }
@@ -795,6 +847,7 @@ public sealed partial class LightingEngine(
             {
                 lock (_sceneGate)
                 {
+                    RefreshSleepingPeripherals();
                     _loop.SetScene(DtoMapper.FromDto(restored.Scene), allowMissingZones: true);
                     _activeName = restored.Name;
                 }

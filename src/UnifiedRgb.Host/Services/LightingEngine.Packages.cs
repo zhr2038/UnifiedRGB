@@ -80,6 +80,7 @@ public sealed partial class LightingEngine
 
         var active = _loop.Controllers.SelectMany(c => c.Zones.Select(z => new ZoneRef(c.Id, z.Id))).ToHashSet();
         var entries = adapters.Controllers;
+        RefreshSleepingPeripherals();
         foreach (var a in strict)
         {
             if (!string.Equals(a.FrameSetId, timeline, StringComparison.Ordinal))
@@ -90,6 +91,12 @@ public sealed partial class LightingEngine
 
             foreach (var t in a.Targets.Where(t => !active.Contains(t)))
             {
+                var entry = entries.FirstOrDefault(e => e.Descriptor.Id == t.Controller);
+                if (IsSleepablePeripheral(entry) && entry!.Descriptor.Zones.Any(z => z.Id == t.Zone))
+                {
+                    continue;
+                }
+
                 throw new ArgumentException($"Package target {t} is not present and active; package content is never partially applied.", paramName);
             }
 
@@ -97,7 +104,8 @@ public sealed partial class LightingEngine
             // (package apply, raw SetScene, ApplyProfile, a SetAssignment re-validating the merged scene) carries the content.
             foreach (var controller in a.Targets.Select(t => t.Controller).Distinct())
             {
-                if (StrictUnavailable(entries.FirstOrDefault(e => e.Descriptor.Id == controller)) is { } why)
+                var entry = entries.FirstOrDefault(e => e.Descriptor.Id == controller);
+                if (!IsSleepablePeripheral(entry) && StrictUnavailable(entry) is { } why)
                 {
                     throw new ArgumentException(
                         $"Package target {controller} {why}; package content plays on all of its targets or not at all.", paramName);

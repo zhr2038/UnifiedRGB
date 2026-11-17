@@ -48,6 +48,7 @@ public sealed partial class RenderLoop : IDisposable
     private double _lastT;
     private PlaybackCalibration _calibration = PlaybackCalibration.Default;
     private IReadOnlyDictionary<ControllerId, IDeviceClock>? _deviceClocks;
+    private IReadOnlyDictionary<ZoneRef, int> _sleepingPeripherals = new Dictionary<ZoneRef, int>();
 
     public RenderLoop(EffectRegistry registry, FrameBus bus, LoopCompiler? loops = null)
     {
@@ -161,6 +162,20 @@ public sealed partial class RenderLoop : IDisposable
         {
             _deviceClocks = clocks;
             BindClocks(_plan);
+        }
+    }
+
+    /// <summary>
+    /// Known LED counts of currently sleeping/standby external peripherals (keyboard/mouse) whose temporary absence must not
+    /// block strict multi-device frame sets or disturb case lighting/screens.
+    /// </summary>
+    public void SetSleepingPeripherals(IReadOnlyDictionary<ZoneRef, int>? sleepingPeripherals)
+    {
+        lock (_gate)
+        {
+            _sleepingPeripherals = sleepingPeripherals is null || sleepingPeripherals.Count == 0
+                ? new Dictionary<ZoneRef, int>()
+                : new Dictionary<ZoneRef, int>(sleepingPeripherals);
         }
     }
 
@@ -984,6 +999,22 @@ public sealed partial class RenderLoop : IDisposable
                         items[i] = it with { Anchor = local };
                     }
                 }
+                else if (it.TimelineId is { } tid && it.BlockedReason is null)
+                {
+                    // Strict frame set whose targets are currently all sleeping peripherals: keep a shared local epoch so bound screens keep advancing cleanly.
+                    var tkey = (new ControllerId($"__timeline:{tid}"), new ZoneId(0));
+                    localAnchors.Add(tkey);
+                    if (_anchors.TryGetValue(tkey, out var keptTimeline) && keptTimeline.Local)
+                    {
+                        items[i] = it with { Anchor = keptTimeline };
+                    }
+                    else
+                    {
+                        var local = new LoopAnchor { EffectIndex = 0, T0 = now, Anchored = true, Local = true };
+                        _anchors[tkey] = local;
+                        items[i] = it with { Anchor = local };
+                    }
+                }
 
                 continue;
             }
@@ -1113,6 +1144,11 @@ public sealed partial class RenderLoop : IDisposable
         var chainReversed = ChainReversed;
         var ring = Ring;
         var frameSets = FrameSets;
+        IReadOnlyDictionary<ZoneRef, int> sleepingPeripherals;
+        lock (_gate)
+        {
+            sleepingPeripherals = _sleepingPeripherals;
+        }
         var items = new List<PlanItem>();
         var truncated = new List<string>();
         var variants = new List<string>();
@@ -1127,7 +1163,7 @@ public sealed partial class RenderLoop : IDisposable
             var layouts = new List<ZoneLayout>();
             var placements = new List<ZonePlacement?>();
             var perKeyPoints = new List<IReadOnlyList<ZonePoint>?>();
-            var members = new List<(Slice Slice, bool IsLoop)>();
+            var members = new List<(Slice Slice, bool IsLoop, int TargetIndex)>();
             var layoutOf = new Dictionary<(int, int), int>();
             var offset = 0;
             var missing = false;
@@ -1137,8 +1173,9 @@ public sealed partial class RenderLoop : IDisposable
             // vendor SliceGroup does (ReverseChain reverses the whole strip): local U is reversed by ChainReversed XOR the
             // binding's artistic Reverse. U only (X/Y/theta untouched), TL only (H2 and streamed Points keep the binding).
             var programSpans = new List<SpatialSpan>();
-            foreach (var target in a.Targets)
+            for (var targetIndex = 0; targetIndex < a.Targets.Count; targetIndex++)
             {
+                var target = a.Targets[targetIndex];
                 var slot = Array.FindIndex(controllers, c => c.Descriptor.Id == target.Controller);
                 var zoneIndex = slot < 0 ? -1 : FindZone(controllers[slot].Descriptor, target.Zone);
                 if (zoneIndex < 0)
@@ -1157,7 +1194,7 @@ public sealed partial class RenderLoop : IDisposable
                 layouts.Add(zone.Layout);
                 placements.Add(zone.Placement);
                 perKeyPoints.Add(zone.PerKeyPoints);
-                members.Add((new Slice(slot, zoneIndex, offset), controllers[slot].IsLoop));
+                members.Add((new Slice(slot, zoneIndex, offset), controllers[slot].IsLoop, targetIndex));
                 if (spanOf is not null)
                 {
                     var span = spanOf[target];
@@ -1169,19 +1206,23 @@ public sealed partial class RenderLoop : IDisposable
                 offset += zone.LedCount;
             }
 
+            var isStrictFrames = a.Strategy == ContentStrategy.Frames && !string.IsNullOrEmpty(a.FrameSetId) && frameSets?.Claims(a.FrameSetId) == true;
             if (layouts.Count == 0)
             {
-                if (missing)
+                if (!missing)
+                {
+                    throw new ArgumentException("Assignment has no targets.", nameof(scene));
+                }
+
+                if (!isStrictFrames)
                 {
                     continue;
                 }
-
-                throw new ArgumentException("Assignment has no targets.", nameof(scene));
             }
 
             // §7.6: X/Y from an owner-entered placement when present; U (and every Lian Li geometry) unchanged
             // PER-KEY: a member with sparse key points keeps its keys' geometry; without one this is the expression below, unchanged
-            var samples = PerKeyLayout.Any(perKeyPoints) ? PerKeyLayout.Concat(layouts, placements, perKeyPoints, spanOf is not null ? programSpans : null)
+            var samples = layouts.Count == 0 ? [] : PerKeyLayout.Any(perKeyPoints) ? PerKeyLayout.Concat(layouts, placements, perKeyPoints, spanOf is not null ? programSpans : null)
                 : spanOf is not null
                 ? GroupLayout.ConcatPath(layouts, placements, programSpans)
                 : layouts.Count == 1 ? Projector.Project(layouts[0], placements[0]) : GroupLayout.Concat(layouts, placements);
@@ -1206,8 +1247,8 @@ public sealed partial class RenderLoop : IDisposable
             {
                 // OPUS-GENERIC-SCENE-PACKAGES: an id the source claims is strict content: no effect fallback, no decimation, and a
                 // physical-ms set is uploaded at its exact raw-tick interval or blocked
-                var strict = !string.IsNullOrEmpty(a.FrameSetId) && frameSets?.Claims(a.FrameSetId) == true;
-                var set = ResolveFrameSet(a, members, controllers, frameSets, out var why);
+                var strict = isStrictFrames;
+                var set = ResolveFrameSet(a, members, controllers, frameSets, sleepingPeripherals, out var why);
                 if (set is null && strict && frameSets!.Problem(a.FrameSetId!) is { } problem)
                 {
                     why = problem;
@@ -1248,17 +1289,17 @@ public sealed partial class RenderLoop : IDisposable
                     var list = new List<CompiledLoop>();
                     for (var i = 0; i < members.Count; i++)
                     {
-                        var (s, isLoop) = members[i];
+                        var (s, isLoop, targetIndex) = members[i];
                         var c = controllers[s.ControllerSlot].Descriptor;
                         var z = c.Zones[s.ZoneIndex];
                         if (isLoop)
                         {
-                            list.Add(new CompiledLoop((c.Id, z.Id), Staged(controllers[s.ControllerSlot].Stage, set.ZoneRgb[i], p.Brightness),
+                            list.Add(new CompiledLoop((c.Id, z.Id), Staged(controllers[s.ControllerSlot].Stage, set.ZoneRgb[targetIndex], p.Brightness),
                                 new LoopTiming(set.Frames, wireInterval), IsH2(z) ? "ring" : null, strict));
                         }
                         else
                         {
-                            played.Add(PlayedOf(s, c, z, set.ZoneRgb[i], set.Frames, set.IntervalMs, p.Brightness));
+                            played.Add(PlayedOf(s, c, z, set.ZoneRgb[targetIndex], set.Frames, set.IntervalMs, p.Brightness));
                         }
                     }
 
@@ -1297,7 +1338,7 @@ public sealed partial class RenderLoop : IDisposable
                 {
                     // WP-11: L-Connect's own frames, frame count and interval; no MaxLoopFrames cap (the adapter's size fallback applies)
                     period = vendor.PeriodSeconds;
-                    loops = VendorLoops(a.EffectId, vendor, members, played, controllers, chainReversed, ring, explicitPath: spanOf is not null);
+                    loops = VendorLoops(a.EffectId, vendor, [.. members.Select(m => (m.Slice, m.IsLoop))], played, controllers, chainReversed, ring, explicitPath: spanOf is not null);
                     slices.Clear();
                     planned = true;
                     variants.Add($"{label}: Vendor:{a.EffectId} {vendor.Variant}: {vendor.Summary}{pathNote}");
@@ -1436,8 +1477,9 @@ public sealed partial class RenderLoop : IDisposable
         return new PlayedSlice((c.Id, z.Id), s.ControllerSlot, s.ZoneIndex, px, frames, leds, intervalMs, brightness);
     }
 
-    /// <summary>The assignment's frame set when it exists, is well formed and matches the targets zone by zone; else null and why.</summary>
-    private static FrameSet? ResolveFrameSet(Assignment a, List<(Slice Slice, bool IsLoop)> members, ControllerSlot[] controllers, IFrameSetSource? frameSets, out string why)
+    /// <summary>The assignment's frame set when it exists, is well formed and matches the targets zone by zone (allowing temporarily sleeping peripherals); else null and why.</summary>
+    private static FrameSet? ResolveFrameSet(Assignment a, List<(Slice Slice, bool IsLoop, int TargetIndex)> members, ControllerSlot[] controllers,
+        IFrameSetSource? frameSets, IReadOnlyDictionary<ZoneRef, int> sleepingPeripherals, out string why)
     {
         if (string.IsNullOrEmpty(a.FrameSetId))
         {
@@ -1458,18 +1500,34 @@ public sealed partial class RenderLoop : IDisposable
             return null;
         }
 
-        if (set.ZoneLedCounts.Count != members.Count)
+        if (set.ZoneLedCounts.Count != a.Targets.Count)
         {
-            why = $"frame set {set.Id} has {set.ZoneLedCounts.Count} zones, the assignment {members.Count}";
+            why = $"frame set {set.Id} has {set.ZoneLedCounts.Count} zones, the assignment {a.Targets.Count}";
             return null;
         }
 
-        for (var i = 0; i < members.Count; i++)
+        for (var tIdx = 0; tIdx < a.Targets.Count; tIdx++)
         {
-            var leds = controllers[members[i].Slice.ControllerSlot].Descriptor.Zones[members[i].Slice.ZoneIndex].LedCount;
-            if (set.ZoneLedCounts[i] != leds)
+            var memberIdx = members.FindIndex(m => m.TargetIndex == tIdx);
+            int leds;
+            if (memberIdx >= 0)
             {
-                why = $"frame set {set.Id} zone {i} has {set.ZoneLedCounts[i]} LEDs, the target {leds}";
+                var s = members[memberIdx].Slice;
+                leds = controllers[s.ControllerSlot].Descriptor.Zones[s.ZoneIndex].LedCount;
+            }
+            else if (sleepingPeripherals.TryGetValue(a.Targets[tIdx], out var sleepLeds))
+            {
+                leds = sleepLeds;
+            }
+            else
+            {
+                why = $"frame set {set.Id} has {set.ZoneLedCounts.Count} zones, the assignment {members.Count}";
+                return null;
+            }
+
+            if (set.ZoneLedCounts[tIdx] != leds)
+            {
+                why = $"frame set {set.Id} zone {tIdx} has {set.ZoneLedCounts[tIdx]} LEDs, the target {leds}";
                 return null;
             }
         }

@@ -418,4 +418,76 @@ public class RfDeliveryTests
         t.CanCommitRetry(TimeSpan.FromSeconds(s)).Should().BeFalse();
         t.Status.Retries.Should().Be(2);
     }
+
+    [Fact]
+    public async Task Four_simultaneous_mismatched_chains_all_receive_two_fair_round_robin_retries_without_starvation()
+    {
+        var specs = new (RfMac Mac, string Family, int Leds, byte Rx, byte DevType, byte FanCount, byte FanType)[]
+        {
+            (RfMac.Parse("06-A8-F0-72-AB-3C"), "TL", 78, 3, 0, 3, 28),
+            (RfMac.Parse("1B-7B-F1-72-AB-3C"), "TL", 78, 4, 0, 3, 28),
+            (RfMac.Parse("EF-7E-63-62-32-E1"), "H2", 24, 5, 10, 0, 0),
+            (RfMac.Parse("35-F7-EF-72-AB-3C"), "TL", 78, 6, 0, 3, 28),
+        };
+
+        byte[] MultiReport(uint index, uint counter)
+        {
+            var data = new byte[4 + specs.Length * RfDeviceRecord.Length];
+            data[0] = 16;
+            data[1] = (byte)specs.Length;
+            for (var i = 0; i < specs.Length; i++)
+            {
+                var s = specs[i];
+                var record = data.AsSpan(4 + i * RfDeviceRecord.Length, RfDeviceRecord.Length);
+                s.Mac.Write(record);
+                Rf.Master.Write(record[6..]);
+                record[12] = 8;
+                record[13] = s.Rx;
+                BinaryPrimitives.WriteUInt32BigEndian(record[14..], counter);
+                record[18] = s.DevType;
+                record[19] = s.FanCount;
+                BinaryPrimitives.WriteUInt32BigEndian(record[20..], index);
+                record[24] = s.FanType;
+                record[41] = RfDeviceRecord.Tag;
+            }
+
+            return data;
+        }
+
+        var wire = new RecordingTransport();
+        wire.EnqueueRead(Rf.MasterReply());
+        var now = Rf.Now;
+        var counter = 0u;
+        var options = new LianLiOptions { WireFormatVerified = true, ReceiverInterfaceGuid = FakeUsb.Guid, ReceiverFeedbackEnabled = true, ReceiverRetriesEnabled = true };
+        foreach (var s in specs)
+        {
+            options.Devices.Add(new LianLiDeviceConfig { Mac = s.Mac.ToString(), Family = s.Family, Leds = s.Leds, Channel = 8, Rx = s.Rx });
+        }
+
+        await using var adapter = new LianLiAdapter(options, new FakeUsb(), _ => wire, encoder: new IdentityEncoder(), sleep: _ => { }, now: () => now,
+            receiverProbe: () => MultiReport(0, counter), startKeepAliveTimer: false, feedbackElapsed: () => now - Rf.Now);
+
+        var discovered = await adapter.DiscoverAsync(CancellationToken.None);
+        discovered.Should().HaveCount(4);
+        foreach (var d in discovered)
+        {
+            await adapter.OpenAsync(d.Id, CancellationToken.None);
+            adapter.SetRecoveryAllowed(d.Id, true);
+            await adapter.UploadLoopAsync(d.Id, LianLiAdapter.ChainZone, new LoopFrames(1, d.Zones[0].LedCount, 20, 100, new byte[d.Zones[0].LedCount * 3]), CancellationToken.None);
+        }
+
+        for (var i = 1; i <= 14; i++)
+        {
+            now = Rf.Now.AddSeconds(i);
+            counter = (uint)(i * 1600);
+            adapter.ObserveReceiverFeedback();
+        }
+
+        foreach (var d in discovered)
+        {
+            var delivery = adapter.LastUpload(d.Id)!.ReceiverDelivery!;
+            delivery.Retries.Should().Be(2, $"{d.Id} must not starve behind 3 simultaneous mismatched sibling chains");
+            delivery.State.Should().Be("RetryExhausted");
+        }
+    }
 }

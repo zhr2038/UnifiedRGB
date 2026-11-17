@@ -82,6 +82,7 @@ public sealed class RfDeliveryTracker(uint expected, RfMac mac, RfMac master, Rf
     public void Retried(TimeSpan elapsed)
     {
         _lastRetry = elapsed;
+        _mismatchSince = null;
         _mismatchSamples = 0;
         Status = Status with { Retries = Status.Retries + 1, State = "RetryPending",
             Detail = "Same generation/payload retry committed; waiting for a fresh receiver report." };

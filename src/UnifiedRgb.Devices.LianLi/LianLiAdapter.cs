@@ -819,11 +819,12 @@ public sealed partial class LianLiAdapter : ILoopUploadAdapter, IDeviceClockProv
                 }
                 var now = new DateTimeOffset(_now?.Invoke() ?? DateTime.Now); // actual receipt time, not query start
                 var observedElapsed = _feedbackElapsed();
-                var retriedThisPass = false; // let master clock queries and owner uploads run between receiver recoveries
+                List<(Session Session, PendingDelivery Pending, int Retries)>? retryCandidates = null;
                 foreach (var session in sessions)
                 {
                     PendingDelivery? pending;
                     bool retry;
+                    int retries;
                     lock (_gate)
                     {
                         pending = session.Delivery;
@@ -833,10 +834,20 @@ public sealed partial class LianLiAdapter : ILoopUploadAdapter, IDeviceClockProv
                             || (session.Device.Assembler.Family == "TL" && report.Device.FanCount != session.Device.Assembler.UnitsIn(session.Device.LedCount))))
                         { report = null; }
                         retry = pending.Tracker.Observe(report, now, _options.ReceiverRetriesEnabled && session.RecoveryAllowed, observedElapsed);
+                        retries = pending.Tracker.Status.Retries;
                         PublishDelivery(session, pending);
                     }
-                    if (!retry || retriedThisPass) { continue; }
-                    retriedThisPass = true;
+                    if (retry)
+                    {
+                        (retryCandidates ??= []).Add((session, pending, retries));
+                    }
+                }
+                if (retryCandidates is { Count: > 0 })
+                {
+                    // Let master clock queries and owner uploads run between receiver recoveries, while rotating fairly across chains.
+                    var picked = retryCandidates.OrderBy(c => c.Retries).First();
+                    var session = picked.Session;
+                    var pending = picked.Pending;
                     var committed = false;
                     try
                     {

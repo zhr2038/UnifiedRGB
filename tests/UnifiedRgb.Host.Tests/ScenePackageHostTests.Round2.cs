@@ -329,4 +329,172 @@ public sealed partial class ScenePackageHostTests
             rig.Screens.TlPresent = true;
         }
     }
+
+    [Fact]
+    public async Task Wireless_keyboard_and_mouse_sleep_and_wake_never_reupload_case_loops_or_block_screens_while_guard_and_lease_refuse()
+    {
+        var adapter = new PackageLoopAdapter();
+        var kb = new SleepablePeripheralAdapter("kb:1", DeviceType.Keyboard, 81, throwBlockedOnSleep: true);
+        var mouse = new SleepablePeripheralAdapter("ms:1", DeviceType.Mouse, 1, throwBlockedOnSleep: false);
+        var guard = new FakeGuard().Enable(DeviceClass.Virtual, DeviceClass.AsusRog);
+        var screens = new FakeScreens { AcceptOpens = true };
+
+        await using var host = await TestHost.StartAsync(s =>
+        {
+            s.AddSingleton<IWriterGuard>(guard);
+            s.AddSingleton<IDeviceAdapterFactory>(new PackageAdapterFactory(adapter));
+            s.AddSingleton<IDeviceAdapterFactory>(new PackageAdapterFactory(kb));
+            s.AddSingleton<IDeviceAdapterFactory>(new PackageAdapterFactory(mouse));
+            s.AddSingleton(screens.Platform);
+        }, o =>
+        {
+            o.Screens.Enabled = true;
+            o.Screens.TlLcd.Output = true;
+            o.Screens.H2.Output = true;
+            o.Screens.TlLcd.ControlVerified = true;
+            o.Screens.H2.ControlVerified = true;
+        });
+
+        await UntilAsync(() =>
+            host.Engine.Adapters.Controllers.Any(c => c.Descriptor.Id.Value == Loop && c.IsActive)
+            && host.Engine.Adapters.Controllers.Any(c => c.Descriptor.Id == kb.Id && c.IsActive)
+            && host.Engine.Adapters.Controllers.Any(c => c.Descriptor.Id == mouse.Id && c.IsActive), "all controllers active");
+
+        var packages = host.Get<IScenePackageService>();
+        var rgb = host.Get<IRgbService>();
+        var screenSvc = host.Get<IScreenService>();
+        var timelineSvc = host.Get<ScenePackageTimeline>();
+
+        var files = new Dictionary<string, byte[]>
+        {
+            ["data/strip.rgb24"] = Pkg.Rgb(200, 8),
+            ["data/keyboard.rgb24"] = Pkg.Rgb(200, 81),
+            ["data/mouse.rgb24"] = Pkg.Rgb(200, 1),
+            ["media/panel.png"] = Pkg.Png(),
+        };
+        var manifest = Pkg.Manifest(files,
+            [
+                Pkg.LightingTrack("strip", "data/strip.rgb24", 8, 200, 60),
+                Pkg.LightingTrack("keyboard", "data/keyboard.rgb24", 81, 200, 60),
+                Pkg.LightingTrack("mouse", "data/mouse.rgb24", 1, 200, 60),
+            ],
+            [Pkg.ScreenTrack("panel", "media/panel.png")]);
+        var zip = Pkg.Zip([("scene.json", Pkg.Utf8(manifest)), .. files.Select(f => (f.Key, f.Value))]);
+
+        var details = await ImportAsync(packages, zip);
+        var cid = details.Info.ContentId;
+        var bindings = await packages.SaveScenePackageBindingsAsync(Bind(cid,
+            Zone("strip"),
+            Zone("keyboard", kb.Id.Value, 0),
+            Zone("mouse", mouse.Id.Value, 0),
+            new ScenePackageBindingDto("panel", ScreenId: FakeScreens.Tl.Id)));
+        bindings.Ready.Should().BeTrue(string.Join("; ", bindings.Problems));
+        var timeline = ScenePackageIds.TimelineIdOf(cid, bindings.BindingId!);
+
+        var applied = await packages.ApplyScenePackageAsync(cid);
+        applied.Applied.Should().BeTrue(applied.Detail);
+        var uploads = await SettledAsync(adapter);
+        var zone0Uploads = adapter.For(0).Count;
+
+        ControllerEntry Entry(ControllerId id) => host.Engine.Adapters.Controllers.Single(c => c.Descriptor.Id == id);
+        async Task<ScreenDeviceDto> PanelAsync() => (await screenSvc.ListScreensAsync()).Single(s => s.Id == FakeScreens.Tl.Id);
+
+        // 1. Keyboard sleeps via DeviceBlockedException ("Keyboard USB owner is connecting."), leaving Verdict = Blocked while Guard is Clear.
+        kb.SetAsleep(true);
+        await host.Engine.RescanAsync(CancellationToken.None);
+        Entry(kb.Id).IsActive.Should().BeFalse();
+        Entry(kb.Id).Verdict.State.Should().Be(GuardState.Blocked);
+
+        await Task.Delay(250);
+        adapter.Uploaded.Count.Should().Be(uploads, "keyboard standby must never blackout or re-upload Lian Li loops");
+        host.Engine.BuildStatus(false).BlockedContent.Should().BeNull();
+        timelineSvc.Position(timeline)!.Blocked.Should().BeNull();
+        ((await PanelAsync()).LastError ?? string.Empty).Should().NotStartWith(ScreenCompositorBlocked);
+
+        // Applying and re-saving scene must succeed with 0 loop uploads while keyboard is asleep;
+        // editing unrelated loop zone Loop/1 uploads only Zone 1 and leaves strict package Zone 0 untouched.
+        (await packages.GetScenePackageBindingsAsync(cid)).Ready.Should().BeTrue();
+        (await packages.ApplyScenePackageAsync(cid)).Applied.Should().BeTrue();
+        await rgb.SetSceneAsync(await rgb.GetSceneAsync());
+        await Task.Delay(200);
+        adapter.Uploaded.Count.Should().Be(uploads, "no case loop re-upload should occur on re-apply/resave while keyboard sleeps");
+        await rgb.SetAssignmentAsync(new AssignmentDto([new ZoneRefDto(Loop, 1)], "StaticColor", ["#00FF00"]));
+        uploads = await SettledAsync(adapter);
+        adapter.For(0).Count.Should().Be(zone0Uploads, "editing unrelated zone 1 must never re-upload strict package zone 0");
+
+        // 2. Mouse also sleeps via IOException ("Offline"): case lights & screens still uninterrupted.
+        mouse.SetAsleep(true);
+        await host.Engine.RescanAsync(CancellationToken.None);
+        Entry(mouse.Id).IsActive.Should().BeFalse();
+
+        await Task.Delay(250);
+        adapter.Uploaded.Count.Should().Be(uploads, "mouse standby must never blackout or re-upload Lian Li loops");
+        host.Engine.BuildStatus(false).BlockedContent.Should().BeNull();
+        timelineSvc.Position(timeline)!.Blocked.Should().BeNull();
+
+        // 3. Both wake back up: zero Lian Li re-uploads and peripherals become active again.
+        kb.SetAsleep(false);
+        mouse.SetAsleep(false);
+        await host.Engine.RescanAsync(CancellationToken.None);
+        Entry(kb.Id).IsActive.Should().BeTrue();
+        Entry(mouse.Id).IsActive.Should().BeTrue();
+        await Task.Delay(250);
+        adapter.Uploaded.Count.Should().Be(uploads, "peripheral wake must never disturb case loops");
+
+        // 4. WriterGuard contention/block and BringupLease STILL refuse package activation while keyboard sleeps.
+        kb.SetAsleep(true);
+        await host.Engine.RescanAsync(CancellationToken.None);
+        guard.Verdicts[DeviceClass.AsusRog] = GuardVerdict.Blocked("ArmouryCrate");
+        try
+        {
+            (await packages.GetScenePackageBindingsAsync(cid)).Ready.Should().BeFalse();
+            (await packages.ApplyScenePackageAsync(cid)).Applied.Should().BeFalse();
+        }
+        finally
+        {
+            guard.Verdicts.TryRemove(DeviceClass.AsusRog, out _);
+        }
+
+        Entry(kb.Id).BringupLease = "lease-1";
+        try
+        {
+            (await packages.GetScenePackageBindingsAsync(cid)).Ready.Should().BeFalse();
+            (await packages.ApplyScenePackageAsync(cid)).Applied.Should().BeFalse();
+        }
+        finally
+        {
+            Entry(kb.Id).BringupLease = null;
+        }
+    }
+
+    private sealed class SleepablePeripheralAdapter(string id, DeviceType deviceType, int leds, bool throwBlockedOnSleep) : IDeviceAdapter
+    {
+        private readonly ControllerDescriptor _descriptor = new(new ControllerId(id), "ROG", id, deviceType, DeviceClass.AsusRog, id,
+            [new ZoneDescriptor(new ZoneId(0), "zone", ZoneLayout.Linear(leds))], Capabilities.DirectOnly(60));
+        private int _asleep;
+
+        public ControllerId Id => _descriptor.Id;
+        public string Vendor => "ROG";
+        public DeviceClass Class => DeviceClass.AsusRog;
+        public event Action<HotplugEvent>? Hotplug;
+
+        public void SetAsleep(bool asleep)
+        {
+            Volatile.Write(ref _asleep, asleep ? 1 : 0);
+            Hotplug?.Invoke(new HotplugEvent(Id, asleep ? HotplugKind.Removed : HotplugKind.Arrived));
+        }
+
+        public Task<IReadOnlyList<ControllerDescriptor>> DiscoverAsync(CancellationToken ct) =>
+            Task.FromResult<IReadOnlyList<ControllerDescriptor>>([_descriptor]);
+
+        public Task OpenAsync(ControllerId controllerId, CancellationToken ct) =>
+            Volatile.Read(ref _asleep) != 0
+                ? Task.FromException(throwBlockedOnSleep ? new DeviceBlockedException("Keyboard USB owner is connecting.") : new IOException("mouse asleep"))
+                : Task.CompletedTask;
+
+        public void WriteFrame(ControllerId controllerId, ZoneId zone, ReadOnlySpan<Rgb> colors) { }
+        public Task SetFirmwareModeAsync(ControllerId controllerId, FirmwareMode mode, CancellationToken ct) => Task.CompletedTask;
+        public Telemetry? ReadTelemetry(ControllerId controllerId) => null;
+        public Task CloseAsync(ControllerId controllerId) => Task.CompletedTask;
+    }
 }
